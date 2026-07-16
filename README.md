@@ -202,7 +202,7 @@ just deploy testnet
 cd frontend && pnpm install && pnpm dev   # http://localhost:3000
 ```
 
-`just deploy` provisions the verifier, three pool tiers (10/100/1000 USDC), a test-USDC asset, a compliance contract, plus a **faucet issuer** and a **relayer** account, and writes the matching `frontend/.env.local`.
+`just deploy` provisions the verifier, three pool tiers (10/100/1000 USDC), a test-USDC asset, a compliance contract, plus a **faucet issuer** and a **relayer** account, and writes the matching `frontend/.env.local`. See [`frontend/.env.local.example`](frontend/.env.local.example) for the full list of variables and what each one is for.
 
 ---
 
