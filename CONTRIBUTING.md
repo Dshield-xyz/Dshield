@@ -40,6 +40,7 @@ Run `just --list` for the full set of available recipes (build, deploy, demo, cl
 - `frontend/` — Next.js wallet UI, including the client-side prover.
 - `scripts/`, `tests/e2e.sh` — demo and end-to-end scripts driven by the `justfile`.
 - `DESIGN.md` — deeper technical design notes if you want the full picture before diving in.
+- `GLOSSARY.md` — short glossary of ZK/Stellar terms for new contributors
 
 ## Reporting bugs / requesting features
 
