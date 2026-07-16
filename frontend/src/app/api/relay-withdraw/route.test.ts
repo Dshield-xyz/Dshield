@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 
 const VALID_G = "GABZWK2YLPOGBEOZT6VOCID6ROSSZGPSLAEPCTWIBGAJDHISO6DFKYYZ";
 const VALID_C = "CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG";
@@ -52,6 +52,10 @@ describe("/api/relay-withdraw validation", () => {
 });
 
 describe("/api/relay-withdraw rate limiting", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("429s a single IP after 20 requests within the window", async () => {
     const POST = await loadRoute("Sxxx-dummy-secret");
     for (let i = 0; i < 20; i++) {
@@ -61,5 +65,31 @@ describe("/api/relay-withdraw rate limiting", () => {
     const extra = await POST(req({ ...base, poolId: "not-a-contract" }, "9.9.9.9"));
     expect(extra.status).toBe(429);
     expect((await extra.json()).code).toBe("rate_limited");
+  });
+
+  it("returns 429 with a Retry-After header equal to the window in seconds", async () => {
+    const POST = await loadRoute("Sxxx-dummy-secret");
+    const ip = "9.9.9.9";
+    for (let i = 0; i < 20; i++) {
+      const res = await POST(req({ ...base, poolId: "not-a-contract" }, ip));
+      expect(res.status).toBe(400);
+    }
+    const blocked = await POST(req({ ...base, poolId: "not-a-contract" }, ip));
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).toBe("300");
+  });
+
+  it("resets the bucket and allows a new request after the window elapses", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"));
+    const POST = await loadRoute("Sxxx-dummy-secret");
+    const ip = "9.9.9.9";
+    for (let i = 0; i < 20; i++) {
+      await POST(req({ ...base, poolId: "not-a-contract" }, ip));
+    }
+    expect((await POST(req({ ...base, poolId: "not-a-contract" }, ip))).status).toBe(429);
+    vi.advanceTimersByTime(5 * 60 * 1000);
+    const unblocked = await POST(req({ ...base, poolId: "not-a-contract" }, ip));
+    expect(unblocked.status).toBe(400); // allowed again, still fails validation
   });
 });
