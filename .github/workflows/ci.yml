@@ -9,6 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  NARGO_VERSION: "1.0.0-beta.9"
+  BB_VERSION: "0.87.0"
 
 jobs:
   security:
@@ -39,18 +41,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Noir toolchain
+        id: noir-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nargo
+            ~/.bb
+          key: ${{ runner.os }}-noir-${{ env.NARGO_VERSION }}-bb-${{ env.BB_VERSION }}
+
       - name: Install Nargo
+        if: steps.noir-cache.outputs.cache-hit != 'true'
         run: |
           curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
           export PATH="$HOME/.nargo/bin:$PATH"
-          noirup -v 1.0.0-beta.9
+          noirup -v ${{ env.NARGO_VERSION }}
           nargo --version
 
       - name: Install Barretenberg
+        if: steps.noir-cache.outputs.cache-hit != 'true'
         run: |
           curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/bbup/install | bash
           export PATH="$HOME/.bb:$PATH"
-          bbup -v 0.87.0
+          bbup -v ${{ env.BB_VERSION }}
           bb --version
 
       - name: Compile shielded_pool circuit
@@ -186,17 +199,34 @@ jobs:
         with:
           version: 11
 
+      - name: Cache Noir toolchain
+        id: noir-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nargo
+            ~/.bb
+          key: ${{ runner.os }}-noir-${{ env.NARGO_VERSION }}-bb-${{ env.BB_VERSION }}
+
       - name: Install Nargo (for hasher circuit)
+        if: steps.noir-cache.outputs.cache-hit != 'true'
         run: |
           curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
           export PATH="$HOME/.nargo/bin:$PATH"
-          noirup -v 1.0.0-beta.9
+          noirup -v ${{ env.NARGO_VERSION }}
 
       - name: Compile hasher circuit
         run: |
           export PATH="$HOME/.nargo/bin:$PATH"
           cd circuits/hasher && nargo compile
           cp target/hasher.json ../../frontend/src/circuits/
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
 
       - name: Install dependencies
         working-directory: frontend
@@ -222,17 +252,34 @@ jobs:
         with:
           version: 11
 
+      - name: Cache Noir toolchain
+        id: noir-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nargo
+            ~/.bb
+          key: ${{ runner.os }}-noir-${{ env.NARGO_VERSION }}-bb-${{ env.BB_VERSION }}
+
       - name: Install Nargo (for hasher circuit)
+        if: steps.noir-cache.outputs.cache-hit != 'true'
         run: |
           curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
           export PATH="$HOME/.nargo/bin:$PATH"
-          noirup -v 1.0.0-beta.9
+          noirup -v ${{ env.NARGO_VERSION }}
 
       - name: Compile hasher circuit
         run: |
           export PATH="$HOME/.nargo/bin:$PATH"
           cd circuits/hasher && nargo compile
           cp target/hasher.json ../../frontend/src/circuits/
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
 
       - name: Install dependencies
         working-directory: frontend
@@ -285,17 +332,28 @@ jobs:
             | sudo tar xz -C /usr/local/bin
           stellar --version
 
+      - name: Cache Noir toolchain
+        id: noir-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nargo
+            ~/.bb
+          key: ${{ runner.os }}-noir-${{ env.NARGO_VERSION }}-bb-${{ env.BB_VERSION }}
+
       - name: Install Nargo
+        if: steps.noir-cache.outputs.cache-hit != 'true'
         run: |
           curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
           export PATH="$HOME/.nargo/bin:$PATH"
-          noirup -v 1.0.0-beta.9
+          noirup -v ${{ env.NARGO_VERSION }}
 
       - name: Install Barretenberg
+        if: steps.noir-cache.outputs.cache-hit != 'true'
         run: |
           curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/bbup/install | bash
           export PATH="$HOME/.bb:$PATH"
-          bbup -v 0.87.0
+          bbup -v ${{ env.BB_VERSION }}
 
       - name: Cache Cargo
         uses: actions/cache@v4
