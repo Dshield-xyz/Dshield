@@ -1,0 +1,66 @@
+# CODEOWNERS — Dshield
+#
+# This file drives GitHub's PR auto-reviewer assignment. Each rule below
+# assigns ownership of the matching paths; PRs touching those paths will
+# automatically request a review from the listed owners.
+#
+# Format: <pattern> <owner1> <owner2> ...
+# Order matters: the LAST matching pattern wins. Put the most-specific
+# rules first and the catch-all rule at the end.
+#
+# Owner syntax:
+#   @username             GitHub user or org member handle
+#   @org/team-name        GitHub team handle (requires admin/owner rights)
+#
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# --------------------------------------------------
+# Default owners (apply when no more-specific rule matches below)
+# --------------------------------------------------
+*       @Dshield-xyz/maintainers
+
+# --------------------------------------------------
+# circuits/ — Noir zero-knowledge proof code
+# Owners must hold a Cryptography/Protocol Engineering mandate and have
+# reviewed at least one ZK circuit PR in the past 90 days.
+# --------------------------------------------------
+/circuits/                       @Dshield-xyz/maintainers
+/circuits/compliance/            @Dshield-xyz/maintainers
+/circuits/disclosure/            @Dshield-xyz/maintainers
+/circuits/hasher/                @Dshield-xyz/maintainers
+/circuits/shielded_pool/         @Dshield-xyz/maintainers
+
+# --------------------------------------------------
+# contracts/ — Soroban smart contracts (Rust)
+# Owners must hold a Smart Contract Engineering mandate and have completed
+# at least one Soroban audit cycle. Only the named contract owner may
+# approve changes to their respective area without a second maintainer.
+# --------------------------------------------------
+/contracts/                      @Dshield-xyz/maintainers
+/contracts/compliance/           @Dshield-xyz/maintainers
+/contracts/pool/                 @Dshield-xyz/maintainers
+/contracts/verifier/             @Dshield-xyz/maintainers
+
+# --------------------------------------------------
+# frontend/ — Next.js UI code
+# Owners must hold a Frontend Engineering mandate.
+# --------------------------------------------------
+/frontend/                       @Dshield-xyz/maintainers
+
+# --------------------------------------------------
+# Protocol-critical documentation
+# --------------------------------------------------
+/DESIGN.md                       @Dshield-xyz/maintainers
+/README.md                       @Dshield-xyz/maintainers
+/CONTRIBUTING.md                 @Dshield-xyz/maintainers
+/CODE_OF_CONDUCT.md              @Dshield-xyz/maintainers
+
+# --------------------------------------------------
+# CI / release tooling
+# --------------------------------------------------
+/.github/workflows/              @Dshield-xyz/maintainers
+/.github/CODEOWNERS              @Dshield-xyz/maintainers
+/.github/ISSUE_TEMPLATE/         @Dshield-xyz/maintainers
+/.github/PULL_REQUEST_TEMPLATE.md @Dshield-xyz/maintainers
+/justfile                        @Dshield-xyz/maintainers
+/Cargo.toml                      @Dshield-xyz/maintainers
