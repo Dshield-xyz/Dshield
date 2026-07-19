@@ -251,34 +251,12 @@ This allows DShield to verify proofs on-chain efficiently and affordably.
 
 ## Architecture
 
-```text
-+-----------------------+
-|      DShield App      |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Client-side Prover    |
-| (Noir / zkSNARKs)     |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Shielded Pool         |
-| Commitments           |
-| Nullifiers            |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Soroban Verifier      |
-| BN254 Verification    |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Stellar Network       |
-+-----------------------+
+```mermaid
+flowchart TD
+    A["DShield App"] --> B["Client-side Prover\n(Noir / zkSNARKs)"]
+    B --> C["Shielded Pool\nCommitments · Nullifiers"]
+    C --> D["Soroban Verifier\nBN254 Verification"]
+    D --> E["Stellar Network"]
 ```
 
 ## Tech Stack
