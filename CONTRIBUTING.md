@@ -1,0 +1,54 @@
+# Contributing to DShield
+
+Thanks for your interest in contributing. DShield is a shielded stablecoin wallet on Stellar (Soroban contracts + Noir circuits + a Next.js frontend), currently a testnet demo. This guide covers how to get set up and how to submit changes.
+
+## Ground rules
+
+- This is unaudited software handling a shielded pool of funds (testnet only, for now). Be conservative with changes to `contracts/` and `circuits/` — correctness bugs there are security bugs. See [Security Model](README.md#security-model) in the README before touching hashing, nullifiers, or recipient binding.
+- Open an issue before starting significant work (new features, architecture changes) so we can align on approach before you invest time.
+- Small fixes (typos, docs, obvious bugs) can go straight to a PR.
+
+## Getting set up
+
+Prerequisites: Rust + `wasm32v1-none` target, [`stellar` CLI](https://developers.stellar.org/docs/tools/cli), [Noir (`nargo`)](https://noir-lang.org/docs) + Barretenberg (`bb`), Node + `pnpm`, [`just`](https://github.com/casey/just).
+
+```bash
+just setup           # verify all prerequisites are installed
+just start && just deploy   # local network, deploy contracts, write frontend/.env.local
+cd frontend && pnpm install && pnpm dev
+```
+
+`pnpm install` in the `frontend/` directory automatically runs `husky` via the `prepare` lifecycle script, which installs a git pre-commit hook. This is a one-time step — after that, every `git commit` will run ESLint with auto-fix (`eslint --fix`) on any staged `src/**/*.{ts,tsx}` files via lint-staged before the commit goes through.
+
+> **Note for CI / non-interactive environments:** If you are running `pnpm install` in a context where you do not want the `prepare` script to execute (e.g., a Docker build that does not need git hooks), use `pnpm install --ignore-scripts`.
+
+Run `just --list` for the full set of available recipes (build, deploy, demo, clean, etc).
+
+## Making changes
+
+1. Fork the repo and create a branch off `dev`.
+2. Make your change. Keep diffs focused — unrelated cleanup makes review harder.
+3. Add or update tests for any behavior change. This repo treats tests as load-bearing:
+   - `just test-contracts` — Rust/Soroban contract tests
+   - `just test-frontend` — frontend unit tests
+   - `just test` — both
+   - `just test-e2e` (or `tests/e2e.sh`) — full on-chain deposit/withdraw loop against a local network
+4. If you touch a Noir circuit, make sure it still compiles and the corresponding proof round-trips: `nargo compile && nargo execute` in the circuit's directory, then regenerate the checked-in `frontend/src/circuits/*.json` / `frontend/public/circuits/*.json` artifacts the frontend embeds for client-side proving (see `just build-circuits`).
+5. The pre-commit hook runs `eslint --fix` automatically on staged `src/**/*.{ts,tsx}` files when you commit. You can also run `pnpm lint` in `frontend/` manually at any time. Make sure `pnpm build` type-checks cleanly before opening a PR.
+6. Open a PR against `dev`, not `main` — all active development merges into `dev`. Describe *why* the change is needed, not just what changed — link the issue if there is one. CI (circuit compile/proof round-trip, contract tests, frontend tests, lint, and an on-chain e2e run) must pass before merge.
+
+## Where things live
+
+- `circuits/` — Noir circuits (`shielded_pool`, `compliance`, `disclosure`, `hasher`), compiled with Barretenberg's UltraHonk (keccak transform).
+- `contracts/` — Soroban contracts in Rust: `pool` (deposits/withdrawals/nullifiers), `verifier` (BN254/UltraHonk proof verification), `compliance` (KYC registry + disclosure proof verification).
+- `frontend/` — Next.js wallet UI, including the client-side prover.
+- `scripts/`, `tests/e2e.sh` — demo and end-to-end scripts driven by the `justfile`.
+- `DESIGN.md` — deeper technical design notes if you want the full picture before diving in.
+
+## Reporting bugs / requesting features
+
+Use GitHub Issues. For anything that could be a security vulnerability (a way to double-spend, forge a proof, bypass recipient binding, drain the pool, etc.), do **not** open a public issue — see [SECURITY.md](SECURITY.md) instead.
+
+## Code of conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Be respectful; disagreements about code are fine, personal attacks aren't.
