@@ -237,6 +237,8 @@ Unbounded data (commitments, nullifiers) lives in **persistent storage** with TT
 
 > ⚠️ Testnet demo only — unaudited. `frontend/.env.local` holds throwaway dev/faucet/relayer secrets and is gitignored; do not reuse them or carry this to mainnet without an audit. The relayer takes no fee (eats gas) and is a single point of censorship (not theft).
 
+> ⚠️ **Rate limiter — single-instance only.** The API rate limiter (`frontend/src/lib/rateLimit.ts`) is in-memory and per-process: each server instance has its own counters, and they reset on every redeploy. This is fine for the current single-instance testnet setup, but provides no real protection in a multi-instance deployment (e.g. behind a load balancer). If you scale horizontally, replace it with a distributed limiter backed by a shared store such as [Upstash Redis](https://upstash.com/) or Vercel KV. See [SECURITY.md](SECURITY.md#rate-limiter--single-instance-only) for the full upgrade path.
+
 ---
 
 ## Why Stellar
@@ -257,34 +259,12 @@ This allows DShield to verify proofs on-chain efficiently and affordably.
 
 ## Architecture
 
-```text
-+-----------------------+
-|      DShield App      |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Client-side Prover    |
-| (Noir / zkSNARKs)     |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Shielded Pool         |
-| Commitments           |
-| Nullifiers            |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Soroban Verifier      |
-| BN254 Verification    |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Stellar Network       |
-+-----------------------+
+```mermaid
+flowchart TD
+    A["DShield App"] --> B["Client-side Prover\n(Noir / zkSNARKs)"]
+    B --> C["Shielded Pool\nCommitments · Nullifiers"]
+    C --> D["Soroban Verifier\nBN254 Verification"]
+    D --> E["Stellar Network"]
 ```
 
 ## Tech Stack
