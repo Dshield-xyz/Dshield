@@ -14,6 +14,12 @@ Built for **Stellar Hacks: Real-World ZK**, DShield demonstrates how privacy and
 
 ---
 
+## New to ZK or Stellar?
+
+See **[GLOSSARY.md](GLOSSARY.md)** for plain-English definitions of terms like *nullifier*, *commitment*, *Merkle root*, *UltraHonk*, *Poseidon2*, *selective disclosure*, *relayer*, and more — everything you need to navigate the codebase without a cryptography background.
+
+---
+
 ## Vision
 
 Today's digital payments force users to choose between:
@@ -401,6 +407,12 @@ DShield showcases how Zero-Knowledge technology can unlock practical privacy for
 ## Team
 
 Built with the belief that privacy should be a default right, not a premium feature.
+
+---
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and PR guidelines. If you're new to ZK cryptography or Soroban, check [GLOSSARY.md](GLOSSARY.md) for plain-English definitions of the key terms used throughout this codebase. Please review the [Code of Conduct](CODE_OF_CONDUCT.md) before participating, and report security vulnerabilities per [SECURITY.md](SECURITY.md) rather than opening a public issue.
 
 ---
 
