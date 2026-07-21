@@ -13,10 +13,11 @@ overrides:
   # writing (npm's latest is still 6.6.1, the vulnerable version) — nothing
   # to pin to. Re-check periodically; `pnpm audit --prod` will surface it
   # again once a fix ships.
-  protobufjs: "^7.6.3"
+  protobufjs: "^7.6.5"
   postcss: "^8.5.10"
   uuid: "^11.1.1"
   ws: "^8.21.0"
+  axios: "^1.18.1"
 allowBuilds:
   '@reown/appkit': true
   '@stellar/stellar-sdk': true
