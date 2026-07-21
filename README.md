@@ -10,6 +10,12 @@ Built for **Stellar Hacks: Real-World ZK**, DShield demonstrates how privacy and
 
 ---
 
+## New to ZK or Stellar?
+
+See **[GLOSSARY.md](GLOSSARY.md)** for plain-English definitions of terms like *nullifier*, *commitment*, *Merkle root*, *UltraHonk*, *Poseidon2*, *selective disclosure*, *relayer*, and more — everything you need to navigate the codebase without a cryptography background.
+
+---
+
 ## Vision
 
 Today's digital payments force users to choose between:
@@ -229,6 +235,8 @@ Unbounded data (commitments, nullifiers) lives in **persistent storage** with TT
 
 > ⚠️ Testnet demo only — unaudited. `frontend/.env.local` holds throwaway dev/faucet/relayer secrets and is gitignored; do not reuse them or carry this to mainnet without an audit. The relayer takes no fee (eats gas) and is a single point of censorship (not theft).
 
+> ⚠️ **Rate limiter — single-instance only.** The API rate limiter (`frontend/src/lib/rateLimit.ts`) is in-memory and per-process: each server instance has its own counters, and they reset on every redeploy. This is fine for the current single-instance testnet setup, but provides no real protection in a multi-instance deployment (e.g. behind a load balancer). If you scale horizontally, replace it with a distributed limiter backed by a shared store such as [Upstash Redis](https://upstash.com/) or Vercel KV. See [SECURITY.md](SECURITY.md#rate-limiter--single-instance-only) for the full upgrade path.
+
 ---
 
 ## Why Stellar
@@ -277,6 +285,12 @@ This allows DShield to verify proofs on-chain efficiently and affordably.
 +-----------------------+
 | Stellar Network |
 +-----------------------+
+```mermaid
+flowchart TD
+    A["DShield App"] --> B["Client-side Prover\n(Noir / zkSNARKs)"]
+    B --> C["Shielded Pool\nCommitments · Nullifiers"]
+    C --> D["Soroban Verifier\nBN254 Verification"]
+    D --> E["Stellar Network"]
 ```
 
 ## Tech Stack
@@ -424,7 +438,7 @@ Built with the belief that privacy should be a default right, not a premium feat
 
 ## Contributing
 
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and PR guidelines. Please review the [Code of Conduct](CODE_OF_CONDUCT.md) before participating, and report security vulnerabilities per [SECURITY.md](SECURITY.md) rather than opening a public issue.
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and PR guidelines. If you're new to ZK cryptography or Soroban, check [GLOSSARY.md](GLOSSARY.md) for plain-English definitions of the key terms used throughout this codebase. Please review the [Code of Conduct](CODE_OF_CONDUCT.md) before participating, and report security vulnerabilities per [SECURITY.md](SECURITY.md) rather than opening a public issue.
 
 ---
 
