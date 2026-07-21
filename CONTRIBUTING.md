@@ -48,6 +48,16 @@ Run `just --list` for the full set of available recipes (build, deploy, demo, cl
 
 Use GitHub Issues. For anything that could be a security vulnerability (a way to double-spend, forge a proof, bypass recipient binding, drain the pool, etc.), do **not** open a public issue — see [SECURITY.md](SECURITY.md) instead.
 
+## Changelog Requirements
+
+All user-facing or architectural PRs must include a corresponding entry in the `CHANGELOG.md` file under the `## [Unreleased]` header, utilizing standard changelog tags:
+- `Added` - for new features
+- `Changed` - for changes in existing functionality
+- `Deprecated` - for soon-to-be removed features
+- `Removed` - for now removed features
+- `Fixed` - for any bug fixes
+- `Security` - in case of vulnerabilities
+
 ## Code of conduct
 
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Be respectful; disagreements about code are fine, personal attacks aren't.
