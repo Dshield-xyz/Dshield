@@ -49,36 +49,3 @@ the fix's changelog or commit message.
 Given the project is a hackathon-stage, unaudited testnet demo, we don't yet
 have a bug bounty program. Please still give us a reasonable window to land
 a fix before any public disclosure.
-
-## Deployment Limitations
-
-### Rate Limiter — Single-Instance Only
-
-The API rate limiter (`frontend/src/lib/rateLimit.ts`) is **in-memory and
-per-process**. Each server instance maintains its own independent counters,
-and all counters reset on every redeploy or process restart.
-
-**Implications for multi-instance deployments:**
-
-- Running two or more Next.js instances (e.g. behind a load balancer, on a
-  container platform, or with horizontal pod autoscaling) means each instance
-  enforces the limit independently. An attacker can trivially multiply their
-  effective request budget by the number of instances.
-- The current setup is intentional and acceptable for a **single-instance
-  testnet demo** — it still meaningfully raises the cost of spamming the
-  faucet or consuming the relayer's RPC quota in that context.
-
-**Upgrade path for multi-instance deployments:**
-
-If you scale beyond a single process, replace or wrap `checkRateLimit` with a
-distributed counter backed by a shared store. Recommended options:
-
-| Option | Notes |
-| ------ | ----- |
-| [Upstash Redis](https://upstash.com/) | Serverless-friendly; drop-in with `@upstash/ratelimit` |
-| [Redis](https://redis.io/) (`ioredis`) | Self-hosted; use a sliding-window or fixed-window Lua script |
-| [Vercel KV](https://vercel.com/docs/storage/vercel-kv) | Managed Redis backed by Upstash; zero config on Vercel |
-
-Any of these approaches shares counters across all instances and survives
-redeployment, providing the per-IP limits that `checkRateLimit` currently
-only approximates on a per-instance basis.

@@ -14,6 +14,12 @@ Built for **Stellar Hacks: Real-World ZK**, DShield demonstrates how privacy and
 
 ---
 
+## New to ZK or Stellar?
+
+See **[GLOSSARY.md](GLOSSARY.md)** for plain-English definitions of terms like *nullifier*, *commitment*, *Merkle root*, *UltraHonk*, *Poseidon2*, *selective disclosure*, *relayer*, and more — everything you need to navigate the codebase without a cryptography background.
+
+---
+
 ## Vision
 
 Today's digital payments force users to choose between:
@@ -253,34 +259,12 @@ This allows DShield to verify proofs on-chain efficiently and affordably.
 
 ## Architecture
 
-```text
-+-----------------------+
-|      DShield App      |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Client-side Prover    |
-| (Noir / zkSNARKs)     |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Shielded Pool         |
-| Commitments           |
-| Nullifiers            |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Soroban Verifier      |
-| BN254 Verification    |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Stellar Network       |
-+-----------------------+
+```mermaid
+flowchart TD
+    A["DShield App"] --> B["Client-side Prover\n(Noir / zkSNARKs)"]
+    B --> C["Shielded Pool\nCommitments · Nullifiers"]
+    C --> D["Soroban Verifier\nBN254 Verification"]
+    D --> E["Stellar Network"]
 ```
 
 ## Tech Stack

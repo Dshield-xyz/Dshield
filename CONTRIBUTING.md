@@ -2,6 +2,8 @@
 
 Thanks for your interest in contributing. DShield is a shielded stablecoin wallet on Stellar (Soroban contracts + Noir circuits + a Next.js frontend), currently a testnet demo. This guide covers how to get set up and how to submit changes.
 
+> **New to ZK or Stellar?** See [GLOSSARY.md](GLOSSARY.md) for plain-English definitions of terms like *nullifier*, *commitment*, *Merkle root*, *UltraHonk*, *Poseidon2*, *selective disclosure*, *relayer*, and more — everything you need before diving in.
+
 ## Ground rules
 
 - This is unaudited software handling a shielded pool of funds (testnet only, for now). Be conservative with changes to `contracts/` and `circuits/` — correctness bugs there are security bugs. See [Security Model](README.md#security-model) in the README before touching hashing, nullifiers, or recipient binding.
@@ -17,10 +19,6 @@ just setup           # verify all prerequisites are installed
 just start && just deploy   # local network, deploy contracts, write frontend/.env.local
 cd frontend && pnpm install && pnpm dev
 ```
-
-`pnpm install` in the `frontend/` directory automatically runs `husky` via the `prepare` lifecycle script, which installs a git pre-commit hook. This is a one-time step — after that, every `git commit` will run ESLint with auto-fix (`eslint --fix`) on any staged `src/**/*.{ts,tsx}` files via lint-staged before the commit goes through.
-
-> **Note for CI / non-interactive environments:** If you are running `pnpm install` in a context where you do not want the `prepare` script to execute (e.g., a Docker build that does not need git hooks), use `pnpm install --ignore-scripts`.
 
 Run `just --list` for the full set of available recipes (build, deploy, demo, clean, etc).
 
@@ -45,6 +43,7 @@ Run `just --list` for the full set of available recipes (build, deploy, demo, cl
 - `frontend/` — Next.js wallet UI, including the client-side prover.
 - `scripts/`, `tests/e2e.sh` — demo and end-to-end scripts driven by the `justfile`.
 - `DESIGN.md` — deeper technical design notes if you want the full picture before diving in.
+- `GLOSSARY.md` — plain-English definitions of ZK and Soroban terms used throughout the codebase.
 
 ## Reporting bugs / requesting features
 
