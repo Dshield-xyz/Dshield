@@ -177,22 +177,21 @@ export function NoteImport({
 
         <input
           ref={inputRef}
-          type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           disabled={disabled}
-          placeholder={tags.length === 0 ? "dshield-v1-… (paste & Enter)" : "Add another…"}
+          placeholder={tags.length === 0 ? "dshield-v1-â€¦ (paste & Enter)" : "Add anotherâ€¦"}
           className="min-w-[200px] flex-1 bg-transparent font-mono text-xs text-zinc-300 outline-none placeholder-zinc-600 disabled:opacity-50"
         />
       </div>
-
       {/* File picker */}
       <input
         ref={fileRef}
         type="file"
         accept=".txt,text/plain"
+        aria-label="Import notes from a text file"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];

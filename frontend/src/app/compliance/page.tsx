@@ -178,9 +178,9 @@ export default function CompliancePage() {
         {mode === "generate" && (
           <Card>
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-zinc-400">
+              <h2 className="text-sm font-medium text-zinc-400">
                 Your Notes ({allNotes.length})
-              </h3>
+              </h2>
               {allNotes.length > 0 && (
                 <button
                   disabled={isLoading}

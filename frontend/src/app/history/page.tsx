@@ -144,7 +144,7 @@ export default function HistoryPage() {
       />
 
       {/* Stats */}
-      <div className="mt-8 grid grid-cols-3 gap-3">
+      <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Card padding="sm" className="text-center">
           <p className="text-2xl font-bold text-green-400">{stats.deposits}</p>
           <p className="mt-1 text-xs text-zinc-500">Deposits</p>

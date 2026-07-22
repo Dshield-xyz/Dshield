@@ -164,6 +164,8 @@ IDX=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local 
 [[ "$IDX" == "0" ]] && ok "get_next_index == 0" || err "get_next_index" "expected 0, got $IDX"
 
 DEP_AMT=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local -- get_deposit_amount 2>&1 | tail -1)
+DEP_AMT="${DEP_AMT%\"}"
+DEP_AMT="${DEP_AMT#\"}"
 [[ "$DEP_AMT" == "$DEPOSIT_AMOUNT" ]] && ok "get_deposit_amount == $DEPOSIT_AMOUNT" || err "get_deposit_amount" "expected $DEPOSIT_AMOUNT, got $DEP_AMT"
 
 # ─── Test: deposit ───
