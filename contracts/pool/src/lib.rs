@@ -81,6 +81,11 @@ fn key_commitment_by_index_prefix() -> Symbol {
 const TREE_DEPTH: u32 = 20;
 const MAX_LEAVES: u32 = 1u32 << TREE_DEPTH;
 const ROOT_HISTORY_SIZE: u32 = 30;
+// Upper bound on how many leaves a single get_commitments_page call will
+// return, regardless of the caller-requested limit. Keeps one invocation's
+// persistent-storage reads well under Soroban's per-transaction CPU and
+// ledger-read-footprint limits even as a pool grows toward MAX_LEAVES.
+const MAX_PAGE_SIZE: u32 = 100;
 
 // Storage TTL management. Commitments, the commitment-by-index map, and
 // nullifiers grow without bound (one entry per deposit/withdrawal), so they
@@ -540,6 +545,45 @@ impl PoolContract {
         out
     }
 
+    /// Returns commitments in leaf order for the half-open range
+    /// `[start, start + limit)`, clamped to `next_index` and to
+    /// `MAX_PAGE_SIZE`. Missing slots are returned as the zero leaf, same as
+    /// `get_commitments`. Callers should page through the full range with
+    /// successive calls (e.g. `start += result.len()` until a short page is
+    /// returned) instead of relying on `get_commitments`, which reads every
+    /// leaf in one invocation and will exceed Soroban's per-transaction
+    /// CPU/footprint limits once a pool holds enough deposits.
+    pub fn get_commitments_page(
+        env: Env,
+        start: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<BytesN<32>> {
+        let next_index: u32 = env
+            .storage()
+            .instance()
+            .get(&key_next_index())
+            .unwrap_or(0u32);
+        let mut out = SorobanVec::new(&env);
+        if start >= next_index {
+            return out;
+        }
+        let zero = BytesN::from_array(&env, &[0u8; 32]);
+        let capped_limit = limit.min(MAX_PAGE_SIZE);
+        let end = start.saturating_add(capped_limit).min(next_index);
+        let mut i = start;
+        while i < end {
+            let ci_key = (key_commitment_by_index_prefix(), i);
+            let c: BytesN<32> = env
+                .storage()
+                .persistent()
+                .get(&ci_key)
+                .unwrap_or_else(|| zero.clone());
+            out.push_back(c);
+            i += 1;
+        }
+        out
+    }
+
     pub fn get_token(env: Env) -> Result<Address, PoolError> {
         env.storage()
             .instance()
@@ -882,6 +926,106 @@ mod tests {
         let (pool_id, _, _) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
         assert_eq!(client.get_commitments().len(), 0);
+    }
+
+    #[test]
+    fn test_get_commitments_page_lands_exactly_on_next_index() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let commits: Vec<BytesN<32>> = (1u8..=7)
+            .map(|seed| dummy_commitment(&env, seed))
+            .collect();
+        for c in commits.iter() {
+            client.deposit(&depositor, c);
+        }
+        assert_eq!(client.get_next_index(), 7);
+
+        // A page whose start+limit lands exactly on next_index should return
+        // the remaining leaves with no zero-padding beyond them.
+        let page = client.get_commitments_page(&5, &2);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page.get(0).unwrap(), commits[5]);
+        assert_eq!(page.get(1).unwrap(), commits[6]);
+
+        // A page that starts exactly at next_index (0 remaining) is empty.
+        let empty = client.get_commitments_page(&7, &5);
+        assert_eq!(empty.len(), 0);
+
+        // Paging through in full reconstructs the same list/order as
+        // get_commitments, and the same root.
+        let mut paged: SorobanVec<BytesN<32>> = SorobanVec::new(&env);
+        let mut start = 0u32;
+        loop {
+            let page = client.get_commitments_page(&start, &3);
+            if page.is_empty() {
+                break;
+            }
+            let page_len = page.len();
+            for c in page.iter() {
+                paged.push_back(c);
+            }
+            start += page_len;
+        }
+        assert_eq!(paged, client.get_commitments());
+        assert_eq!(
+            rebuild_root(&env, &paged),
+            client.get_root().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_get_commitments_page_out_of_range_start_is_empty() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &dummy_commitment(&env, 1));
+        client.deposit(&depositor, &dummy_commitment(&env, 2));
+        assert_eq!(client.get_next_index(), 2);
+
+        // start == next_index
+        assert_eq!(client.get_commitments_page(&2, &10).len(), 0);
+        // start far beyond next_index
+        assert_eq!(client.get_commitments_page(&1_000, &10).len(), 0);
+    }
+
+    #[test]
+    fn test_get_commitments_page_empty_pool() {
+        let env = Env::default();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        assert_eq!(client.get_commitments_page(&0, &10).len(), 0);
+    }
+
+    #[test]
+    fn test_get_commitments_page_clamps_limit_above_max() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let commits: Vec<BytesN<32>> = (1u8..=5)
+            .map(|seed| dummy_commitment(&env, seed))
+            .collect();
+        for c in commits.iter() {
+            client.deposit(&depositor, c);
+        }
+
+        // A limit far above MAX_PAGE_SIZE is silently clamped, not rejected —
+        // the caller just gets at most MAX_PAGE_SIZE leaves (or fewer, if
+        // next_index is smaller than that, as here).
+        let page = client.get_commitments_page(&0, &1_000_000);
+        assert_eq!(page.len(), 5);
+        for (i, c) in commits.iter().enumerate() {
+            assert_eq!(page.get(i as u32).unwrap(), *c);
+        }
     }
 
     #[test]
