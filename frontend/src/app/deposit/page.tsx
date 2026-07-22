@@ -183,11 +183,19 @@ export default function DepositPage() {
     }
   }
 
-  function copyText(text: string, key: string) {
-    void navigator.clipboard?.writeText(text);
+async function copyText(text: string, key: string) {
+  try {
+    if (!navigator.clipboard) {
+      throw new Error("Clipboard API not available");
+    }
+    await navigator.clipboard.writeText(text);
     setCopiedKey(key);
     setTimeout(() => setCopiedKey((c) => (c === key ? "" : c)), 1500);
+  } catch (err) {
+    console.error("Copy to clipboard failed:", err);
+    toast("Couldn't copy to clipboard — please copy it manually.", "error");
   }
+}
 
   function downloadBackup() {
     const body = sessionNotes.map(serializeNote).join("\n") + "\n";
