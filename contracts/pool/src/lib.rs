@@ -30,6 +30,8 @@ pub enum PoolError {
     RecipientMismatch = 11,
     UnsupportedRecipient = 12,
     AmountOverflow = 13,
+    BatchTooLarge = 14,
+    InvalidDepositAmount = 15,
 }
 
 #[contractevent(topics = ["deposit"], data_format = "map")]
@@ -81,6 +83,15 @@ fn key_commitment_by_index_prefix() -> Symbol {
 const TREE_DEPTH: u32 = 20;
 const MAX_LEAVES: u32 = 1u32 << TREE_DEPTH;
 const ROOT_HISTORY_SIZE: u32 = 30;
+// Each batched commitment walks the full TREE_DEPTH (20) on insertion, doing
+// a Poseidon2 hash plus a persistent/instance read-or-write at every level.
+// Empirically, a 20-leaf `deposit_batch` from an empty tree already exceeds
+// Soroban's default per-transaction instruction limit (604M > 600M budget);
+// 19 barely fits (see test_deposit_batch_accepts_max_batch_size, which runs
+// against that real limit rather than an unlimited test budget). Capping
+// well under that, independent of the tree-capacity check, keeps a batch
+// inside the resource budget instead of reverting with an opaque host error.
+const MAX_BATCH_SIZE: u32 = 15;
 
 // Storage TTL management. Commitments, the commitment-by-index map, and
 // nullifiers grow without bound (one entry per deposit/withdrawal), so they
@@ -302,6 +313,9 @@ impl PoolContract {
         if env.storage().instance().has(&key_verifier()) {
             return Err(PoolError::AlreadyInitialized);
         }
+        if deposit_amount <= 0 {
+            return Err(PoolError::InvalidDepositAmount);
+        }
         env.storage().instance().set(&key_verifier(), &verifier);
         env.storage().instance().set(&key_token(), &token);
         env.storage()
@@ -365,6 +379,9 @@ impl PoolContract {
         let count = commitments.len();
         if count == 0 {
             return Err(PoolError::InvalidPublicInputs);
+        }
+        if count > MAX_BATCH_SIZE {
+            return Err(PoolError::BatchTooLarge);
         }
 
         let mut next_index: u32 = env
@@ -957,6 +974,79 @@ mod tests {
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
         );
+    }
+
+    #[test]
+    fn test_deposit_batch_rejects_oversized_batch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let token = TokenClient::new(&env, &token_addr);
+        let balance_before = token.balance(&depositor);
+
+        let mut commitments = SorobanVec::new(&env);
+        for seed in 0..(MAX_BATCH_SIZE + 1) {
+            commitments.push_back(dummy_commitment(&env, seed as u8));
+        }
+
+        let result = client.try_deposit_batch(&depositor, &commitments);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::BatchTooLarge);
+        // Rejected up-front: no leaves inserted, no tokens moved.
+        assert_eq!(client.get_next_index(), 0);
+        assert_eq!(token.balance(&depositor), balance_before);
+    }
+
+    #[test]
+    fn test_deposit_batch_accepts_max_batch_size() {
+        // reset_unlimited() only disables the local CPU/memory metering
+        // budget; the separate "invocation exceeded transaction resource
+        // limits" check (real network instruction/footprint caps) still
+        // applies, so this proves MAX_BATCH_SIZE fits in one transaction, not
+        // just that it satisfies the in-contract check.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let mut commitments = SorobanVec::new(&env);
+        for seed in 0..MAX_BATCH_SIZE {
+            commitments.push_back(dummy_commitment(&env, seed as u8));
+        }
+
+        let first_index = client.deposit_batch(&depositor, &commitments);
+        assert_eq!(first_index, 0);
+        assert_eq!(client.get_next_index(), MAX_BATCH_SIZE);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_constructor_rejects_zero_deposit_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let admin = <Address as TestAddress>::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let verifier_id = <Address as TestAddress>::generate(&env);
+
+        let _pool_id: Address =
+            env.register(PoolContract, (verifier_id, token_id.address(), 0i128));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_constructor_rejects_negative_deposit_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let admin = <Address as TestAddress>::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let verifier_id = <Address as TestAddress>::generate(&env);
+
+        let _pool_id: Address =
+            env.register(PoolContract, (verifier_id, token_id.address(), -1i128));
     }
 
     #[test]
