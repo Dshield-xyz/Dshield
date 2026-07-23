@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added CSV/JSON export of visible activity on the History page, for compliance and regulatory reporting
 - Added local development environment documentation template to README.md
 - Added frontend/.env.local.example configuration template
 - Added root .gitignore rules for environment files and project-specific artifacts
