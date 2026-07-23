@@ -14,9 +14,11 @@ import {
 } from "@/lib/stellar";
 import {
   getActiveNotes,
+  getNotes,
   markNoteSpent,
   parseNote,
   saveNoteIfNew,
+  serializeNotes,
   type ShieldedNote,
 } from "@/lib/notes";
 import { getAllCommitments, clearDeposits } from "@/lib/deposits";
@@ -106,6 +108,7 @@ export default function WithdrawPage() {
   }, []);
 
   const activeNotes = typeof window !== "undefined" ? getActiveNotes() : [];
+  const allNotes = typeof window !== "undefined" ? getNotes() : [];
 
   function toggleNote(note: ShieldedNote) {
     if (isLoading) return;
@@ -123,6 +126,17 @@ export default function WithdrawPage() {
   const selectedNotes = activeNotes.filter((n) =>
     selectedCommitments.has(n.commitment),
   );
+
+  function downloadAllNotes() {
+    if (allNotes.length === 0) return;
+    const blob = new Blob([serializeNotes(allNotes)], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dshield-notes-${Date.now()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   async function withdrawNote(
     note: ShieldedNote,
@@ -308,19 +322,30 @@ export default function WithdrawPage() {
             <h3 className="text-sm font-medium text-zinc-400">
               Your Notes ({activeNotes.length} available)
             </h3>
-            {activeNotes.length > 0 && (
-              <button
-                disabled={isLoading}
-                onClick={() =>
-                  selectedCommitments.size === activeNotes.length
-                    ? setSelectedCommitments(new Set())
-                    : setSelectedCommitments(new Set(activeNotes.map((n) => n.commitment)))
-                }
-                className="text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
-              >
-                {selectedCommitments.size === activeNotes.length ? "Deselect all" : "Select all"}
-              </button>
-            )}
+            <div className="flex items-center gap-3">
+              {allNotes.length > 0 && (
+                <button
+                  type="button"
+                  onClick={downloadAllNotes}
+                  className="text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+                >
+                  Download all
+                </button>
+              )}
+              {activeNotes.length > 0 && (
+                <button
+                  disabled={isLoading}
+                  onClick={() =>
+                    selectedCommitments.size === activeNotes.length
+                      ? setSelectedCommitments(new Set())
+                      : setSelectedCommitments(new Set(activeNotes.map((n) => n.commitment)))
+                  }
+                  className="text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
+                >
+                  {selectedCommitments.size === activeNotes.length ? "Deselect all" : "Select all"}
+                </button>
+              )}
+            </div>
           </div>
 
           {activeNotes.length === 0 ? (
