@@ -432,15 +432,24 @@ export default function DepositPage() {
                         >
                           <WhatsAppIcon className="h-4 w-4" />
                         </a>
-                        <a
-                          href={`https://x.com/intent/tweet?text=${xText}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title="X (public)"
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const confirmed = window.confirm(
+                              "This will be PUBLIC on X — anyone who sees it can steal these funds. Continue?",
+                            );
+                            if (!confirmed) return;
+                            window.open(
+                              `https://x.com/intent/tweet?text=${xText}`,
+                              "_blank",
+                              "noopener,noreferrer",
+                            );
+                          }}
+                          title="X (public) — posts your private note publicly"
                           className="rounded-lg border border-zinc-600 p-2 text-zinc-300 hover:border-zinc-400 hover:text-white"
                         >
                           <XIcon className="h-4 w-4" />
-                        </a>
+                        </button>
                       </div>
                     </div>
                   )}
