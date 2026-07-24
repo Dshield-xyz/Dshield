@@ -14,9 +14,11 @@ import {
 } from "@/lib/stellar";
 import {
   getActiveNotes,
+  getNotes,
   markNoteSpent,
   parseNote,
   saveNoteIfNew,
+  serializeNotes,
   type ShieldedNote,
 } from "@/lib/notes";
 import { getAllCommitments, clearDeposits } from "@/lib/deposits";
@@ -29,7 +31,7 @@ import {
   syncDepositsFromChain,
   fetchCommitmentsFromChain,
 } from "@/lib/indexer";
-import { proveWithdrawal } from "@/lib/prover";
+import { proveWithdrawal, type ProofStage } from "@/lib/prover";
 import { friendlyError } from "@/lib/errors";
 import { syncSpentNotes } from "@/lib/sync";
 import { truncateMiddle } from "@/lib/format";
@@ -62,6 +64,14 @@ const STEP_LABELS: Record<WithdrawStep, string> = {
   done: "Done!",
 };
 
+// Finer-grained status shown during "generating_proof", which is by far the
+// longest step. Proving runs in a Web Worker (see lib/prover.ts) so the UI
+// stays responsive while these are displayed.
+const PROOF_STAGE_LABELS: Record<ProofStage, string> = {
+  executing: "Executing the circuit — this can take about a minute…",
+  proving: "Creating the cryptographic proof…",
+};
+
 const PROGRESS_STEPS = [
   "checking_nullifier",
   "building_tree",
@@ -81,6 +91,7 @@ export default function WithdrawPage() {
   const { address, signTransaction } = useWallet();
   const { toast } = useToast();
   const [step, setStep] = useState<WithdrawStep>("idle");
+  const [proofStage, setProofStage] = useState<ProofStage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(new Set());
   const [recipient, setRecipient] = useState("");
@@ -106,6 +117,7 @@ export default function WithdrawPage() {
   }, []);
 
   const activeNotes = typeof window !== "undefined" ? getActiveNotes() : [];
+  const allNotes = typeof window !== "undefined" ? getNotes() : [];
 
   function toggleNote(note: ShieldedNote) {
     if (isLoading) return;
@@ -123,6 +135,17 @@ export default function WithdrawPage() {
   const selectedNotes = activeNotes.filter((n) =>
     selectedCommitments.has(n.commitment),
   );
+
+  function downloadAllNotes() {
+    if (allNotes.length === 0) return;
+    const blob = new Blob([serializeNotes(allNotes)], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dshield-notes-${Date.now()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   async function withdrawNote(
     note: ShieldedNote,
@@ -174,16 +197,21 @@ export default function WithdrawPage() {
     }
 
     onStep("generating_proof");
+    setProofStage(null);
     const recipientHash = await computeRecipientHash(recipientAddr);
-    const { proof, publicInputs } = await proveWithdrawal({
-      nullifier: note.nullifier,
-      secret: note.secret,
-      root: onChainRoot,
-      nullifierHash,
-      recipientHash,
-      pathSiblings: merkle.pathSiblings,
-      pathBits: merkle.pathBits,
-    });
+    const { proof, publicInputs } = await proveWithdrawal(
+      {
+        nullifier: note.nullifier,
+        secret: note.secret,
+        root: onChainRoot,
+        nullifierHash,
+        recipientHash,
+        pathSiblings: merkle.pathSiblings,
+        pathBits: merkle.pathBits,
+      },
+      setProofStage,
+    );
+    setProofStage(null);
 
     onStep("submitting");
     const relayed = await relayWithdrawal({ poolId, recipient: recipientAddr, publicInputs, proof });
@@ -308,19 +336,30 @@ export default function WithdrawPage() {
             <h3 className="text-sm font-medium text-zinc-400">
               Your Notes ({activeNotes.length} available)
             </h3>
-            {activeNotes.length > 0 && (
-              <button
-                disabled={isLoading}
-                onClick={() =>
-                  selectedCommitments.size === activeNotes.length
-                    ? setSelectedCommitments(new Set())
-                    : setSelectedCommitments(new Set(activeNotes.map((n) => n.commitment)))
-                }
-                className="text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
-              >
-                {selectedCommitments.size === activeNotes.length ? "Deselect all" : "Select all"}
-              </button>
-            )}
+            <div className="flex items-center gap-3">
+              {allNotes.length > 0 && (
+                <button
+                  type="button"
+                  onClick={downloadAllNotes}
+                  className="text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+                >
+                  Download all
+                </button>
+              )}
+              {activeNotes.length > 0 && (
+                <button
+                  disabled={isLoading}
+                  onClick={() =>
+                    selectedCommitments.size === activeNotes.length
+                      ? setSelectedCommitments(new Set())
+                      : setSelectedCommitments(new Set(activeNotes.map((n) => n.commitment)))
+                  }
+                  className="text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
+                >
+                  {selectedCommitments.size === activeNotes.length ? "Deselect all" : "Select all"}
+                </button>
+              )}
+            </div>
           </div>
 
           {activeNotes.length === 0 ? (
@@ -478,7 +517,11 @@ export default function WithdrawPage() {
               </p>
             )}
             <ProgressSteps
-              label={STEP_LABELS[step]}
+              label={
+                step === "generating_proof" && proofStage
+                  ? PROOF_STAGE_LABELS[proofStage]
+                  : STEP_LABELS[step]
+              }
               steps={PROGRESS_STEPS}
               current={step}
             />
