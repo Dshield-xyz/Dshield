@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useWallet } from "@/components/WalletProvider";
-import { buttonVariants } from "@/components/ui/Button";
-import { getNotes } from "@/lib/notes";
+import { Button, buttonVariants } from "@/components/ui/Button";
+import { getNotes, serializeNotes } from "@/lib/notes";
 import { getKyc } from "@/lib/kyc";
 import { formatStroopsOrDash } from "@/lib/format";
 import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
@@ -83,6 +83,7 @@ export default function HistoryPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef(false);
+  const allNotes = typeof window !== "undefined" ? getNotes() : [];
 
   const filtered =
     filter === "all" ? activity : activity.filter((a) => a.type === filter);
@@ -93,6 +94,17 @@ export default function HistoryPage() {
   function changeFilter(next: FilterType) {
     setFilter(next);
     setVisibleCount(PAGE_SIZE); // restart pagination for the new filter
+  }
+
+  function downloadAllNotes() {
+    if (allNotes.length === 0) return;
+    const blob = new Blob([serializeNotes(allNotes)], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dshield-notes-${Date.now()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   // Reveal the next batch when the sentinel near the end of the list scrolls
@@ -142,6 +154,14 @@ export default function HistoryPage() {
         title="History"
         description="Your deposits, withdrawals, and compliance activity. This record lives only on this device — it's never published anywhere."
       />
+
+      {allNotes.length > 0 && (
+        <div className="mt-6 flex justify-end">
+          <Button variant="outline" size="sm" onClick={downloadAllNotes}>
+            Download all notes (.txt)
+          </Button>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3">
