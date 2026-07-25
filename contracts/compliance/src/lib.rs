@@ -1074,9 +1074,10 @@ mod tests {
 
         let verifier_id = <Address as TestAddress>::generate(env);
         let deposit_amount: i128 = 100_000_000; // 10 USDC tier, matches justfile
+        let pool_admin = <Address as TestAddress>::generate(env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), deposit_amount),
+            (verifier_id, token_id.address(), deposit_amount, pool_admin),
         );
         let mut arr = [0u8; 32];
         arr[0] = 7;
