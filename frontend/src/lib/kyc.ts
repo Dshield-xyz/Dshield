@@ -1,4 +1,7 @@
+import { withStorageLock, onStorageChange } from "./storageLock";
+
 const KYC_KEY = "dshield_kyc";
+const LOCK_KEY = "dshield_kyc_lock";
 
 export interface KycRecord {
   preimage: string;
@@ -8,7 +11,9 @@ export interface KycRecord {
 }
 
 export function saveKyc(record: KycRecord): void {
-  localStorage.setItem(KYC_KEY, JSON.stringify(record));
+  withStorageLock(LOCK_KEY, () => {
+    localStorage.setItem(KYC_KEY, JSON.stringify(record));
+  });
 }
 
 export function getKyc(): KycRecord | null {
@@ -19,5 +24,16 @@ export function getKyc(): KycRecord | null {
 }
 
 export function clearKyc(): void {
-  localStorage.removeItem(KYC_KEY);
+  withStorageLock(LOCK_KEY, () => {
+    localStorage.removeItem(KYC_KEY);
+  });
+}
+
+/** Subscribe to cross-tab/window KYC updates via storage events. */
+export function onKycChange(
+  callback: (record: KycRecord | null) => void,
+): () => void {
+  return onStorageChange(KYC_KEY, () => {
+    callback(getKyc());
+  });
 }

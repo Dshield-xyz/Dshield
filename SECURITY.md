@@ -28,6 +28,14 @@ Out of scope: issues that only affect local dev tooling, the demo scripts,
 or purely cosmetic frontend bugs with no security impact — file those as
 normal GitHub issues instead.
 
+## Known Security Limitations
+
+### Plaintext Local Note & KYC Storage
+- **Unencrypted LocalStorage**: Bearer-spendable notes (`dshield_notes`) and KYC preimages (`dshield_kyc`) are stored as unencrypted JSON in browser `localStorage`.
+- **Warning**: **Do not use DShield on a shared or public device; notes are stored in plaintext in your browser.** Any malicious browser extension, XSS exploit, or physical access to an active browser session can inspect notes verbatim and withdraw spendable funds.
+- **Cross-Tab Concurrency**: Read-modify-write storage operations are serialized using `withStorageLock` and `storage` event listeners to prevent concurrent tabs from clobbering each other's notes or spent-flag updates.
+- **Future Roadmap**: Passphrase-derived encryption at rest for the local note store is planned for a future release.
+
 ## Reporting a Vulnerability
 
 **Do not open a public GitHub issue for security vulnerabilities.**

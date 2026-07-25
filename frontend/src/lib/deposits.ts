@@ -1,4 +1,7 @@
+import { withStorageLock, onStorageChange } from "./storageLock";
+
 const DEPOSITS_KEY = "dshield_deposits";
+const LOCK_KEY = "dshield_deposits_lock";
 
 export interface DepositRecord {
   commitment: string;
@@ -8,11 +11,13 @@ export interface DepositRecord {
 }
 
 export function saveDeposit(record: DepositRecord): void {
-  const deposits = getDeposits();
-  if (deposits.some((d) => d.commitment === record.commitment)) return;
-  deposits.push(record);
-  deposits.sort((a, b) => a.leafIndex - b.leafIndex);
-  localStorage.setItem(DEPOSITS_KEY, JSON.stringify(deposits));
+  withStorageLock(LOCK_KEY, () => {
+    const deposits = getDeposits();
+    if (deposits.some((d) => d.commitment === record.commitment)) return;
+    deposits.push(record);
+    deposits.sort((a, b) => a.leafIndex - b.leafIndex);
+    localStorage.setItem(DEPOSITS_KEY, JSON.stringify(deposits));
+  });
 }
 
 export function getDeposits(): DepositRecord[] {
@@ -29,14 +34,25 @@ export function getDeposits(): DepositRecord[] {
  */
 export function clearDeposits(poolId?: string): number {
   if (typeof window === "undefined") return 0;
-  const deposits = getDeposits();
-  if (!poolId) {
-    localStorage.removeItem(DEPOSITS_KEY);
-    return deposits.length;
-  }
-  const remaining = deposits.filter((d) => d.poolId !== poolId);
-  localStorage.setItem(DEPOSITS_KEY, JSON.stringify(remaining));
-  return deposits.length - remaining.length;
+  return withStorageLock(LOCK_KEY, () => {
+    const deposits = getDeposits();
+    if (!poolId) {
+      localStorage.removeItem(DEPOSITS_KEY);
+      return deposits.length;
+    }
+    const remaining = deposits.filter((d) => d.poolId !== poolId);
+    localStorage.setItem(DEPOSITS_KEY, JSON.stringify(remaining));
+    return deposits.length - remaining.length;
+  });
+}
+
+/** Subscribe to cross-tab/window deposit updates via storage events. */
+export function onDepositsChange(
+  callback: (deposits: DepositRecord[]) => void,
+): () => void {
+  return onStorageChange(DEPOSITS_KEY, () => {
+    callback(getDeposits());
+  });
 }
 
 export function getAllCommitments(poolId?: string): string[] {

@@ -229,6 +229,9 @@ Three properties hold the system together (each enforced on-chain and covered by
 
 Unbounded data (commitments, nullifiers) lives in **persistent storage** with TTL extension, so the size-capped instance entry doesn't grow with usage.
 
+> ⚠️ **Known Limitation: Local Note Storage**
+> Bearer-spendable notes and KYC preimages are stored as unencrypted JSON in browser `localStorage`. **Do not use DShield on a shared or public device; notes are stored in plaintext in your browser**, and anyone with local access or a malicious browser extension could inspect or spend them. Cross-tab writes are synchronized with storage locks to prevent concurrent tab updates from dropping notes.
+
 > ⚠️ Testnet demo only — unaudited. `frontend/.env.local` holds throwaway dev/faucet/relayer secrets and is gitignored; do not reuse them or carry this to mainnet without an audit. The relayer takes no fee (eats gas) and is a single point of censorship (not theft).
 
 ---
@@ -313,7 +316,7 @@ This allows DShield to verify proofs on-chain efficiently and affordably.
 
 ### Storage
 
-* Encrypted local notes
+* Local notes (browser localStorage with cross-tab locking; passphrase encryption planned)
 * Optional decentralized backup
 
 ---

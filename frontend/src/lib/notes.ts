@@ -1,4 +1,5 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { withStorageLock, onStorageChange } from "./storageLock";
 
 export interface ShieldedNote {
   nullifier: string;
@@ -12,11 +13,14 @@ export interface ShieldedNote {
 }
 
 const STORAGE_KEY = "dshield_notes";
+const LOCK_KEY = "dshield_notes_lock";
 
 export function saveNote(note: ShieldedNote): void {
-  const notes = getNotes();
-  notes.push(note);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+  withStorageLock(LOCK_KEY, () => {
+    const notes = getNotes();
+    notes.push(note);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+  });
 }
 
 /**
@@ -25,11 +29,13 @@ export function saveNote(note: ShieldedNote): void {
  * Returns true if the note was newly added.
  */
 export function saveNoteIfNew(note: ShieldedNote): boolean {
-  const notes = getNotes();
-  if (notes.some((n) => n.commitment === note.commitment)) return false;
-  notes.push(note);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
-  return true;
+  return withStorageLock(LOCK_KEY, () => {
+    const notes = getNotes();
+    if (notes.some((n) => n.commitment === note.commitment)) return false;
+    notes.push(note);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+    return true;
+  });
 }
 
 export function getNotes(): ShieldedNote[] {
@@ -40,15 +46,26 @@ export function getNotes(): ShieldedNote[] {
 }
 
 export function markNoteSpent(commitment: string): void {
-  const notes = getNotes();
-  const updated = notes.map((n) =>
-    n.commitment === commitment ? { ...n, spent: true } : n,
-  );
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  withStorageLock(LOCK_KEY, () => {
+    const notes = getNotes();
+    const updated = notes.map((n) =>
+      n.commitment === commitment ? { ...n, spent: true } : n,
+    );
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  });
 }
 
 export function getActiveNotes(): ShieldedNote[] {
   return getNotes().filter((n) => !n.spent);
+}
+
+/** Subscribe to cross-tab/window note updates via storage events. */
+export function onNotesChange(
+  callback: (notes: ShieldedNote[]) => void,
+): () => void {
+  return onStorageChange(STORAGE_KEY, () => {
+    callback(getNotes());
+  });
 }
 
 const NOTE_PREFIX = "dshield";

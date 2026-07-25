@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   saveNote,
   getNotes,
@@ -9,6 +9,7 @@ import {
   parseNote,
   saveNoteIfNew,
   generateNoteLink,
+  onNotesChange,
   type ShieldedNote,
 } from "./notes";
 
@@ -294,3 +295,41 @@ describe("generateNoteLink without a Buffer global", () => {
     expect(restored!.poolId).toBe(withPool.poolId);
   });
 });
+
+describe("cross-tab locking and concurrency", () => {
+  it("serializes concurrent saveNote and markNoteSpent calls without dropping data", () => {
+    // Tab A has note 1
+    saveNote(makeNote({ commitment: "c1", amount: "100" }));
+
+    // Simulate Tab A doing deposit (saveNote) and Tab B doing withdraw (markNoteSpent) concurrently
+    saveNote(makeNote({ commitment: "c2", amount: "200" }));
+    markNoteSpent("c1");
+    saveNoteIfNew(makeNote({ commitment: "c3", amount: "300" }));
+
+    const notes = getNotes();
+    expect(notes).toHaveLength(3);
+
+    const c1 = notes.find((n) => n.commitment === "c1");
+    const c2 = notes.find((n) => n.commitment === "c2");
+    const c3 = notes.find((n) => n.commitment === "c3");
+
+    expect(c1?.spent).toBe(true);
+    expect(c2?.spent).toBe(false);
+    expect(c3?.spent).toBe(false);
+  });
+
+  it("triggers onNotesChange listener when storage event is received", () => {
+    const spy = vi.fn();
+    const unsubscribe = onNotesChange(spy);
+
+    saveNote(makeNote({ commitment: "event-test" }));
+    const event = new StorageEvent("storage", { key: "dshield_notes" });
+    window.dispatchEvent(event);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ commitment: "event-test" })]));
+
+    unsubscribe();
+  });
+});
+

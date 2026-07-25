@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { saveKyc, getKyc, clearKyc, type KycRecord } from "./kyc";
+import { describe, it, expect, vi } from "vitest";
+import { saveKyc, getKyc, clearKyc, onKycChange, type KycRecord } from "./kyc";
 
 function makeKyc(overrides: Partial<KycRecord> = {}): KycRecord {
   return {
@@ -45,3 +45,20 @@ describe("clearKyc", () => {
     expect(() => clearKyc()).not.toThrow();
   });
 });
+
+describe("onKycChange", () => {
+  it("triggers listener on storage event", () => {
+    const spy = vi.fn();
+    const unsubscribe = onKycChange(spy);
+
+    saveKyc(makeKyc({ hash: "test-event" }));
+    const event = new StorageEvent("storage", { key: "dshield_kyc" });
+    window.dispatchEvent(event);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ hash: "test-event" }));
+
+    unsubscribe();
+  });
+});
+
