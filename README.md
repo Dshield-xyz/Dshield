@@ -12,7 +12,7 @@ Built for **Stellar Hacks: Real-World ZK**, DShield demonstrates how privacy and
 
 ## New to ZK or Stellar?
 
-See **[GLOSSARY.md](GLOSSARY.md)** for plain-English definitions of terms like *nullifier*, *commitment*, *Merkle root*, *UltraHonk*, *Poseidon2*, *selective disclosure*, *relayer*, and more — everything you need to navigate the codebase without a cryptography background.
+See **[GLOSSARY.md](GLOSSARY.md)** for plain-English definitions of terms like _nullifier_, _commitment_, _Merkle root_, _UltraHonk_, _Poseidon2_, _selective disclosure_, _relayer_, and more — everything you need to navigate the codebase without a cryptography background.
 
 ---
 
@@ -152,8 +152,8 @@ Reveal only the specific information required by regulators while preserving ove
 
 What is **built and verified on-chain today** (testnet), versus the broader vision above:
 
-| Capability                                                | Status                                                                                                                                                                                                                  |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Capability                                                | Status                                                                                                                                                                                                                   |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Shielded deposit (USDC → commitment in a Merkle tree)     | ✅ Working on testnet                                                                                                                                                                                                    |
 | Client-side ZK proof (Noir + UltraHonk, keccak transform) | ✅                                                                                                                                                                                                                       |
 | On-chain proof verification (Soroban + BN254/Poseidon2)   | ✅                                                                                                                                                                                                                       |
@@ -163,7 +163,7 @@ What is **built and verified on-chain today** (testnet), versus the broader visi
 | **Relayer** — withdrawer's account never appears on-chain | ✅                                                                                                                                                                                                                       |
 | Compliance: KYC registry + compliance proof verification  | ✅ Verified on testnet via CLI (`just demo-compliance`); not yet wired into the web app UI. `disclosed_amount` is cross-checked against the real pool's fixed `deposit_amount` on-chain, not self-asserted by the prover |
 | Selective disclosure: threshold proofs (balance ≥ X)      | ✅ Circuit + contract implemented and CLI-verified; no web UI yet. `threshold` is likewise checked against the pool's real `deposit_amount` on-chain                                                                     |
-| Arbitrary-amount private _transfers_ between users        | 🚧 Future (today: fixed-denomination pools)                                                                                                                                                                             |
+| Arbitrary-amount private _transfers_ between users        | 🚧 Future (today: fixed-denomination pools)                                                                                                                                                                              |
 
 DShield is currently a **fixed-denomination shielded pool** (Tornado-style: deposit a tier amount, withdraw it to any address). Privacy comes from breaking the on-chain link between depositor and recipient — not from hiding the tier amount. Relayed withdrawals mean the withdrawer never signs or pays a fee from their own account.
 
@@ -230,6 +230,7 @@ Three properties hold the system together (each enforced on-chain and covered by
 1. **Hash consistency** — the contract's Poseidon2 (`soroban_poseidon`) produces byte-identical output to the Noir circuit and the frontend, so the on-chain Merkle root always matches the root the proof is generated against. Locked by `test_recipient_hash_matches_frontend`, `test_single_leaf_root_matches_circuit`.
 2. **Recipient binding** — the withdrawal proof commits to a recipient hash, and the contract recomputes that hash from the actual payout address (`recipient_hash_from_address`) and rejects a mismatch. Without this, anyone could front-run a pending withdrawal and redirect the funds. This is also what makes the relayer trustless: it can submit or refuse, but never steal.
 3. **Double-spend prevention** — each withdrawal consumes a nullifier stored in persistent storage; replaying a proof fails with `NullifierUsed`.
+4. **Trustless tree reconstruction** — clients rebuild the withdrawal Merkle tree from the pool contract's own commitment storage, not by scanning deposit events (which depend on RPC event retention and can go missing). `get_commitments_page(start, limit)` returns leaves in order for a bounded range (capped on-chain at `MAX_PAGE_SIZE = 100` leaves per call regardless of the requested `limit`), and the frontend (`fetchCommitmentsFromChain`) pages through it until a short page signals the end. The older `get_commitments()` (no pagination) still exists for small/local pools, but reads every leaf in one call and will hit Soroban's per-transaction CPU/footprint limits well before a pool nears `MAX_LEAVES = 2^20` — prefer the paginated view for anything beyond a demo pool.
 
 Unbounded data (commitments, nullifiers) lives in **persistent storage** with TTL extension, so the size-capped instance entry doesn't grow with usage.
 
@@ -257,7 +258,7 @@ This allows DShield to verify proofs on-chain efficiently and affordably.
 
 ## Architecture
 
-```
+````
 +-----------------------+
 | DShield App |
 +-----------------------+
@@ -291,7 +292,7 @@ flowchart TD
     B --> C["Shielded Pool\nCommitments · Nullifiers"]
     C --> D["Soroban Verifier\nBN254 Verification"]
     D --> E["Stellar Network"]
-```
+````
 
 ## Tech Stack
 
@@ -414,11 +415,11 @@ Organizations can transact confidentially while remaining compliant.
 
 | Feature              | Traditional Blockchain | Privacy Coins | DShield |
 | -------------------- | ---------------------- | ------------- | ------- |
-| Private Payments     | ❌                      | ✅             | ✅       |
-| Compliance Friendly  | ✅                      | ❌             | ✅       |
-| Selective Disclosure | ❌                      | ❌             | ✅       |
-| Stablecoin Focus     | ✅                      | ❌             | ✅       |
-| Consumer UX          | ⚠️                     | ⚠️            | ✅       |
+| Private Payments     | ❌                     | ✅            | ✅      |
+| Compliance Friendly  | ✅                     | ❌            | ✅      |
+| Selective Disclosure | ❌                     | ❌            | ✅      |
+| Stablecoin Focus     | ✅                     | ❌            | ✅      |
+| Consumer UX          | ⚠️                     | ⚠️            | ✅      |
 
 ---
 

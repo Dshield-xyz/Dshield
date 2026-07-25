@@ -18,6 +18,13 @@ overrides:
   uuid: "^11.1.1"
   ws: "^8.21.0"
   axios: "^1.18.1"
+  next: "^16.2.11"
+  # next@16.2.9 declares its own sharp dependency as `^0.34.5`, which under
+  # strict semver caret rules for 0.x versions excludes 0.35.x — so pnpm
+  # resolves the vulnerable 0.34.5 by default. Forced past next's declared
+  # range to the patched line; Next only exercises a small resize/format
+  # subset of sharp's API for image optimization, low regression surface.
+  sharp: "^0.35.3"
 allowBuilds:
   '@reown/appkit': true
   '@stellar/stellar-sdk': true
