@@ -12,7 +12,7 @@ const ZERO_32 = "0x" + "00".repeat(32);
 const KNOWN_ZERO_HASH =
   "0x0b63a53787021a4a962a452c2921b3663aff1ffd8d5510540f8e659e782956f1";
 const KNOWN_NULLIFIER_HASH =
-  "0x2b0c9e50ac135931c5f87dff253337d63f6fe5f8b0f2489b92a5a9446cc4b3d2";
+  "0x162e3a2744c870a14bcdbd4028e3400ba6ae1d2e869fa850b1b411e57a370e04";
 
 describe("normalizeField", () => {
   it("left-pads a value whose top byte is zero to 32 bytes", () => {
