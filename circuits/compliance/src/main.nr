@@ -2,12 +2,24 @@ use dep::poseidon::poseidon2::Poseidon2;
 
 global TREE_DEPTH: u32 = 20;
 
+// Domain separation tags for Poseidon2 hashing
+global LEAF_DOMAIN: Field = 0x4c454146; // "LEAF" in hex (right-aligned)
+global KYC_DOMAIN: Field = 0x4b5943; // "KYC" in hex (right-aligned to 3 bytes)
+
 fn hash2(a: Field, b: Field) -> Field {
     Poseidon2::hash([a, b], 2)
 }
 
 fn hash3(a: Field, b: Field, c: Field) -> Field {
     Poseidon2::hash([a, b, c], 3)
+}
+
+fn hash_leaf(nullifier: Field, secret: Field) -> Field {
+    hash3(LEAF_DOMAIN, nullifier, secret)
+}
+
+fn hash_kyc(kyc_preimage: Field) -> Field {
+    hash3(KYC_DOMAIN, kyc_preimage, 0)
 }
 
 fn constrain_bit(bit: Field) {
@@ -45,16 +57,16 @@ pub fn main(
     path_bits: [Field; TREE_DEPTH],
 ) {
     // 1. KYC proof: user knows the preimage behind the registered kyc_hash
-    let computed_kyc = hash2(kyc_preimage, 0);
+    let computed_kyc = hash_kyc(kyc_preimage);
     assert(computed_kyc == kyc_hash);
 
     // 2. Wallet authorization: user owns a note in the shielded pool
-    let leaf = hash2(nullifier, secret);
+    let leaf = hash_leaf(nullifier, secret);
     let computed_root = compute_root(leaf, path_siblings, path_bits);
     assert(computed_root == merkle_root);
 
     // 3. Selective disclosure: `amount`/`disclosed_amount` are NOT bound to the
-    //    note above (the leaf is hash2(nullifier, secret) -- amount plays no
+    //    note above (the leaf is hash3(LEAF_DOMAIN, nullifier, secret) -- amount plays no
     //    part in it), so this assert alone proves nothing about the real note;
     //    a prover could pick any two equal values here. `disclosure_commitment`
     //    and `expected` are computed but deliberately unused for the same
