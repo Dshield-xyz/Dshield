@@ -98,6 +98,8 @@ export async function generateThresholdProof(note: ShieldedNote, threshold: stri
     pathBits: [],
   });
 }
+
+export async function proveDisclosure(inputs: {
   kycPreimage: string;
   nullifier: string;
   secret: string;

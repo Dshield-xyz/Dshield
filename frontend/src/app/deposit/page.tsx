@@ -50,10 +50,6 @@ export default function DepositPage() {
     const t = getPoolTiers();
     return t.length > 0 ? t[0] : null;
   });
-  // New UI state for confirmation step
-  const [showConfirm, setShowConfirm] = useState(false);
-  const [estimatedFee, setEstimatedFee] = useState<string>('');
-  const [pendingTx, setPendingTx] = useState<StellarSdk.Transaction | null>(null);
 
   const noteCount = (() => {
     if (!customAmount || !selectedTier) return 1;
@@ -142,12 +138,12 @@ export default function DepositPage() {
             );
 
       // Store fee and transaction for confirmation UI
-      setEstimatedFee(tx.fee.toString());
-      setPendingTx(tx);
-      // Keep pending notes for later processing after confirmation
-      (window as any).__pendingNotes = pending; // temporary global for demo
+      saveDeposit({ commitment, leafIndex, timestamp: Date.now(), poolId: selectedTier!.id });
+      setSessionNotes((prev) => [...prev, note]);
+    }
 
-      setShowConfirm(true);
+    const total = sessionNotes.length;
+    const totalUsdc = (total * selectedTier!.amount) / 10 ** TOKEN_DECIMALS;
     } catch (err) {
       console.error("Deposit error:", err);
       toast(friendlyError(err), "error");
@@ -157,86 +153,16 @@ export default function DepositPage() {
     }
   }
 
-  /**
-   * Called after the user confirms the deposit. Signs the stored transaction,
-   * submits it, and performs the existing post‑sign logic.
-   */
-  async function signAndSubmit() {
-    if (!pendingTx || !address) return;
-    setIsLoading(true);
+  function copyText(text: string, key: string) {
     try {
-      const signedXdr = await signTransaction(pendingTx.toXDR());
-      toast("Sending to the network…");
-      await submitTransaction(signedXdr);
-
-      const pending: ShieldedNote[] = (window as any).__pendingNotes || [];
-      const created: ShieldedNote[] = [];
-      for (const note of pending) {
-        saveNote(note);
-        created.push(note);
-        saveDeposit({
-          commitment: note.commitment,
-          leafIndex: note.leafIndex,
-          timestamp: Date.now(),
-          poolId: selectedTier!.id,
-        });
-      }
-      setSessionNotes(created);
-
-      const total = pending.length;
-      const totalUsdc = (total * selectedTier!.amount) / 10 ** TOKEN_DECIMALS;
-      toast(
-        total > 1
-          ? `${totalUsdc} ${TOKEN_SYMBOL} shielded across ${total} notes — save your notes below!`
-          : `${totalUsdc} ${TOKEN_SYMBOL} is now shielded — save your note below!`,
-        "success",
-      );
+      void navigator.clipboard?.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey((c) => (c === key ? "" : c)), 1500);
     } catch (err) {
-      console.error("Deposit error:", err);
-      toast(friendlyError(err), "error");
-    } finally {
-      setIsLoading(false);
-      setShowConfirm(false);
-      setPendingTx(null);
-      (window as any).__pendingNotes = null;
+      console.error("Copy to clipboard failed:", err);
+      toast("Couldn't copy to clipboard — please copy it manually.", "error");
     }
   }
-
-  /** Confirmation UI component */
-  const ConfirmDeposit = () => (
-    <Card className="fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-50">
-      <div className="max-w-md w-full bg-zinc-900 p-6 rounded-xl border border-zinc-700 shadow-lg">
-        <h2 className="text-lg font-semibold mb-4 text-zinc-200">Confirm Deposit</h2>
-        <p className="text-sm text-zinc-400 mb-2">
-          Tier: <span className="font-medium text-zinc-200">{selectedTier?.label}</span>
-        </p>
-        <p className="text-sm text-zinc-400 mb-2">
-          Total USDC: <span className="font-medium text-zinc-200">{(totalNotes * selectedTier?.amount ?? 0) / 10 ** TOKEN_DECIMALS} {TOKEN_SYMBOL}</span>
-        </p>
-        <p className="text-sm text-zinc-400 mb-4">
-          Estimated fee: <span className="font-medium text-zinc-200">{formatStroops(Number(estimatedFee))} XLM</span>
-        </p>
-        <div className="flex gap-4 justify-end">
-          <Button variant="outline" onClick={() => setShowConfirm(false)} disabled={isLoading}>
-            Cancel
-          </Button>
-          <Button onClick={signAndSubmit} disabled={isLoading}>
-            Confirm
-          </Button>
-        </div>
-      </div>
-    </Card>
-  );
-
-  function copyText(text: string, key: string) {
-    void navigator.clipboard?.writeText(text);
-    setCopiedKey(key);
-    setTimeout(() => setCopiedKey((c) => (c === key ? "" : c)), 1500);
-  } catch (err) {
-    console.error("Copy to clipboard failed:", err);
-    toast("Couldn't copy to clipboard — please copy it manually.", "error");
-  }
-}
 
   function downloadBackup() {
     const body = sessionNotes.map(serializeNote).join("\n") + "\n";
