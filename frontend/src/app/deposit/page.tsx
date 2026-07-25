@@ -96,7 +96,10 @@ export default function DepositPage() {
       // each note will land on is read once from the chain (the next free slot)
       // and assigned sequentially — exactly how the contract inserts them — so a
       // single batched deposit yields the same indices as repeated deposits.
-      const nextIndexVal = await queryContract(selectedTier.id, "get_next_index");
+      const nextIndexVal = await queryContract(
+        selectedTier.id,
+        "get_next_index",
+      );
       const firstIndex = nextIndexVal
         ? Number(StellarSdk.scValToNative(nextIndexVal))
         : 0;
@@ -220,18 +223,27 @@ export default function DepositPage() {
         <div className="mb-6">
           <h3 className="text-sm font-medium text-zinc-400">How it works</h3>
           <ol className="mt-3 space-y-2 text-sm text-zinc-500">
-            <li>1. Choose an amount — deposits use fixed sizes so they blend in with everyone else&apos;s</li>
-            <li>2. Your {TOKEN_SYMBOL} moves into the shielded pool in one signed transaction</li>
-            <li>3. You receive a private note, saved on this device — back it up right away</li>
+            <li>
+              1. Choose an amount — deposits use fixed sizes so they blend in
+              with everyone else&apos;s
+            </li>
+            <li>
+              2. Your {TOKEN_SYMBOL} moves into the shielded pool in one signed
+              transaction
+            </li>
+            <li>
+              3. You receive a private note, saved on this device — back it up
+              right away
+            </li>
           </ol>
         </div>
 
         {tiers.length > 1 && (
           <div className="mb-4">
-            <label className="mb-2 block text-xs text-zinc-500">
+            <legend className="mb-2 block text-xs text-zinc-500">
               Select Denomination
-            </label>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            </legend>
+            <fieldset className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               {tiers.map((tier) => (
                 <SelectButton
                   key={tier.id}
@@ -239,11 +251,12 @@ export default function DepositPage() {
                   onClick={() => setSelectedTier(tier)}
                   disabled={isLoading}
                   className="text-center font-medium"
+                  aria-label={`${tier.label} denomination`}
                 >
                   {tier.label}
                 </SelectButton>
               ))}
-            </div>
+            </fieldset>
           </div>
         )}
 
@@ -319,11 +332,11 @@ export default function DepositPage() {
                 {sessionNotes.length > 1 ? "s" : ""}
               </p>
               <p className="mt-1 text-xs leading-relaxed text-yellow-200/70">
-                This note is the <span className="font-medium">only</span> way to
-                withdraw these funds. It&apos;s saved in this browser, but if you
-                clear site data or switch devices it&apos;s gone for good. Copy it
-                or download the backup and keep it somewhere safe and private —
-                anyone with the note can spend it.
+                This note is the <span className="font-medium">only</span> way
+                to withdraw these funds. It&apos;s saved in this browser, but if
+                you clear site data or switch devices it&apos;s gone for good.
+                Copy it or download the backup and keep it somewhere safe and
+                private — anyone with the note can spend it.
               </p>
             </div>
 
@@ -332,7 +345,8 @@ export default function DepositPage() {
               const shareLink = generateNoteLink(note);
               const shareOpen = shareOpenKey === note.commitment;
               const xText = encodeURIComponent(
-                "Claim your DShield payment — open this link to withdraw:\n" + shareLink,
+                "Claim your DShield payment — open this link to withdraw:\n" +
+                  shareLink,
               );
               const tgUrl =
                 "https://t.me/share/url?url=" +
@@ -358,7 +372,9 @@ export default function DepositPage() {
                         onClick={() => copyText(serialized, note.commitment)}
                         className="text-xs font-medium text-brand-400 hover:text-brand-300"
                       >
-                        {copiedKey === note.commitment ? "Copied!" : "Copy note"}
+                        {copiedKey === note.commitment
+                          ? "Copied!"
+                          : "Copy note"}
                       </button>
                       <button
                         type="button"
@@ -386,9 +402,9 @@ export default function DepositPage() {
                         Share to claim
                       </p>
                       <p className="mt-1 text-[11px] text-yellow-400/80">
-                        Warning: this link contains your private note. Anyone who
-                        opens it can withdraw the funds — share only with the
-                        intended recipient via a private channel.
+                        Warning: this link contains your private note. Anyone
+                        who opens it can withdraw the funds — share only with
+                        the intended recipient via a private channel.
                       </p>
                       <p className="mt-2 break-all font-mono text-[11px] text-zinc-500">
                         {shareLink}
