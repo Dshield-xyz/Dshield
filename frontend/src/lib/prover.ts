@@ -3,6 +3,7 @@ import { UltraHonkBackend } from "@aztec/bb.js";
 import poolCircuit from "@/circuits/shielded_pool.json";
 import complianceCircuit from "@/circuits/compliance.json";
 import disclosureCircuit from "@/circuits/disclosure.json";
+import { ShieldedNote } from "@/lib/notes";
 
 interface ProofResult {
   proof: string;
@@ -83,7 +84,20 @@ export async function proveCompliance(inputs: {
   });
 }
 
-export async function proveDisclosure(inputs: {
+export async function generateThresholdProof(note: ShieldedNote, threshold: string): Promise<ProofResult> {
+  return proveDisclosure({
+    kycPreimage: "0x",
+    nullifier: note.nullifier,
+    secret: note.secret,
+    amount: note.amount,
+    auditorKey: "0x",
+    merkleRoot: "0x",
+    kycHash: "0x",
+    threshold,
+    pathSiblings: [],
+    pathBits: [],
+  });
+}
   kycPreimage: string;
   nullifier: string;
   secret: string;

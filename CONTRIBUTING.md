@@ -2,6 +2,8 @@
 
 Thanks for your interest in contributing. DShield is a shielded stablecoin wallet on Stellar (Soroban contracts + Noir circuits + a Next.js frontend), currently a testnet demo. This guide covers how to get set up and how to submit changes.
 
+> **New to ZK or Stellar?** See [GLOSSARY.md](GLOSSARY.md) for plain-English definitions of terms like *nullifier*, *commitment*, *Merkle root*, *UltraHonk*, *Poseidon2*, *selective disclosure*, *relayer*, and more — everything you need before diving in.
+
 ## Ground rules
 
 - This is unaudited software handling a shielded pool of funds (testnet only, for now). Be conservative with changes to `contracts/` and `circuits/` — correctness bugs there are security bugs. See [Security Model](README.md#security-model) in the README before touching hashing, nullifiers, or recipient binding.
@@ -40,10 +42,21 @@ Run `just --list` for the full set of available recipes (build, deploy, demo, cl
 - `frontend/` — Next.js wallet UI, including the client-side prover.
 - `scripts/`, `tests/e2e.sh` — demo and end-to-end scripts driven by the `justfile`.
 - `DESIGN.md` — deeper technical design notes if you want the full picture before diving in.
+- `GLOSSARY.md` — plain-English definitions of ZK and Soroban terms used throughout the codebase.
 
 ## Reporting bugs / requesting features
 
 Use GitHub Issues. For anything that could be a security vulnerability (a way to double-spend, forge a proof, bypass recipient binding, drain the pool, etc.), do **not** open a public issue — see [SECURITY.md](SECURITY.md) instead.
+
+## Changelog Requirements
+
+All user-facing or architectural PRs must include a corresponding entry in the `CHANGELOG.md` file under the `## [Unreleased]` header, utilizing standard changelog tags:
+- `Added` - for new features
+- `Changed` - for changes in existing functionality
+- `Deprecated` - for soon-to-be removed features
+- `Removed` - for now removed features
+- `Fixed` - for any bug fixes
+- `Security` - in case of vulnerabilities
 
 ## Code of conduct
 
