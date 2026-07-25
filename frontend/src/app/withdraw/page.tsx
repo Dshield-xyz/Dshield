@@ -93,7 +93,7 @@ export default function WithdrawPage() {
     if (!hash.startsWith("#note=")) return;
     const note = parseNote(decodeURIComponent(hash.slice("#note=".length)));
     if (!note) return;
-    saveNoteIfNew(note);
+    void saveNoteIfNew(note);
     setSelectedCommitments(new Set([note.commitment]));
     history.replaceState(null, "", window.location.pathname + window.location.search);
   }, []);
@@ -188,7 +188,7 @@ export default function WithdrawPage() {
     onStep("submitting");
     const relayed = await relayWithdrawal({ poolId, recipient: recipientAddr, publicInputs, proof });
     if (relayed) {
-      markNoteSpent(note.commitment);
+      await markNoteSpent(note.commitment);
       return relayed.hash;
     }
 
@@ -206,7 +206,7 @@ export default function WithdrawPage() {
     const signedXdr = await signTransaction(tx.toXDR());
     onStep("submitting");
     const txHash = await submitTransaction(signedXdr);
-    markNoteSpent(note.commitment);
+    await markNoteSpent(note.commitment);
     return txHash;
   }
 
@@ -418,7 +418,7 @@ export default function WithdrawPage() {
           onImport={(notes) => {
             const newSel = new Set(selectedCommitments);
             for (const note of notes) {
-              saveNoteIfNew(note);
+              void saveNoteIfNew(note);
               newSel.add(note.commitment); // always select, even if note already existed in storage
             }
             setSelectedCommitments(newSel);

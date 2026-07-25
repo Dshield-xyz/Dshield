@@ -22,7 +22,7 @@ export async function syncSpentNotes(): Promise<number> {
         ),
       ]);
       if (val && StellarSdk.scValToNative(val) === true) {
-        markNoteSpent(note.commitment);
+        await markNoteSpent(note.commitment);
         count++;
       }
     } catch {

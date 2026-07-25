@@ -231,6 +231,8 @@ Unbounded data (commitments, nullifiers) lives in **persistent storage** with TT
 
 > ⚠️ Testnet demo only — unaudited. `frontend/.env.local` holds throwaway dev/faucet/relayer secrets and is gitignored; do not reuse them or carry this to mainnet without an audit. The relayer takes no fee (eats gas) and is a single point of censorship (not theft).
 
+> ⚠️ **Plaintext localStorage — Notes stored unencrypted.** The current implementation stores bearer-spendable notes and KYC preimages as plaintext JSON in your browser's localStorage. **Any XSS vulnerability, malicious browser extension, or brief physical access to your device can allow someone to read and spend your notes.** Only use DShield on a personal, secure device. Never use it on shared or public computers. For production use, export and securely back up your notes. See [SECURITY.md](SECURITY.md#plaintext-localstorage-for-notes-and-kyc) for full details and longer-term roadmap (passphrase-derived encryption).
+
 ---
 
 ## Why Stellar
