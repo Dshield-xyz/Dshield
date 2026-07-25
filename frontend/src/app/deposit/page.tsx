@@ -137,13 +137,34 @@ export default function DepositPage() {
               address,
             );
 
-      // Store fee and transaction for confirmation UI
-      saveDeposit({ commitment, leafIndex, timestamp: Date.now(), poolId: selectedTier!.id });
-      setSessionNotes((prev) => [...prev, note]);
-    }
+      toast(
+        total > 1
+          ? `Shielding ${total} notes — please sign once in your wallet…`
+          : "Please sign the transaction in your wallet…",
+      );
+      const signedXdr = await signTransaction(tx.toXDR());
 
-    const total = sessionNotes.length;
-    const totalUsdc = (total * selectedTier!.amount) / 10 ** TOKEN_DECIMALS;
+      toast("Sending to the network…");
+      await submitTransaction(signedXdr);
+
+      for (const note of pending) {
+        await saveNote(note);
+        saveDeposit({
+          commitment: note.commitment,
+          leafIndex: note.leafIndex,
+          timestamp: Date.now(),
+          poolId: selectedTier.id,
+        });
+        setSessionNotes((prev) => [...prev, note]);
+      }
+
+      const totalUsdc = (total * selectedTier.amount) / 10 ** TOKEN_DECIMALS;
+      toast(
+        total > 1
+          ? `${totalUsdc} ${TOKEN_SYMBOL} shielded across ${total} notes — save your notes below!`
+          : `${totalUsdc} ${TOKEN_SYMBOL} is now shielded — save your note below!`,
+        "success",
+      );
     } catch (err) {
       console.error("Deposit error:", err);
       toast(friendlyError(err), "error");
