@@ -1,8 +1,14 @@
-import { Noir } from "@noir-lang/noir_js";
-import { UltraHonkBackend } from "@aztec/bb.js";
-import poolCircuit from "@/circuits/shielded_pool.json";
-import complianceCircuit from "@/circuits/compliance.json";
-import disclosureCircuit from "@/circuits/disclosure.json";
+/**
+ * Client-side ZK prover.
+ *
+ * Circuit artifacts (JSON) are loaded lazily — each import() fires only when
+ * the matching prove* function is first called, so the three circuit files
+ * (~10 KB each, ~36 KB total) are **not** bundled into the initial JS payload.
+ * webpack will split them into separate async chunks that are fetched on demand.
+ *
+ * @aztec/bb.js and @noir-lang/noir_js are also imported lazily for the same
+ * reason: the barretenberg WASM (~7 MB) should not block the initial page load.
+ */
 
 interface ProofResult {
   proof: string;
@@ -13,6 +19,12 @@ async function generateProof(
   circuit: Record<string, unknown>,
   inputs: Record<string, string | string[]>,
 ): Promise<ProofResult> {
+  // Lazy-load the heavy ZK runtime only when a proof is actually requested.
+  const [{ Noir }, { UltraHonkBackend }] = await Promise.all([
+    import("@noir-lang/noir_js"),
+    import("@aztec/bb.js"),
+  ]);
+
   const noir = new Noir(circuit as never);
   const backend = new UltraHonkBackend(
     (circuit as { bytecode: string }).bytecode,
@@ -46,6 +58,11 @@ export async function proveWithdrawal(inputs: {
   pathSiblings: string[];
   pathBits: number[];
 }): Promise<ProofResult> {
+  // Lazy-load: only the withdraw page needs shielded_pool.json.
+  const { default: poolCircuit } = await import(
+    /* webpackChunkName: "circuit-shielded-pool" */
+    "@/circuits/shielded_pool.json"
+  );
   return generateProof(poolCircuit as Record<string, unknown>, {
     nullifier: ensureHex(inputs.nullifier),
     secret: ensureHex(inputs.secret),
@@ -69,6 +86,11 @@ export async function proveCompliance(inputs: {
   pathSiblings: string[];
   pathBits: number[];
 }): Promise<ProofResult> {
+  // Lazy-load: only the compliance page needs compliance.json.
+  const { default: complianceCircuit } = await import(
+    /* webpackChunkName: "circuit-compliance" */
+    "@/circuits/compliance.json"
+  );
   return generateProof(complianceCircuit as Record<string, unknown>, {
     kyc_preimage: ensureHex(inputs.kycPreimage),
     nullifier: ensureHex(inputs.nullifier),
@@ -95,6 +117,11 @@ export async function proveDisclosure(inputs: {
   pathSiblings: string[];
   pathBits: number[];
 }): Promise<ProofResult> {
+  // Lazy-load: only the compliance/disclosure page needs disclosure.json.
+  const { default: disclosureCircuit } = await import(
+    /* webpackChunkName: "circuit-disclosure" */
+    "@/circuits/disclosure.json"
+  );
   return generateProof(disclosureCircuit as Record<string, unknown>, {
     kyc_preimage: ensureHex(inputs.kycPreimage),
     nullifier: ensureHex(inputs.nullifier),
