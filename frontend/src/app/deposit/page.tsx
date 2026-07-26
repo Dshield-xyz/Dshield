@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useWallet } from "@/components/WalletProvider";
 import {
   buildContractCall,
@@ -37,6 +37,63 @@ import {
 import { useToast } from "@/components/ui/Toast";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
+/**
+ * Deposit confirmation modal. Defined at module scope rather than inside
+ * DepositPage so its component type is stable across renders — a component
+ * created during render is remounted on every parent update.
+ */
+function ConfirmDeposit({
+  tierLabel,
+  noteCount,
+  tierAmount,
+  estimatedFee,
+  isLoading,
+  onCancel,
+  onConfirm,
+}: {
+  tierLabel?: string;
+  noteCount: number;
+  tierAmount: number;
+  estimatedFee: string;
+  isLoading: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Card className="fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-50">
+      <div className="max-w-md w-full bg-zinc-900 p-6 rounded-xl border border-zinc-700 shadow-lg">
+        <h2 className="text-lg font-semibold mb-4 text-zinc-200">
+          Confirm Deposit
+        </h2>
+        <p className="text-sm text-zinc-400 mb-2">
+          Tier: <span className="font-medium text-zinc-200">{tierLabel}</span>
+        </p>
+        <p className="text-sm text-zinc-400 mb-2">
+          Total {TOKEN_SYMBOL}:{" "}
+          <span className="font-medium text-zinc-200">
+            {(noteCount * tierAmount) / 10 ** TOKEN_DECIMALS} {TOKEN_SYMBOL}
+            {noteCount > 1 && ` (${noteCount} notes)`}
+          </span>
+        </p>
+        <p className="text-sm text-zinc-400 mb-4">
+          Estimated fee:{" "}
+          <span className="font-medium text-zinc-200">
+            {formatStroops(Number(estimatedFee))} XLM
+          </span>
+        </p>
+        <div className="flex gap-4 justify-end">
+          <Button variant="outline" onClick={onCancel} disabled={isLoading}>
+            Cancel
+          </Button>
+          <Button onClick={onConfirm} disabled={isLoading}>
+            Confirm
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 export default function DepositPage() {
   const { address, signTransaction } = useWallet();
   const { toast } = useToast();
@@ -56,6 +113,12 @@ export default function DepositPage() {
   const [pendingTx, setPendingTx] = useState<StellarSdk.Transaction | null>(
     null,
   );
+  // Notes built during the deposit call, held until the user confirms and signs.
+  const pendingNotesRef = useRef<ShieldedNote[]>([]);
+  // Note count as of the moment the transaction was built. `totalNotes` is
+  // derived from `customAmount`, which handleDeposit clears before the user
+  // confirms, so the modal can't read it without showing the wrong total.
+  const [confirmNoteCount, setConfirmNoteCount] = useState(0);
 
   const noteCount = (() => {
     if (!customAmount || !selectedTier) return 1;
@@ -156,8 +219,9 @@ export default function DepositPage() {
       setEstimatedFee(tx.fee.toString());
       setPendingTx(tx);
       // Keep pending notes for later processing after confirmation
-      (window as any).__pendingNotes = pending; // temporary global for demo
+      pendingNotesRef.current = pending;
 
+      setConfirmNoteCount(total);
       setShowConfirm(true);
     } catch (err) {
       console.error("Deposit error:", err);
@@ -180,7 +244,7 @@ export default function DepositPage() {
       toast("Sending to the network…");
       await submitTransaction(signedXdr);
 
-      const pending: ShieldedNote[] = (window as any).__pendingNotes || [];
+      const pending: ShieldedNote[] = pendingNotesRef.current;
       const created: ShieldedNote[] = [];
       for (const note of pending) {
         saveNote(note);
@@ -209,51 +273,9 @@ export default function DepositPage() {
       setIsLoading(false);
       setShowConfirm(false);
       setPendingTx(null);
-      (window as any).__pendingNotes = null;
+      pendingNotesRef.current = [];
     }
   }
-
-  /** Confirmation UI component */
-  const ConfirmDeposit = () => (
-    <Card className="fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-50">
-      <div className="max-w-md w-full bg-zinc-900 p-6 rounded-xl border border-zinc-700 shadow-lg">
-        <h2 className="text-lg font-semibold mb-4 text-zinc-200">
-          Confirm Deposit
-        </h2>
-        <p className="text-sm text-zinc-400 mb-2">
-          Tier:{" "}
-          <span className="font-medium text-zinc-200">
-            {selectedTier?.label}
-          </span>
-        </p>
-        <p className="text-sm text-zinc-400 mb-2">
-          Total USDC:{" "}
-          <span className="font-medium text-zinc-200">
-            {(totalNotes * selectedTier?.amount ?? 0) / 10 ** TOKEN_DECIMALS}{" "}
-            {TOKEN_SYMBOL}
-          </span>
-        </p>
-        <p className="text-sm text-zinc-400 mb-4">
-          Estimated fee:{" "}
-          <span className="font-medium text-zinc-200">
-            {formatStroops(Number(estimatedFee))} XLM
-          </span>
-        </p>
-        <div className="flex gap-4 justify-end">
-          <Button
-            variant="outline"
-            onClick={() => setShowConfirm(false)}
-            disabled={isLoading}
-          >
-            Cancel
-          </Button>
-          <Button onClick={signAndSubmit} disabled={isLoading}>
-            Confirm
-          </Button>
-        </div>
-      </div>
-    </Card>
-  );
 
   function copyText(text: string, key: string) {
     try {
@@ -555,6 +577,24 @@ export default function DepositPage() {
           </div>
         )}
       </Card>
+
+      {showConfirm && (
+        <ConfirmDeposit
+          tierLabel={selectedTier?.label}
+          noteCount={confirmNoteCount}
+          tierAmount={selectedTier?.amount ?? 0}
+          estimatedFee={estimatedFee}
+          isLoading={isLoading}
+          onCancel={() => {
+            // Discard the staged transaction and notes: nothing was signed or
+            // submitted, so these must not leak into a later confirmation.
+            setShowConfirm(false);
+            setPendingTx(null);
+            pendingNotesRef.current = [];
+          }}
+          onConfirm={signAndSubmit}
+        />
+      )}
     </PageShell>
   );
 }

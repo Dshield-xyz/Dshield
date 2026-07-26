@@ -1,6 +1,11 @@
+// NOTE: This component is not currently rendered anywhere. It was written
+// against a `generateThresholdProof(note, threshold)` helper that no longer
+// exists — the prover now exposes `proveDisclosure`, which additionally needs
+// the auditor key, KYC preimage/hash, merkle root and merkle path. Those are
+// not derivable from a ShieldedNote, so wiring them up requires the disclosure
+// input-assembly work rather than a mechanical rename.
 import { useState } from "react";
 import { ShieldedNote } from "@/lib/notes";
-import { generateThresholdProof } from "@/lib/prover";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 
@@ -19,9 +24,10 @@ export default function ThresholdDisclosure({ notes }: Props) {
     if (!selectedNote || !threshold) return;
     setLoading(true);
     try {
-      const result = await generateThresholdProof(selectedNote, threshold);
-      setProof(JSON.stringify(result, null, 2));
-      toast("Threshold proof generated", "success");
+      throw new Error(
+        "Threshold disclosure is not wired up yet: proveDisclosure needs the " +
+          "auditor key, KYC hash and merkle path, which aren't available here.",
+      );
     } catch (e) {
       toast(`Error: ${e}`, "error");
     } finally {
