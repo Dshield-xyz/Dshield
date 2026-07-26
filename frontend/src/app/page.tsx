@@ -18,7 +18,7 @@ import {
   GithubIcon,
 } from "@/components/icons";
 
-const GITHUB_URL = "https://github.com/tech-adrian/Dshield";
+const GITHUB_URL = "https://github.com/Dshield-xyz/Dshield";
 
 const TRUST = [
   { icon: LockIcon, label: "Proofs never leave your device" },

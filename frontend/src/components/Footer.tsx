@@ -14,7 +14,7 @@ const CONTRACTS = [
 ];
 
 const LINKS = [
-  { label: "GitHub", href: "https://github.com/tech-adrian/Dshield" },
+  { label: "GitHub", href: "https://github.com/Dshield-xyz/Dshield" },
   { label: "Stellar", href: "https://stellar.org" },
   { label: "Noir", href: "https://noir-lang.org" },
 ];
