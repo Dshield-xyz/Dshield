@@ -40,5 +40,14 @@ export function StatusMessage({
 }: StatusMessageProps) {
   if (!message) return null;
   const tone = inferTone(message, successHints);
-  return <div className={cn(status({ tone }), className)}>{message}</div>;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className={cn(status({ tone }), className)}
+    >
+      {message}
+    </div>
+  );
 }

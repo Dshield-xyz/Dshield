@@ -99,6 +99,10 @@ export default function DepositPage() {
       }
 
       // --- Prepare notes and commitments ---
+      // Generate every note's secrets and commitment up front. The leaf index
+      // each note will land on is read once from the chain (the next free slot)
+      // and assigned sequentially — exactly how the contract inserts them — so a
+      // single batched deposit yields the same indices as repeated deposits.
       const nextIndexVal = await queryContract(
         selectedTier.id,
         "get_next_index",
@@ -310,10 +314,10 @@ export default function DepositPage() {
 
         {tiers.length > 1 && (
           <div className="mb-4">
-            <label className="mb-2 block text-xs text-zinc-500">
+            <legend className="mb-2 block text-xs text-zinc-500">
               Select Denomination
-            </label>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            </legend>
+            <fieldset className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               {tiers.map((tier) => (
                 <SelectButton
                   key={tier.id}
@@ -321,11 +325,12 @@ export default function DepositPage() {
                   onClick={() => setSelectedTier(tier)}
                   disabled={isLoading}
                   className="text-center font-medium"
+                  aria-label={`${tier.label} denomination`}
                 >
                   {tier.label}
                 </SelectButton>
               ))}
-            </div>
+            </fieldset>
           </div>
         )}
 

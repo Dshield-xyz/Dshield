@@ -16,13 +16,22 @@ export interface ProgressStepsProps {
  */
 export function ProgressSteps({ label, steps, current }: ProgressStepsProps) {
   const currentIndex = steps.indexOf(current);
+  const progress = Math.round(((currentIndex + 1) / steps.length) * 100);
+
   return (
     <div className="rounded-xl bg-zinc-800/80 p-4">
       <div className="flex items-center gap-3">
         <Spinner />
         <span className="text-sm text-zinc-300">{label}</span>
       </div>
-      <div className="mt-3 flex gap-1">
+      <div
+        className="mt-3 flex gap-1"
+        role="progressbar"
+        aria-valuenow={progress}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={`Progress: ${label}`}
+      >
         {steps.map((step, i) => (
           <div
             key={step}

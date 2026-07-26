@@ -1653,6 +1653,57 @@ mod tests {
         );
     }
 
+    // A second real account (G...) address, distinct from ACCOUNT_STRKEY, so a
+    // proof can be bound to one account and the payout attempted to the other.
+    const OTHER_ACCOUNT_STRKEY: &str = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ";
+
+    #[test]
+    fn test_withdraw_to_different_recipient_than_proof_rejected() {
+        // Recipient binding (README Security Model #2): a withdrawal proof bound
+        // to recipient A must not pay out to a different address B. This is the
+        // front-running case — a relayer or observer takes a pending withdrawal
+        // proof off the mempool and resubmits it with their own payout address.
+        //
+        // Unlike test_withdraw_recipient_mismatch_rejected, which uses a filler
+        // hash, this builds public inputs holding the *genuine* recipient hash
+        // of account A and then calls withdraw with account B as the payout
+        // address, which is what an actual redirect attack looks like on-chain.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &dummy_commitment(&env, 1));
+        let root = client.get_root().unwrap();
+
+        let recipient_a = Address::from_str(&env, ACCOUNT_STRKEY);
+        let recipient_b = Address::from_str(&env, OTHER_ACCOUNT_STRKEY);
+        assert_ne!(recipient_a, recipient_b);
+
+        let hash_a = recipient_hash_from_address(&env, &recipient_a).unwrap();
+        let hash_b = recipient_hash_from_address(&env, &recipient_b).unwrap();
+        assert_ne!(
+            hash_a, hash_b,
+            "distinct accounts must hash to distinct recipient hashes"
+        );
+
+        // Public inputs of a legitimate withdrawal bound to A.
+        let mut pi = [0u8; 96];
+        pi[..32].copy_from_slice(&root.to_array());
+        pi[64..96].copy_from_slice(&hash_a.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        // Submitted with B as the payout address: rejected before verification.
+        let result = client.try_withdraw(&recipient_b, &public_inputs, &proof);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            PoolError::RecipientMismatch,
+            "an A-bound proof must not pay out to B"
+        );
+    }
+
     #[test]
     fn test_withdraw_correct_recipient_passes_binding() {
         let env = Env::default();
@@ -1798,6 +1849,68 @@ mod tests {
         });
         assert_eq!(stored, Some(c.clone()));
         assert_eq!(client.get_commitment(&0), Some(c));
+    }
+
+    #[test]
+    fn test_replaying_consumed_nullifier_returns_nullifier_used() {
+        // Double-spend prevention (README Security Model #3): once a nullifier
+        // has been consumed by a withdrawal, replaying a proof carrying that
+        // same nullifier MUST fail with NullifierUsed.
+        //
+        // The nullifier check is the first storage check in `withdraw`, ahead of
+        // root, recipient-binding and proof verification, so the replay is
+        // rejected on the nullifier alone — a replayed proof never reaches the
+        // verifier. Consuming the nullifier directly (rather than driving a real
+        // withdrawal, which needs a genuine UltraHonk proof) reproduces exactly
+        // the post-withdrawal state: `withdraw` marks a spend by writing
+        // `(nf prefix, nullifier) -> true` to persistent storage.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &dummy_commitment(&env, 1));
+        let root = client.get_root().unwrap();
+
+        let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
+        let recipient_hash = recipient_hash_from_address(&env, &recipient).unwrap();
+        let nullifier = dummy_commitment(&env, 99);
+
+        // Public inputs for a well-formed withdrawal: known root, this
+        // nullifier, and the recipient hash this payout address really binds to.
+        let mut pi = [0u8; 96];
+        pi[..32].copy_from_slice(&root.to_array());
+        pi[32..64].copy_from_slice(&nullifier.to_array());
+        pi[64..96].copy_from_slice(&recipient_hash.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        // Before the spend, nothing rejects on the nullifier — the dummy proof
+        // fails verification instead. This proves the NullifierUsed below comes
+        // from the replay, not from some unrelated check.
+        let first = client.try_withdraw(&recipient, &public_inputs, &proof);
+        assert_ne!(
+            first.err().unwrap().unwrap(),
+            PoolError::NullifierUsed,
+            "nullifier must not be considered used before it is consumed"
+        );
+
+        // The withdrawal consumes the nullifier.
+        env.as_contract(&pool_id, || {
+            env.storage()
+                .persistent()
+                .set(&(key_nullifier_prefix(), nullifier.clone()), &true);
+        });
+        assert!(client.is_nullifier_used(&nullifier));
+
+        // Replaying the very same proof is rejected as a double-spend.
+        let replay = client.try_withdraw(&recipient, &public_inputs, &proof);
+        assert_eq!(
+            replay.err().unwrap().unwrap(),
+            PoolError::NullifierUsed,
+            "replaying a consumed nullifier must be rejected"
+        );
     }
 
     #[test]
