@@ -1852,6 +1852,68 @@ mod tests {
     }
 
     #[test]
+    fn test_replaying_consumed_nullifier_returns_nullifier_used() {
+        // Double-spend prevention (README Security Model #3): once a nullifier
+        // has been consumed by a withdrawal, replaying a proof carrying that
+        // same nullifier MUST fail with NullifierUsed.
+        //
+        // The nullifier check is the first storage check in `withdraw`, ahead of
+        // root, recipient-binding and proof verification, so the replay is
+        // rejected on the nullifier alone — a replayed proof never reaches the
+        // verifier. Consuming the nullifier directly (rather than driving a real
+        // withdrawal, which needs a genuine UltraHonk proof) reproduces exactly
+        // the post-withdrawal state: `withdraw` marks a spend by writing
+        // `(nf prefix, nullifier) -> true` to persistent storage.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &dummy_commitment(&env, 1));
+        let root = client.get_root().unwrap();
+
+        let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
+        let recipient_hash = recipient_hash_from_address(&env, &recipient).unwrap();
+        let nullifier = dummy_commitment(&env, 99);
+
+        // Public inputs for a well-formed withdrawal: known root, this
+        // nullifier, and the recipient hash this payout address really binds to.
+        let mut pi = [0u8; 96];
+        pi[..32].copy_from_slice(&root.to_array());
+        pi[32..64].copy_from_slice(&nullifier.to_array());
+        pi[64..96].copy_from_slice(&recipient_hash.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        // Before the spend, nothing rejects on the nullifier — the dummy proof
+        // fails verification instead. This proves the NullifierUsed below comes
+        // from the replay, not from some unrelated check.
+        let first = client.try_withdraw(&recipient, &public_inputs, &proof);
+        assert_ne!(
+            first.err().unwrap().unwrap(),
+            PoolError::NullifierUsed,
+            "nullifier must not be considered used before it is consumed"
+        );
+
+        // The withdrawal consumes the nullifier.
+        env.as_contract(&pool_id, || {
+            env.storage()
+                .persistent()
+                .set(&(key_nullifier_prefix(), nullifier.clone()), &true);
+        });
+        assert!(client.is_nullifier_used(&nullifier));
+
+        // Replaying the very same proof is rejected as a double-spend.
+        let replay = client.try_withdraw(&recipient, &public_inputs, &proof);
+        assert_eq!(
+            replay.err().unwrap().unwrap(),
+            PoolError::NullifierUsed,
+            "replaying a consumed nullifier must be rejected"
+        );
+    }
+
+    #[test]
     fn test_multiple_distinct_nullifiers_independent() {
         let env = Env::default();
         let (pool_id, _, _) = setup_with_token(&env);
