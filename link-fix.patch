@@ -1,0 +1,26 @@
+diff --git a/frontend/src/app/page.tsx b/frontend/src/app/page.tsx
+index eb9504c..f6421fb 100644
+--- a/frontend/src/app/page.tsx
++++ b/frontend/src/app/page.tsx
+@@ -18,7 +18,7 @@ import {
+   GithubIcon,
+ } from "@/components/icons";
+ 
+-const GITHUB_URL = "https://github.com/tech-adrian/Dshield";
++const GITHUB_URL = "https://github.com/Dshield-xyz/Dshield";
+ 
+ const TRUST = [
+   { icon: LockIcon, label: "Proofs never leave your device" },
+diff --git a/frontend/src/components/Footer.tsx b/frontend/src/components/Footer.tsx
+index 2711afa..4b89383 100644
+--- a/frontend/src/components/Footer.tsx
++++ b/frontend/src/components/Footer.tsx
+@@ -14,7 +14,7 @@ const CONTRACTS = [
+ ];
+ 
+ const LINKS = [
+-  { label: "GitHub", href: "https://github.com/tech-adrian/Dshield" },
++  { label: "GitHub", href: "https://github.com/Dshield-xyz/Dshield" },
+   { label: "Stellar", href: "https://stellar.org" },
+   { label: "Noir", href: "https://noir-lang.org" },
+ ];
