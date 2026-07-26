@@ -4,6 +4,7 @@ import { computeCommitment, computeNullifierHash } from "./poseidon2";
 import { fetchCommitmentsFromChain, lookupNoteTxs } from "./indexer";
 import { type ShieldedNote } from "./notes";
 import { getNetworkLabel } from "./explorer";
+import { stroopsToUsdc } from "./format";
 
 export interface ComplianceReport {
   network: string;
@@ -111,4 +112,67 @@ export function formatReportText(r: ComplianceReport): string {
       ? line("Withdraw tx", `${r.withdrawTx.hash} (${r.withdrawTx.at})`)
       : line("Withdraw tx", r.withdrawn ? "n/a (outside event retention)" : "—"),
   ].join("\n");
+}
+
+/** A single row of the history page's activity feed — deposit, withdrawal, or KYC registration. */
+export interface ActivityItem {
+  type: "deposit" | "withdrawal" | "compliance";
+  timestamp: number;
+  commitment: string;
+  amount: string;
+  poolId?: string;
+}
+
+/**
+ * Column order/meaning for {@link formatActivityCsv} and
+ * {@link formatActivityJson}: `type` (deposit|withdrawal|compliance), `date`
+ * (ISO 8601), `amount_usdc` / `amount_stroops` (blank for compliance rows,
+ * which carry no amount), `commitment` (the KYC hash for compliance rows),
+ * and `pool_id` (blank for compliance rows).
+ */
+const ACTIVITY_CSV_COLUMNS = [
+  "type",
+  "date",
+  "amount_usdc",
+  "amount_stroops",
+  "commitment",
+  "pool_id",
+] as const;
+
+function csvEscape(value: string): string {
+  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+/** Render activity rows as CSV. See {@link ACTIVITY_CSV_COLUMNS} for the column list. */
+export function formatActivityCsv(items: ActivityItem[]): string {
+  const rows = items.map((item) => {
+    const isCompliance = item.type === "compliance";
+    return [
+      item.type,
+      new Date(item.timestamp).toISOString(),
+      isCompliance ? "" : stroopsToUsdc(item.amount),
+      isCompliance ? "" : item.amount,
+      item.commitment,
+      item.poolId ?? "",
+    ]
+      .map(csvEscape)
+      .join(",");
+  });
+  return [ACTIVITY_CSV_COLUMNS.join(","), ...rows].join("\n");
+}
+
+/** Render activity rows as JSON. Same fields as {@link formatActivityCsv}, one object per row. */
+export function formatActivityJson(items: ActivityItem[]): string {
+  const data = items.map((item) => {
+    const isCompliance = item.type === "compliance";
+    return {
+      type: item.type,
+      date: new Date(item.timestamp).toISOString(),
+      amountUsdc: isCompliance ? null : stroopsToUsdc(item.amount),
+      amountStroops: isCompliance ? null : item.amount,
+      commitment: item.commitment,
+      poolId: item.poolId ?? null,
+    };
+  });
+  return JSON.stringify(data, null, 2);
 }

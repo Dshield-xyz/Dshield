@@ -74,6 +74,11 @@ export function serializeNote(note: ShieldedNote): string {
   ].join("-");
 }
 
+/** Serializes many notes into one backup file — {@link serializeNote} lines, newline-joined. */
+export function serializeNotes(notes: ShieldedNote[]): string {
+  return notes.map(serializeNote).join("\n") + "\n";
+}
+
 /** Inverse of {@link serializeNote}. Returns null if the string isn't a valid v1 note. */
 function parseNoteV1(serialized: string): ShieldedNote | null {
   const parts = serialized.split("-");

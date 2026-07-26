@@ -2,15 +2,25 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 import { getRpcServer, POOL_CONTRACT_ID, queryContract } from "./stellar";
 import { saveDeposit, getDeposits } from "./deposits";
 
+// Must not exceed the contract's own MAX_PAGE_SIZE (contracts/pool/src/lib.rs)
+// — a larger request is silently clamped there, which would just mean more
+// round trips than necessary, not a correctness issue.
+const COMMITMENTS_PAGE_SIZE = 100;
+
 /**
  * Fetch the complete, ordered list of commitments directly from the pool
- * contract's storage (via the `get_commitments` view). This is the
- * authoritative source for rebuilding the Merkle tree — unlike scanning
- * deposit events, it does not depend on RPC event retention, so it always
- * returns every leaf the contract has inserted.
+ * contract's storage, paging through `get_commitments_page` until a short
+ * page signals the end. This is the authoritative source for rebuilding the
+ * Merkle tree — unlike scanning deposit events, it does not depend on RPC
+ * event retention, so it always returns every leaf the contract has
+ * inserted. Paging (rather than the old unbounded `get_commitments`) keeps
+ * each call within Soroban's per-transaction CPU/footprint limits regardless
+ * of pool size.
  *
  * Returns commitments as 0x-prefixed 32-byte hex strings in leaf-index order,
- * or null if the call fails (e.g. an older pool deployment without the view).
+ * or null if any page call fails (e.g. an older pool deployment without the
+ * view) — never a partial list, since a truncated commitment set would
+ * silently reconstruct the wrong Merkle root.
  */
 export async function fetchCommitmentsFromChain(
   poolId?: string,
@@ -18,16 +28,29 @@ export async function fetchCommitmentsFromChain(
   const targetPool = poolId || POOL_CONTRACT_ID;
   if (!targetPool) return null;
 
-  const result = await queryContract(targetPool, "get_commitments");
-  if (!result) return null;
+  const commitments: string[] = [];
+  let start = 0;
 
-  const native = StellarSdk.scValToNative(result) as unknown;
-  if (!Array.isArray(native)) return null;
+  for (;;) {
+    const result = await queryContract(targetPool, "get_commitments_page", [
+      StellarSdk.nativeToScVal(start, { type: "u32" }),
+      StellarSdk.nativeToScVal(COMMITMENTS_PAGE_SIZE, { type: "u32" }),
+    ]);
+    if (!result) return null;
 
-  return native.map((buf: unknown) => {
-    const bytes = Buffer.from(buf as Uint8Array);
-    return "0x" + bytes.toString("hex").padStart(64, "0");
-  });
+    const native = StellarSdk.scValToNative(result) as unknown;
+    if (!Array.isArray(native)) return null;
+
+    for (const buf of native) {
+      const bytes = Buffer.from(buf as Uint8Array);
+      commitments.push("0x" + bytes.toString("hex").padStart(64, "0"));
+    }
+
+    if (native.length < COMMITMENTS_PAGE_SIZE) break;
+    start += native.length;
+  }
+
+  return commitments;
 }
 
 export interface NoteTxRefs {
@@ -41,7 +64,7 @@ export interface NoteTxRefs {
  * withdraw tx that spent `nullifierHashHex` (if any). Both are derived purely
  * from public events — anyone holding the note can reproduce them. Returns
  * nulls for whatever the RPC's event retention can't reach; the report falls
- * back to the authoritative contract views (get_commitments / is_nullifier_used)
+ * back to the authoritative contract views (get_commitments_page / is_nullifier_used)
  * for the confirmed/withdrawn facts, so missing tx links never block a report.
  */
 export async function lookupNoteTxs(

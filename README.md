@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="frontend/public/dshield.png" alt="DShield Logo" width="200" />
-</p>
-
 # DShield
 
 > **Private by Default. Compliant by Choice.**
@@ -14,12 +10,18 @@ Built for **Stellar Hacks: Real-World ZK**, DShield demonstrates how privacy and
 
 ---
 
+## New to ZK or Stellar?
+
+See **[GLOSSARY.md](GLOSSARY.md)** for plain-English definitions of terms like *nullifier*, *commitment*, *Merkle root*, *UltraHonk*, *Poseidon2*, *selective disclosure*, *relayer*, and more — everything you need to navigate the codebase without a cryptography background.
+
+---
+
 ## Vision
 
 Today's digital payments force users to choose between:
 
-* Complete transparency (traditional blockchains)
-* Complete anonymity (privacy-focused networks)
+- Complete transparency (traditional blockchains)
+- Complete anonymity (privacy-focused networks)
 
 Neither option works for real-world finance.
 
@@ -35,10 +37,10 @@ Using Zero-Knowledge Proofs, users can prove ownership, authorization, complianc
 
 Public blockchains expose:
 
-* Wallet balances
-* Transaction history
-* Payment amounts
-* Financial relationships
+- Wallet balances
+- Transaction history
+- Payment amounts
+- Financial relationships
 
 Anyone can analyze a user's entire financial activity.
 
@@ -54,10 +56,10 @@ Current privacy solutions often sacrifice one for the other.
 
 DShield combines:
 
-* Shielded transactions
-* Zero-Knowledge Proofs
-* Selective disclosure
-* Compliance-aware architecture
+- Shielded transactions
+- Zero-Knowledge Proofs
+- Selective disclosure
+- Compliance-aware architecture
 
 to create a private payments experience that feels like traditional banking while maintaining blockchain security and verifiability.
 
@@ -91,19 +93,18 @@ The deposit creates a cryptographic commitment that represents ownership of fund
 
 When sending funds:
 
-* A Zero-Knowledge Proof is generated client-side
-* The proof demonstrates:
-
-  * Ownership of funds
-  * Valid transaction construction
-  * No double-spending
-  * Balance preservation
+- A Zero-Knowledge Proof is generated client-side
+- The proof demonstrates:
+  - Ownership of funds
+  - Valid transaction construction
+  - No double-spending
+  - Balance preservation
 
 without revealing:
 
-* Sender
-* Receiver
-* Amount
+- Sender
+- Receiver
+- Amount
 
 ---
 
@@ -125,9 +126,9 @@ Users can generate specialized proofs for:
 
 Prove:
 
-* KYC completed
-* Wallet authorized
-* Jurisdiction approved
+- KYC completed
+- Wallet authorized
+- Jurisdiction approved
 
 without revealing identity information.
 
@@ -135,9 +136,9 @@ without revealing identity information.
 
 Prove:
 
-* Source of funds
-* Transaction legitimacy
-* Ownership of assets
+- Source of funds
+- Transaction legitimacy
+- Ownership of assets
 
 without exposing unrelated transactions.
 
@@ -151,18 +152,18 @@ Reveal only the specific information required by regulators while preserving ove
 
 What is **built and verified on-chain today** (testnet), versus the broader vision above:
 
-| Capability | Status |
-| --- | --- |
-| Shielded deposit (USDC → commitment in a Merkle tree) | ✅ Working on testnet |
-| Client-side ZK proof (Noir + UltraHonk, keccak transform) | ✅ |
-| On-chain proof verification (Soroban + BN254/Poseidon2) | ✅ |
-| Shielded withdrawal to any recipient | ✅ |
-| Double-spend prevention (nullifiers) | ✅ |
-| Recipient binding (anti front-running) | ✅ |
-| **Relayer** — withdrawer's account never appears on-chain | ✅ |
-| Compliance: KYC registry + compliance proof verification | ✅ Verified on testnet via CLI (`just demo-compliance`); not yet wired into the web app UI. `disclosed_amount` is cross-checked against the real pool's fixed `deposit_amount` on-chain, not self-asserted by the prover |
-| Selective disclosure: threshold proofs (balance ≥ X) | ✅ Circuit + contract implemented and CLI-verified; no web UI yet. `threshold` is likewise checked against the pool's real `deposit_amount` on-chain |
-| Arbitrary-amount private *transfers* between users | 🚧 Future (today: fixed-denomination pools) |
+| Capability                                                | Status                                                                                                                                                                                                                  |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shielded deposit (USDC → commitment in a Merkle tree)     | ✅ Working on testnet                                                                                                                                                                                                    |
+| Client-side ZK proof (Noir + UltraHonk, keccak transform) | ✅                                                                                                                                                                                                                       |
+| On-chain proof verification (Soroban + BN254/Poseidon2)   | ✅                                                                                                                                                                                                                       |
+| Shielded withdrawal to any recipient                      | ✅                                                                                                                                                                                                                       |
+| Double-spend prevention (nullifiers)                      | ✅                                                                                                                                                                                                                       |
+| Recipient binding (anti front-running)                    | ✅                                                                                                                                                                                                                       |
+| **Relayer** — withdrawer's account never appears on-chain | ✅                                                                                                                                                                                                                       |
+| Compliance: KYC registry + compliance proof verification  | ✅ Verified on testnet via CLI (`just demo-compliance`); not yet wired into the web app UI. `disclosed_amount` is cross-checked against the real pool's fixed `deposit_amount` on-chain, not self-asserted by the prover |
+| Selective disclosure: threshold proofs (balance ≥ X)      | ✅ Circuit + contract implemented and CLI-verified; no web UI yet. `threshold` is likewise checked against the pool's real `deposit_amount` on-chain                                                                     |
+| Arbitrary-amount private _transfers_ between users        | 🚧 Future (today: fixed-denomination pools)                                                                                                                                                                             |
 
 DShield is currently a **fixed-denomination shielded pool** (Tornado-style: deposit a tier amount, withdraw it to any address). Privacy comes from breaking the on-chain link between depositor and recipient — not from hiding the tier amount. Relayed withdrawals mean the withdrawer never signs or pays a fee from their own account.
 
@@ -172,12 +173,12 @@ DShield is currently a **fixed-denomination shielded pool** (Tornado-style: depo
 
 Deployed to Stellar **testnet** (`Test SDF Network ; September 2015`). View on [Stellar Expert](https://stellar.expert/explorer/testnet):
 
-| Contract | ID |
-| --- | --- |
+| Contract                     | ID                                                         |
+| ---------------------------- | ---------------------------------------------------------- |
 | Shielded pool (10 USDC tier) | `CBQ3EPNIMGLS53U4HHLT4V3HAGJJCLONVXAN2QEREGQZMFQOLK7VF6C7` |
-| UltraHonk verifier | `CA64EBZWHEXVBJRQ3U76MRDVZUMIOL6TYTGG6427URU3OV5D3ZLXNKCM` |
-| Compliance | `CDU7ARSZFXBGXHLUFO6AF3MDPVJNWBBOEGDI57FP3E2OR4I4M6DCVPDR` |
-| Test USDC (SAC) | `CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG` |
+| UltraHonk verifier           | `CA64EBZWHEXVBJRQ3U76MRDVZUMIOL6TYTGG6427URU3OV5D3ZLXNKCM` |
+| Compliance                   | `CDU7ARSZFXBGXHLUFO6AF3MDPVJNWBBOEGDI57FP3E2OR4I4M6DCVPDR` |
+| Test USDC (SAC)              | `CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG` |
 
 A full **deposit → relayed withdraw** loop has been executed on testnet: the pool paid the recipient, the nullifier was consumed, and re-submitting the same proof failed with `NullifierUsed`.
 
@@ -197,6 +198,9 @@ just start && just deploy
 
 # Testnet: deploy all contracts and point the app at testnet
 just deploy testnet
+
+# Copy environment variables (if not using just deploy)
+cp frontend/.env.local.example frontend/.env.local
 
 # Run the wallet UI
 cd frontend && pnpm install && pnpm dev   # http://localhost:3000
@@ -226,10 +230,13 @@ Three properties hold the system together (each enforced on-chain and covered by
 1. **Hash consistency** — the contract's Poseidon2 (`soroban_poseidon`) produces byte-identical output to the Noir circuit and the frontend, so the on-chain Merkle root always matches the root the proof is generated against. Locked by `test_recipient_hash_matches_frontend`, `test_single_leaf_root_matches_circuit`.
 2. **Recipient binding** — the withdrawal proof commits to a recipient hash, and the contract recomputes that hash from the actual payout address (`recipient_hash_from_address`) and rejects a mismatch. Without this, anyone could front-run a pending withdrawal and redirect the funds. This is also what makes the relayer trustless: it can submit or refuse, but never steal.
 3. **Double-spend prevention** — each withdrawal consumes a nullifier stored in persistent storage; replaying a proof fails with `NullifierUsed`.
+4. **Trustless tree reconstruction** — clients rebuild the withdrawal Merkle tree from the pool contract's own commitment storage, not by scanning deposit events (which depend on RPC event retention and can go missing). `get_commitments_page(start, limit)` returns leaves in order for a bounded range (capped on-chain at `MAX_PAGE_SIZE = 100` leaves per call regardless of the requested `limit`), and the frontend (`fetchCommitmentsFromChain`) pages through it until a short page signals the end. The older `get_commitments()` (no pagination) still exists for small/local pools, but reads every leaf in one call and will hit Soroban's per-transaction CPU/footprint limits well before a pool nears `MAX_LEAVES = 2^20` — prefer the paginated view for anything beyond a demo pool.
 
 Unbounded data (commitments, nullifiers) lives in **persistent storage** with TTL extension, so the size-capped instance entry doesn't grow with usage.
 
 > ⚠️ Testnet demo only — unaudited. `frontend/.env.local` holds throwaway dev/faucet/relayer secrets and is gitignored; do not reuse them or carry this to mainnet without an audit. The relayer takes no fee (eats gas) and is a single point of censorship (not theft).
+
+> ⚠️ **Rate limiter — single-instance only.** The API rate limiter (`frontend/src/lib/rateLimit.ts`) is in-memory and per-process: each server instance has its own counters, and they reset on every redeploy. This is fine for the current single-instance testnet setup, but provides no real protection in a multi-instance deployment (e.g. behind a load balancer). If you scale horizontally, replace it with a distributed limiter backed by a shared store such as [Upstash Redis](https://upstash.com/) or Vercel KV. See [SECURITY.md](SECURITY.md#rate-limiter--single-instance-only) for the full upgrade path.
 
 ---
 
@@ -239,11 +246,11 @@ Stellar has recently introduced native support for modern ZK verification throug
 
 These upgrades provide:
 
-* BN254 elliptic curve operations
-* Pairing checks
-* Poseidon hashing
-* Multi-scalar multiplication
-* Efficient zkSNARK verification
+- BN254 elliptic curve operations
+- Pairing checks
+- Poseidon hashing
+- Multi-scalar multiplication
+- Efficient zkSNARK verification
 
 This allows DShield to verify proofs on-chain efficiently and affordably.
 
@@ -251,70 +258,76 @@ This allows DShield to verify proofs on-chain efficiently and affordably.
 
 ## Architecture
 
-```text
+```
 +-----------------------+
-|      DShield App      |
-+-----------------------+
-            |
-            v
-+-----------------------+
-| Client-side Prover    |
-| (Noir / zkSNARKs)     |
+| DShield App |
 +-----------------------+
             |
             v
 +-----------------------+
-| Shielded Pool         |
-| Commitments           |
-| Nullifiers            |
+| Client-side Prover |
+| (Noir / zkSNARKs)  |
 +-----------------------+
             |
             v
 +-----------------------+
-| Soroban Verifier      |
-| BN254 Verification    |
+| Shielded Pool |
+| Commitments   |
+| Nullifiers    |
 +-----------------------+
             |
             v
 +-----------------------+
-| Stellar Network       |
+| Soroban Verifier   |
+| BN254 Verification |
 +-----------------------+
+            |
+            v
++-----------------------+
+| Stellar Network |
++-----------------------+
+```mermaid
+flowchart TD
+    A["DShield App"] --> B["Client-side Prover\n(Noir / zkSNARKs)"]
+    B --> C["Shielded Pool\nCommitments · Nullifiers"]
+    C --> D["Soroban Verifier\nBN254 Verification"]
+    D --> E["Stellar Network"]
 ```
 
 ## Tech Stack
 
 ### Blockchain
 
-* Stellar
-* Soroban
+- Stellar
+- Soroban
 
 ### Zero-Knowledge
 
-* Noir
-* UltraHonk
-* zkSNARKs
-* BN254
+- Noir
+- UltraHonk
+- zkSNARKs
+- BN254
 
 ### Cryptography
 
-* Poseidon Hash
-* Poseidon2 Hash
-* Merkle Trees
+- Poseidon Hash
+- Poseidon2 Hash
+- Merkle Trees
 
 ### Frontend
 
-* Next.js
-* TypeScript
-* TailwindCSS
+- Next.js
+- TypeScript
+- TailwindCSS
 
 ### Wallet Integration
 
-* Freighter Wallet
+- Freighter Wallet
 
 ### Storage
 
-* Encrypted local notes
-* Optional decentralized backup
+- Encrypted local notes
+- Optional decentralized backup
 
 ---
 
@@ -350,27 +363,27 @@ Designed for ordinary users, not cryptography experts.
 
 ### Phase 1
 
-* Shielded deposits
-* Shielded transfers
-* Proof verification
+- Shielded deposits
+- Shielded transfers
+- Proof verification
 
 ### Phase 2
 
-* Compliance credentials
-* Selective disclosure
-* Auditor access proofs
+- Compliance credentials
+- Selective disclosure
+- Auditor access proofs
 
 ### Phase 3
 
-* Private payroll
-* Private merchant payments
-* Confidential business treasury management
+- Private payroll
+- Private merchant payments
+- Confidential business treasury management
 
 ### Phase 4
 
-* Cross-border remittances
-* Confidential RWA settlements
-* Institutional privacy infrastructure
+- Cross-border remittances
+- Confidential RWA settlements
+- Institutional privacy infrastructure
 
 ---
 
@@ -421,6 +434,12 @@ DShield showcases how Zero-Knowledge technology can unlock practical privacy for
 ## Team
 
 Built with the belief that privacy should be a default right, not a premium feature.
+
+---
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and PR guidelines. Please review the [Code of Conduct](CODE_OF_CONDUCT.md) before participating, and report security vulnerabilities per [SECURITY.md](SECURITY.md) rather than opening a public issue.
 
 ---
 

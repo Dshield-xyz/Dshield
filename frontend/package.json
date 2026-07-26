@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "analyze": "ANALYZE=true next build"
+    "prepare": "husky"
   },
   "dependencies": {
     "@aztec/bb.js": "0.87.0",
@@ -18,7 +18,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "fflate": "^0.8.3",
-    "next": "16.2.9",
+    "next": "16.2.11",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "tailwind-merge": "^3.6.0"
@@ -26,13 +26,24 @@
   "devDependencies": {
     "@next/bundle-analyzer": "^16.2.12",
     "@tailwindcss/postcss": "^4",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/dom": "^10.4.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.9",
+    "eslint-config-next": "16.2.11",
+    "husky": "^9.1.7",
+    "jest-axe": "^9.0.0",
+    "jsdom": "^25.0.1",
+    "lint-staged": "^15.5.2",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.9"
+  },
+  "lint-staged": {
+    "src/**/*.{ts,tsx}": [
+      "eslint --fix"
+    ]
   }
 }

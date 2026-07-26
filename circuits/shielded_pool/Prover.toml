@@ -2,7 +2,7 @@ nullifier = "1234"
 secret = "5678"
 root = "0x0e829a70d5bfbb7c4ffe0be28454f1eefd47e898dfd330b0a4c61fc615453ed2"
 nullifier_hash = "0x2b0c9e50ac135931c5f87dff253337d63f6fe5f8b0f2489b92a5a9446cc4b3d2"
-recipient = "0xad77fd5de761a47844a8ce4405e9c67cd3a9518b78f7bd275da96a604da53f"
+recipient = "42"
 path_bits = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 path_siblings = [
     "0x00",
