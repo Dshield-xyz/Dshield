@@ -3,6 +3,7 @@ import complianceCircuit from "@/circuits/compliance.json";
 import disclosureCircuit from "@/circuits/disclosure.json";
 import { runProof, type ProofResult, type ProofStage } from "./prover-core";
 import type { ProverWorkerRequest, ProverWorkerResponse } from "./prover.worker";
+import { ShieldedNote } from "@/lib/notes";
 
 export type { ProofResult, ProofStage };
 
@@ -161,6 +162,43 @@ export async function proveDisclosure(
     },
     onProgress,
   );
+export async function generateThresholdProof(note: ShieldedNote, threshold: string): Promise<ProofResult> {
+  return proveDisclosure({
+    kycPreimage: "0x",
+    nullifier: note.nullifier,
+    secret: note.secret,
+    amount: note.amount,
+    auditorKey: "0x",
+    merkleRoot: "0x",
+    kycHash: "0x",
+    threshold,
+    pathSiblings: [],
+    pathBits: [],
+  });
+}
+  kycPreimage: string;
+  nullifier: string;
+  secret: string;
+  amount: string;
+  auditorKey: string;
+  merkleRoot: string;
+  kycHash: string;
+  threshold: string;
+  pathSiblings: string[];
+  pathBits: number[];
+}): Promise<ProofResult> {
+  return generateProof(disclosureCircuit as Record<string, unknown>, {
+    kyc_preimage: ensureHex(inputs.kycPreimage),
+    nullifier: ensureHex(inputs.nullifier),
+    secret: ensureHex(inputs.secret),
+    amount: inputs.amount,
+    auditor_key: ensureHex(inputs.auditorKey),
+    merkle_root: ensureHex(inputs.merkleRoot),
+    kyc_hash: ensureHex(inputs.kycHash),
+    threshold: inputs.threshold,
+    path_bits: inputs.pathBits.map(String),
+    path_siblings: inputs.pathSiblings.map(ensureHex),
+  });
 }
 
 function ensureHex(v: string): string {

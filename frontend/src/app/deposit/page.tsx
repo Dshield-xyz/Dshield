@@ -50,6 +50,10 @@ export default function DepositPage() {
     const t = getPoolTiers();
     return t.length > 0 ? t[0] : null;
   });
+  // New UI state for confirmation step
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [estimatedFee, setEstimatedFee] = useState<string>('');
+  const [pendingTx, setPendingTx] = useState<StellarSdk.Transaction | null>(null);
 
   const noteCount = (() => {
     if (!customAmount || !selectedTier) return 1;
@@ -61,23 +65,24 @@ export default function DepositPage() {
 
   const totalNotes = customAmount ? noteCount : 1;
 
+  /**
+   * Build the transaction up to the point of signing, then store it for confirmation.
+   * This function performs all pre‑sign checks, constructs the Stellar transaction,
+   * extracts the fee, and presents a confirmation UI before the wallet is prompted.
+   */
   async function handleDeposit() {
     if (!address || !selectedTier || totalNotes <= 0) return;
 
     setIsLoading(true);
     setSessionNotes([]);
     const total = totalNotes;
-    const created: ShieldedNote[] = [];
 
     try {
-      // Make sure the connected wallet can actually hold and pay USDC:
-      // establish the trustline (wallet signs) and faucet test funds if short.
-      // Both are no-ops once satisfied.
+      // --- Pre‑sign setup (trustline, faucet) ---
       const sac = getUsdcSacId();
       if (sac) {
         toast("Checking your USDC setup…");
         await ensureUsdcTrustline(address, signTransaction);
-
         const needed = selectedTier.amount * total;
         const balVal = await queryContract(sac, "balance", [
           StellarSdk.nativeToScVal(address, { type: "address" }),
@@ -87,15 +92,11 @@ export default function DepositPage() {
           : BigInt(0);
         if (balance < BigInt(needed)) {
           toast("Topping up your wallet with test USDC…");
-          // Mint a generous buffer so subsequent deposits don't re-faucet.
           await faucetUsdc(address, BigInt(needed) * BigInt(2) - balance);
         }
       }
 
-      // Generate every note's secrets and commitment up front. The leaf index
-      // each note will land on is read once from the chain (the next free slot)
-      // and assigned sequentially — exactly how the contract inserts them — so a
-      // single batched deposit yields the same indices as repeated deposits.
+      // --- Prepare notes and commitments ---
       const nextIndexVal = await queryContract(selectedTier.id, "get_next_index");
       const firstIndex = nextIndexVal
         ? Number(StellarSdk.scValToNative(nextIndexVal))
@@ -119,16 +120,12 @@ export default function DepositPage() {
         });
       }
 
-      const depositorScVal = StellarSdk.nativeToScVal(address, {
-        type: "address",
-      });
+      const depositorScVal = StellarSdk.nativeToScVal(address, { type: "address" });
       const commitmentScVals = pending.map((note) =>
         StellarSdk.xdr.ScVal.scvBytes(Buffer.from(note.commitment, "hex")),
       );
 
-      // One contract call → one signature, whether shielding 1 note or many.
-      // `deposit_batch` transfers the full amount and inserts every commitment
-      // atomically; a single-element batch behaves exactly like `deposit`.
+      // Build the transaction (no signing yet)
       const tx =
         total === 1
           ? await buildContractCall(
@@ -144,16 +141,36 @@ export default function DepositPage() {
               address,
             );
 
-      toast(
-        total > 1
-          ? `Shielding ${total} notes — please sign once in your wallet…`
-          : "Please sign the transaction in your wallet…",
-      );
-      const signedXdr = await signTransaction(tx.toXDR());
+      // Store fee and transaction for confirmation UI
+      setEstimatedFee(tx.fee.toString());
+      setPendingTx(tx);
+      // Keep pending notes for later processing after confirmation
+      (window as any).__pendingNotes = pending; // temporary global for demo
 
+      setShowConfirm(true);
+    } catch (err) {
+      console.error("Deposit error:", err);
+      toast(friendlyError(err), "error");
+    } finally {
+      setIsLoading(false);
+      setCustomAmount("");
+    }
+  }
+
+  /**
+   * Called after the user confirms the deposit. Signs the stored transaction,
+   * submits it, and performs the existing post‑sign logic.
+   */
+  async function signAndSubmit() {
+    if (!pendingTx || !address) return;
+    setIsLoading(true);
+    try {
+      const signedXdr = await signTransaction(pendingTx.toXDR());
       toast("Sending to the network…");
       await submitTransaction(signedXdr);
 
+      const pending: ShieldedNote[] = (window as any).__pendingNotes || [];
+      const created: ShieldedNote[] = [];
       for (const note of pending) {
         saveNote(note);
         created.push(note);
@@ -161,13 +178,13 @@ export default function DepositPage() {
           commitment: note.commitment,
           leafIndex: note.leafIndex,
           timestamp: Date.now(),
-          poolId: selectedTier.id,
+          poolId: selectedTier!.id,
         });
       }
-
       setSessionNotes(created);
 
-      const totalUsdc = (total * selectedTier.amount) / 10 ** TOKEN_DECIMALS;
+      const total = pending.length;
+      const totalUsdc = (total * selectedTier!.amount) / 10 ** TOKEN_DECIMALS;
       toast(
         total > 1
           ? `${totalUsdc} ${TOKEN_SYMBOL} shielded across ${total} notes — save your notes below!`
@@ -179,15 +196,47 @@ export default function DepositPage() {
       toast(friendlyError(err), "error");
     } finally {
       setIsLoading(false);
-      setCustomAmount("");
+      setShowConfirm(false);
+      setPendingTx(null);
+      (window as any).__pendingNotes = null;
     }
   }
+
+  /** Confirmation UI component */
+  const ConfirmDeposit = () => (
+    <Card className="fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-50">
+      <div className="max-w-md w-full bg-zinc-900 p-6 rounded-xl border border-zinc-700 shadow-lg">
+        <h2 className="text-lg font-semibold mb-4 text-zinc-200">Confirm Deposit</h2>
+        <p className="text-sm text-zinc-400 mb-2">
+          Tier: <span className="font-medium text-zinc-200">{selectedTier?.label}</span>
+        </p>
+        <p className="text-sm text-zinc-400 mb-2">
+          Total USDC: <span className="font-medium text-zinc-200">{(totalNotes * selectedTier?.amount ?? 0) / 10 ** TOKEN_DECIMALS} {TOKEN_SYMBOL}</span>
+        </p>
+        <p className="text-sm text-zinc-400 mb-4">
+          Estimated fee: <span className="font-medium text-zinc-200">{formatStroops(Number(estimatedFee))} XLM</span>
+        </p>
+        <div className="flex gap-4 justify-end">
+          <Button variant="outline" onClick={() => setShowConfirm(false)} disabled={isLoading}>
+            Cancel
+          </Button>
+          <Button onClick={signAndSubmit} disabled={isLoading}>
+            Confirm
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
 
   function copyText(text: string, key: string) {
     void navigator.clipboard?.writeText(text);
     setCopiedKey(key);
     setTimeout(() => setCopiedKey((c) => (c === key ? "" : c)), 1500);
+  } catch (err) {
+    console.error("Copy to clipboard failed:", err);
+    toast("Couldn't copy to clipboard — please copy it manually.", "error");
   }
+}
 
   function downloadBackup() {
     const body = sessionNotes.map(serializeNote).join("\n") + "\n";
@@ -432,15 +481,24 @@ export default function DepositPage() {
                         >
                           <WhatsAppIcon className="h-4 w-4" />
                         </a>
-                        <a
-                          href={`https://x.com/intent/tweet?text=${xText}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title="X (public)"
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const confirmed = window.confirm(
+                              "This will be PUBLIC on X — anyone who sees it can steal these funds. Continue?",
+                            );
+                            if (!confirmed) return;
+                            window.open(
+                              `https://x.com/intent/tweet?text=${xText}`,
+                              "_blank",
+                              "noopener,noreferrer",
+                            );
+                          }}
+                          title="X (public) — posts your private note publicly"
                           className="rounded-lg border border-zinc-600 p-2 text-zinc-300 hover:border-zinc-400 hover:text-white"
                         >
                           <XIcon className="h-4 w-4" />
-                        </a>
+                        </button>
                       </div>
                     </div>
                   )}
