@@ -160,19 +160,19 @@ deploy network="local": build
     POOL_10=$(stellar contract deploy \
         --wasm target/wasm32v1-none/release/dshield_pool.wasm \
         --source alice --network "$NETWORK" \
-        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount 100000000)
+        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount 100000000 --admin "$ALICE_ADDR")
     echo "Pool 10 USDC: $POOL_10"
 
     POOL_100=$(stellar contract deploy \
         --wasm target/wasm32v1-none/release/dshield_pool.wasm \
         --source alice --network "$NETWORK" \
-        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount 1000000000)
+        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount 1000000000 --admin "$ALICE_ADDR")
     echo "Pool 100 USDC: $POOL_100"
 
     POOL_1000=$(stellar contract deploy \
         --wasm target/wasm32v1-none/release/dshield_pool.wasm \
         --source alice --network "$NETWORK" \
-        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount 10000000000)
+        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount 10000000000 --admin "$ALICE_ADDR")
     echo "Pool 1000 USDC: $POOL_1000"
 
     echo "$POOL_10" > .pool_id

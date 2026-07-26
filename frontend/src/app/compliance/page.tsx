@@ -24,8 +24,9 @@ import { Button } from "@/components/ui/Button";
 import { SelectButton } from "@/components/ui/SelectButton";
 import { useToast } from "@/components/ui/Toast";
 import { NoteImport } from "@/components/ui/NoteImport";
+import ThresholdDisclosure from "./ThresholdDisclosure";
 
-type Mode = "generate" | "verify";
+type Mode = "generate" | "verify" | "threshold";
 
 type ReportStatus = "pending" | "loading" | "done" | "error";
 
@@ -257,8 +258,6 @@ export default function CompliancePage() {
                   const selected = selectedCommitments.has(note.commitment);
                   return (
                     <button
-                      key={note.commitment}
-                      onClick={() => toggleNote(note)}
                       disabled={isLoading}
                       aria-pressed={selected}
                       aria-label={`${selected ? "Deselect" : "Select"} note ${truncateMiddle(note.commitment, 16, 16)}, status: ${note.spent ? "withdrawn" : "in pool"}`}
@@ -405,19 +404,48 @@ export default function CompliancePage() {
                           d="M19 9l-7 7-7-7"
                         />
                       </svg>
+                      Download all (.zip)
                     </button>
+                  )}
+                </div>
 
-                    {/* Per-note .txt download */}
-                    {r.status === "done" && r.report && (
-                      <button
-                        type="button"
-                        onClick={() => downloadOneTxt(r.report!)}
-                        className="focus-ring mr-3 shrink-0 rounded-md px-2 py-1 text-[10px] font-medium text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-white"
-                      >
-                        .txt
-                      </button>
-                    )}
-                  </div>
+                {results.map((r) => {
+                  const isExpanded = expandedCommitment === r.note.commitment;
+                  return (
+                    <div key={r.note.commitment} className="aurora-border overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/70 backdrop-blur-sm">
+                      {/* Accordion header */}
+                      <div className="relative z-10 flex items-center transition-colors hover:bg-zinc-800/40">
+                        <button
+                          onClick={() => setExpandedCommitment(isExpanded ? null : r.note.commitment)}
+                          aria-expanded={isExpanded}
+                          className="focus-ring flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left"
+                        >
+                          <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-300">
+                            {truncateMiddle(r.note.commitment, 14, 12)}
+                          </span>
+
+                          <StatusBadge status={r.status} />
+
+                          {/* Chevron */}
+                          <svg
+                            className={`h-4 w-4 shrink-0 text-zinc-500 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
+                            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+
+                        {/* Per-note .txt download */}
+                        {r.status === "done" && r.report && (
+                          <button
+                            type="button"
+                            onClick={() => downloadOneTxt(r.report!)}
+                            className="focus-ring mr-3 shrink-0 rounded-md px-2 py-1 text-[10px] font-medium text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-white"
+                          >
+                            .txt
+                          </button>
+                        )}
+                      </div>
 
                   {/* Accordion body */}
                   {isExpanded && (
@@ -438,10 +466,8 @@ export default function CompliancePage() {
                         />
                       )}
                     </div>
-                  )}
-                </div>
-              );
-            })}
+                  );
+                })}
 
             {/* Re-run / clear */}
             <div className="flex gap-2">

@@ -148,7 +148,7 @@ ok "Verifier deployed: ${VERIFIER_ID:0:12}..."
 POOL_ID=$(stellar contract deploy \
   --wasm target/wasm32v1-none/release/dshield_pool.wasm \
   --source e2e-test --network local \
-  -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount "$DEPOSIT_AMOUNT")
+  -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount "$DEPOSIT_AMOUNT" --admin "$E2E_ADDR")
 ok "Pool deployed: ${POOL_ID:0:12}..."
 
 COMPLIANCE_ID=$(stellar contract deploy \

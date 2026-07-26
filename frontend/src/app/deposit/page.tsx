@@ -192,9 +192,7 @@ export default function DepositPage() {
         });
       }
 
-      const depositorScVal = StellarSdk.nativeToScVal(address, {
-        type: "address",
-      });
+      const depositorScVal = StellarSdk.nativeToScVal(address, { type: "address" });
       const commitmentScVals = pending.map((note) =>
         StellarSdk.xdr.ScVal.scvBytes(Buffer.from(note.commitment, "hex")),
       );
@@ -277,6 +275,32 @@ export default function DepositPage() {
     }
   }
 
+  /** Confirmation UI component */
+  const ConfirmDeposit = () => (
+    <Card className="fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-50">
+      <div className="max-w-md w-full bg-zinc-900 p-6 rounded-xl border border-zinc-700 shadow-lg">
+        <h2 className="text-lg font-semibold mb-4 text-zinc-200">Confirm Deposit</h2>
+        <p className="text-sm text-zinc-400 mb-2">
+          Tier: <span className="font-medium text-zinc-200">{selectedTier?.label}</span>
+        </p>
+        <p className="text-sm text-zinc-400 mb-2">
+          Total USDC: <span className="font-medium text-zinc-200">{(totalNotes * selectedTier?.amount ?? 0) / 10 ** TOKEN_DECIMALS} {TOKEN_SYMBOL}</span>
+        </p>
+        <p className="text-sm text-zinc-400 mb-4">
+          Estimated fee: <span className="font-medium text-zinc-200">{formatStroops(Number(estimatedFee))} XLM</span>
+        </p>
+        <div className="flex gap-4 justify-end">
+          <Button variant="outline" onClick={() => setShowConfirm(false)} disabled={isLoading}>
+            Cancel
+          </Button>
+          <Button onClick={signAndSubmit} disabled={isLoading}>
+            Confirm
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+
   function copyText(text: string, key: string) {
     try {
       void navigator.clipboard?.writeText(text);
@@ -287,6 +311,7 @@ export default function DepositPage() {
       toast("Couldn't copy to clipboard — please copy it manually.", "error");
     }
   }
+}
 
   function downloadBackup() {
     const body = sessionNotes.map(serializeNote).join("\n") + "\n";

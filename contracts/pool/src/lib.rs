@@ -32,6 +32,8 @@ pub enum PoolError {
     AmountOverflow = 13,
     BatchTooLarge = 14,
     InvalidDepositAmount = 15,
+    Paused = 16,
+    NotAuthorized = 17,
 }
 
 #[contractevent(topics = ["deposit"], data_format = "map")]
@@ -44,6 +46,23 @@ pub struct DepositEvent<'a> {
 #[contractevent(topics = ["withdraw"], data_format = "single-value")]
 pub struct WithdrawEvent<'a> {
     pub nullifier_hash: &'a BytesN<32>,
+}
+
+#[contractevent(topics = ["paused"])]
+pub struct PausedEvent<'a> {
+    pub paused_by: &'a Address,
+}
+
+#[contractevent(topics = ["unpaused"])]
+pub struct UnpausedEvent<'a> {
+    pub unpaused_by: &'a Address,
+}
+
+#[contractevent(topics = ["verifier_updated"])]
+pub struct VerifierUpdatedEvent<'a> {
+    pub previous_verifier: &'a Address,
+    pub new_verifier: &'a Address,
+    pub updated_by: &'a Address,
 }
 
 fn key_commitment_prefix() -> Symbol {
@@ -63,6 +82,12 @@ fn key_next_index() -> Symbol {
 }
 fn key_verifier() -> Symbol {
     symbol_short!("ver")
+}
+fn key_admin() -> Symbol {
+    symbol_short!("admin")
+}
+fn key_paused() -> Symbol {
+    symbol_short!("paused")
 }
 fn key_token() -> Symbol {
     symbol_short!("token")
@@ -313,6 +338,7 @@ impl PoolContract {
         verifier: Address,
         token: Address,
         deposit_amount: i128,
+        admin: Address,
     ) -> Result<(), PoolError> {
         if env.storage().instance().has(&key_verifier()) {
             return Err(PoolError::AlreadyInitialized);
@@ -325,11 +351,85 @@ impl PoolContract {
         env.storage()
             .instance()
             .set(&key_deposit_amount(), &deposit_amount);
+        env.storage().instance().set(&key_admin(), &admin);
+        Ok(())
+    }
+
+    /// Pauses deposits and withdrawals. Admin-gated circuit breaker for
+    /// responding to a discovered bug in the VK, Poseidon2 implementation, or
+    /// the pinned verifier dependency without deploying a new pool.
+    pub fn pause(env: Env) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+        env.storage().instance().set(&key_paused(), &true);
+        PausedEvent { paused_by: &admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Resumes deposits and withdrawals after a pause.
+    pub fn unpause(env: Env) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+        env.storage().instance().set(&key_paused(), &false);
+        UnpausedEvent {
+            unpaused_by: &admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        env.storage().instance().get(&key_paused()).unwrap_or(false)
+    }
+
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&key_admin())
+    }
+
+    /// Admin-gated: points the pool at a different verifier contract, e.g. to
+    /// swap in a fixed verifier after a bug is found in the VK or the pinned
+    /// verifier dependency.
+    pub fn set_verifier(env: Env, verifier: Address) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+
+        let previous_verifier: Address = env
+            .storage()
+            .instance()
+            .get(&key_verifier())
+            .ok_or(PoolError::VerifierNotSet)?;
+        env.storage().instance().set(&key_verifier(), &verifier);
+
+        VerifierUpdatedEvent {
+            previous_verifier: &previous_verifier,
+            new_verifier: &verifier,
+            updated_by: &admin,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
     pub fn deposit(env: Env, depositor: Address, commitment: BytesN<32>) -> Result<u32, PoolError> {
         depositor.require_auth();
+        if Self::is_paused(env.clone()) {
+            return Err(PoolError::Paused);
+        }
         bump_instance(&env);
 
         let cm_key = (key_commitment_prefix(), commitment.clone());
@@ -378,6 +478,9 @@ impl PoolContract {
         commitments: soroban_sdk::Vec<BytesN<32>>,
     ) -> Result<u32, PoolError> {
         depositor.require_auth();
+        if Self::is_paused(env.clone()) {
+            return Err(PoolError::Paused);
+        }
         bump_instance(&env);
 
         let count = commitments.len();
@@ -438,6 +541,9 @@ impl PoolContract {
     ) -> Result<(), PoolError> {
         if proof_bytes.len() as usize != PROOF_BYTES {
             return Err(PoolError::VerificationFailed);
+        }
+        if Self::is_paused(env.clone()) {
+            return Err(PoolError::Paused);
         }
         bump_instance(&env);
 
@@ -619,10 +725,10 @@ impl PoolContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::Address as TestAddress,
+        testutils::{Address as TestAddress, Events},
         token::StellarAssetClient,
         token::TokenClient,
-        Address, Env,
+        Address, Env, Event,
     };
 
     fn dummy_commitment(env: &Env, seed: u8) -> BytesN<32> {
@@ -762,7 +868,7 @@ mod tests {
         let deposit_amount: i128 = 10_000_000;
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), deposit_amount),
+            (verifier_id, token_id.address(), deposit_amount, admin.clone()),
         );
         (pool_id, depositor, token_id.address())
     }
@@ -782,7 +888,7 @@ mod tests {
         let deposit_amount: i128 = 10_000_000;
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), deposit_amount),
+            (verifier_id, token_id.address(), deposit_amount, admin.clone()),
         );
         (pool_id, depositor1, depositor2, token_id.address())
     }
@@ -1310,7 +1416,7 @@ mod tests {
         let verifier_id = <Address as TestAddress>::generate(&env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), 10_000_000i128),
+            (verifier_id, token_id.address(), 10_000_000i128, admin.clone()),
         );
         let client = PoolContractClient::new(&env, &pool_id);
 
@@ -1986,7 +2092,7 @@ mod tests {
         // deposit_amount * count overflows i128 for any count >= 2.
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), i128::MAX),
+            (verifier_id, token_id.address(), i128::MAX, admin.clone()),
         );
         let client = PoolContractClient::new(&env, &pool_id);
 
@@ -2022,5 +2128,224 @@ mod tests {
         let max_cm = BytesN::from_array(&env, &[0xFF; 32]);
         let idx = client.deposit(&depositor, &max_cm);
         assert_eq!(idx, 0);
+    }
+
+    // ──────────────────────────────────────────────
+    //  Admin: pause / unpause circuit breaker
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_pool_not_paused_by_default() {
+        let env = Env::default();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    fn test_pause_blocks_deposit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.pause();
+        assert!(client.is_paused());
+
+        let c1 = dummy_commitment(&env, 1);
+        let result = client.try_deposit(&depositor, &c1);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
+    }
+
+    #[test]
+    fn test_pause_blocks_deposit_batch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.pause();
+
+        let mut commitments = SorobanVec::new(&env);
+        commitments.push_back(dummy_commitment(&env, 1));
+        let result = client.try_deposit_batch(&depositor, &commitments);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
+    }
+
+    #[test]
+    fn test_pause_blocks_withdraw() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &dummy_commitment(&env, 1));
+        client.pause();
+
+        let recipient = <Address as TestAddress>::generate(&env);
+        let public_inputs = Bytes::from_slice(&env, &[0u8; 96]);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
+    }
+
+    #[test]
+    fn test_unpause_restores_deposit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.pause();
+        client.unpause();
+        assert!(!client.is_paused());
+
+        let idx = client.deposit(&depositor, &dummy_commitment(&env, 1));
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn test_pause_requires_admin_auth() {
+        let env = Env::default();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        // Reject any auth so pause (called without mocking) fails.
+        env.set_auths(&[]);
+        let result = client.try_pause();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unpause_requires_admin_auth() {
+        let env = Env::default();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        env.mock_all_auths();
+        client.pause();
+
+        // Reject any auth so unpause (called without mocking) fails.
+        env.set_auths(&[]);
+        let result = client.try_unpause();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pause_emits_paused_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let admin = client.get_admin().unwrap();
+
+        client.pause();
+
+        let expected = PausedEvent { paused_by: &admin };
+        assert_eq!(
+            *env.events().all().events().last().unwrap(),
+            expected.to_xdr(&env, &pool_id),
+        );
+    }
+
+    #[test]
+    fn test_unpause_emits_unpaused_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let admin = client.get_admin().unwrap();
+
+        client.pause();
+        client.unpause();
+
+        let expected = UnpausedEvent {
+            unpaused_by: &admin,
+        };
+        assert_eq!(
+            *env.events().all().events().last().unwrap(),
+            expected.to_xdr(&env, &pool_id),
+        );
+    }
+
+    // ──────────────────────────────────────────────
+    //  Admin: set_verifier
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_set_verifier_emits_event_with_addresses() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let admin = client.get_admin().unwrap();
+
+        // The verifier_id generated inside setup_with_token isn't returned to
+        // the caller, so instead call set_verifier twice and confirm the
+        // second event's previous_verifier equals the first call's new one —
+        // this proves the stored verifier actually changed.
+        let v1 = <Address as TestAddress>::generate(&env);
+        client.set_verifier(&v1);
+        let v2 = <Address as TestAddress>::generate(&env);
+        client.set_verifier(&v2);
+
+        let expected = VerifierUpdatedEvent {
+            previous_verifier: &v1,
+            new_verifier: &v2,
+            updated_by: &admin,
+        };
+        assert_eq!(
+            *env.events().all().events().last().unwrap(),
+            expected.to_xdr(&env, &pool_id),
+        );
+    }
+
+    #[test]
+    fn test_set_verifier_requires_admin_auth() {
+        let env = Env::default();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let new_verifier = <Address as TestAddress>::generate(&env);
+
+        // Reject any auth so set_verifier (called without mocking) fails.
+        env.set_auths(&[]);
+        let result = client.try_set_verifier(&new_verifier);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_verifier_then_withdraw_uses_new_verifier() {
+        // Proves set_verifier actually changes which contract withdraw calls
+        // into: pointing the pool at a bogus (non-contract) address makes
+        // withdraw fail at the cross-contract call rather than succeeding.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &dummy_commitment(&env, 1));
+        let root = client.get_root().unwrap();
+
+        let bogus_verifier = <Address as TestAddress>::generate(&env);
+        client.set_verifier(&bogus_verifier);
+
+        let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
+        let correct = recipient_hash_from_address(&env, &recipient).unwrap();
+
+        let mut pi = [0u8; 96];
+        pi[..32].copy_from_slice(&root.to_array());
+        pi[64..96].copy_from_slice(&correct.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            PoolError::VerificationFailed
+        );
     }
 }
