@@ -25,6 +25,9 @@ overrides:
   # range to the patched line; Next only exercises a small resize/format
   # subset of sharp's API for image optimization, low regression surface.
   sharp: "^0.35.3"
+  acorn: "8.17.0"
+  minimatch: "10.0.1"
+  electron-to-chromium: "1.5.396"
 
 allowBuilds:
   '@reown/appkit': true
