@@ -2,7 +2,7 @@
 
 Thanks for your interest in contributing. DShield is a shielded stablecoin wallet on Stellar (Soroban contracts + Noir circuits + a Next.js frontend), currently a testnet demo. This guide covers how to get set up and how to submit changes.
 
-> **New to ZK or Stellar?** See [GLOSSARY.md](GLOSSARY.md) for plain-English definitions of terms like *nullifier*, *commitment*, *Merkle root*, *UltraHonk*, *Poseidon2*, *selective disclosure*, *relayer*, and more — everything you need before diving in.
+> **New to ZK or Stellar?** See [GLOSSARY.md](GLOSSARY.md) for plain-English definitions of terms like _nullifier_, _commitment_, _Merkle root_, _UltraHonk_, _Poseidon2_, _selective disclosure_, _relayer_, and more — everything you need before diving in.
 
 ## Ground rules
 
@@ -32,8 +32,8 @@ Run `just --list` for the full set of available recipes (build, deploy, demo, cl
    - `just test` — both
    - `just test-e2e` (or `tests/e2e.sh`) — full on-chain deposit/withdraw loop against a local network
 4. If you touch a Noir circuit, make sure it still compiles and the corresponding proof round-trips: `nargo compile && nargo execute` in the circuit's directory, then regenerate the checked-in `frontend/src/circuits/*.json` / `frontend/public/circuits/*.json` artifacts the frontend embeds for client-side proving (see `just build-circuits`).
-5. Run the frontend linter (`pnpm lint` in `frontend/`) and make sure `pnpm build` type-checks cleanly.
-6. Open a PR against `dev`, not `main` — all active development merges into `dev`. Describe *why* the change is needed, not just what changed — link the issue if there is one. CI (circuit compile/proof round-trip, contract tests, frontend tests, lint, and an on-chain e2e run) must pass before merge.
+5. Run the frontend linter (`pnpm lint` in `frontend/`) and make sure `pnpm build` type-checks cleanly. The pre-commit hook runs `eslint --fix` automatically on staged `src/**/*.{ts,tsx}` files when you commit.
+6. Open a PR against `dev`, not `main` — all active development merges into `dev`. Describe _why_ the change is needed, not just what changed — link the issue if there is one. CI (circuit compile/proof round-trip, contract tests, frontend tests, lint, and an on-chain e2e run) must pass before merge.
 
 ## Where things live
 
@@ -51,6 +51,7 @@ Use GitHub Issues. For anything that could be a security vulnerability (a way to
 ## Changelog Requirements
 
 All user-facing or architectural PRs must include a corresponding entry in the `CHANGELOG.md` file under the `## [Unreleased]` header, utilizing standard changelog tags:
+
 - `Added` - for new features
 - `Changed` - for changes in existing functionality
 - `Deprecated` - for soon-to-be removed features

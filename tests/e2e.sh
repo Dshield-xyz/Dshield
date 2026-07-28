@@ -148,7 +148,7 @@ ok "Verifier deployed: ${VERIFIER_ID:0:12}..."
 POOL_ID=$(stellar contract deploy \
   --wasm target/wasm32v1-none/release/dshield_pool.wasm \
   --source e2e-test --network local \
-  -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount "$DEPOSIT_AMOUNT")
+  -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount "$DEPOSIT_AMOUNT" --admin "$E2E_ADDR")
 ok "Pool deployed: ${POOL_ID:0:12}..."
 
 COMPLIANCE_ID=$(stellar contract deploy \
@@ -223,8 +223,8 @@ cd circuits/shielded_pool
 cat > Prover.toml << 'TOML'
 nullifier = "1234"
 secret = "5678"
-root = "0x0e829a70d5bfbb7c4ffe0be28454f1eefd47e898dfd330b0a4c61fc615453ed2"
-nullifier_hash = "0x2b0c9e50ac135931c5f87dff253337d63f6fe5f8b0f2489b92a5a9446cc4b3d2"
+root = "0x10aea39ac00016e6011dbfcfa33b700d3951b3a2186fa72252e6343b18e1d293"
+nullifier_hash = "0x188176ced46ba650f1f749ae68e5d688b11a7acb510335d2da255448167aa9fc"
 recipient = "42"
 path_bits = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 path_siblings = [
@@ -251,6 +251,10 @@ path_siblings = [
 ]
 TOML
 
+# Remove any stale witness/proof first: without this a failing `nargo execute`
+# leaves the previous run's artifacts in place, so `bb prove`/`bb verify` below
+# succeed against them and report a passing proof for inputs that never solved.
+rm -f target/shielded_pool.gz target/proof target/public_inputs
 nargo execute 2>&1 && ok "Circuit witness solved" || err "nargo execute" "failed"
 bb prove --scheme ultra_honk --oracle_hash keccak \
   --bytecode_path target/shielded_pool.json \

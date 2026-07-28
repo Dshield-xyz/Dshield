@@ -29,6 +29,8 @@ pub enum ComplianceError {
     /// threshold exceeds the actual fixed deposit_amount of the pool the
     /// merkle_root belongs to.
     ThresholdNotMet = 12,
+    /// accept_admin called with no admin rotation in progress.
+    NoPendingAdmin = 13,
 }
 
 /// Cross-contract call into a pool's `is_known_root(root) -> bool` view.
@@ -108,6 +110,23 @@ pub struct DisclosureVerifiedEvent<'a> {
     pub threshold: &'a BytesN<32>,
 }
 
+#[contractevent(topics = ["pools_updated"])]
+pub struct PoolsUpdatedEvent<'a> {
+    pub pool_count: u32,
+    pub updated_by: &'a Address,
+}
+
+#[contractevent(topics = ["disclosure_vk_updated"])]
+pub struct DisclosureVkUpdatedEvent<'a> {
+    pub updated_by: &'a Address,
+}
+
+#[contractevent(topics = ["admin_updated"])]
+pub struct AdminUpdatedEvent<'a> {
+    pub previous_admin: &'a Address,
+    pub new_admin: &'a Address,
+}
+
 // KYC registry, VKs, admin, and pools all live in bounded instance storage.
 // Every state-mutating or verification entrypoint extends the TTL so the
 // entry doesn't silently expire and brick the contract between demos.
@@ -136,6 +155,9 @@ impl ComplianceContract {
     }
     fn key_pools() -> Symbol {
         symbol_short!("pools")
+    }
+    fn key_pending_admin() -> Symbol {
+        symbol_short!("pendadm")
     }
 
     pub fn __constructor(
@@ -167,7 +189,15 @@ impl ComplianceContract {
             .ok_or(ComplianceError::VkNotSet)?;
         admin.require_auth();
         bump_instance(&env);
+        let pool_count = pools.len();
         env.storage().instance().set(&Self::key_pools(), &pools);
+
+        PoolsUpdatedEvent {
+            pool_count,
+            updated_by: &admin,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -176,6 +206,55 @@ impl ComplianceContract {
             .instance()
             .get(&Self::key_pools())
             .unwrap_or(SorobanVec::new(&env))
+    }
+
+    /// Step 1 of admin rotation: the current admin nominates `new_admin`.
+    /// Takes effect only once `new_admin` calls `accept_admin`, so a typoed
+    /// or unreachable address can never brick admin access.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ComplianceError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&Self::key_admin())
+            .ok_or(ComplianceError::VkNotSet)?;
+        admin.require_auth();
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&Self::key_pending_admin(), &new_admin);
+        Ok(())
+    }
+
+    /// Step 2 of admin rotation: the proposed admin claims the role. Must be
+    /// called by the address passed to `propose_admin`; the previous admin
+    /// loses access as soon as this succeeds.
+    pub fn accept_admin(env: Env) -> Result<(), ComplianceError> {
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&Self::key_pending_admin())
+            .ok_or(ComplianceError::NoPendingAdmin)?;
+        pending_admin.require_auth();
+        bump_instance(&env);
+
+        let previous_admin: Address = env
+            .storage()
+            .instance()
+            .get(&Self::key_admin())
+            .ok_or(ComplianceError::VkNotSet)?;
+
+        env.storage()
+            .instance()
+            .set(&Self::key_admin(), &pending_admin);
+        env.storage().instance().remove(&Self::key_pending_admin());
+
+        AdminUpdatedEvent {
+            previous_admin: &previous_admin,
+            new_admin: &pending_admin,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     pub fn register_kyc(env: Env, kyc_hash: BytesN<32>) -> Result<(), ComplianceError> {
@@ -295,6 +374,12 @@ impl ComplianceContract {
         env.storage()
             .instance()
             .set(&Self::key_disclosure_vk(), &vk_bytes);
+
+        DisclosureVkUpdatedEvent {
+            updated_by: &admin,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -379,11 +464,14 @@ impl ComplianceContract {
 }
 
 #[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::Address as TestAddress,
-        Env,
+        testutils::{Address as TestAddress, Events as _, MockAuth, MockAuthInvoke},
+        Env, Event,
     };
 
     fn vk_bytes(env: &Env) -> Bytes {
@@ -986,9 +1074,10 @@ mod tests {
 
         let verifier_id = <Address as TestAddress>::generate(env);
         let deposit_amount: i128 = 100_000_000; // 10 USDC tier, matches justfile
+        let pool_admin = <Address as TestAddress>::generate(env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), deposit_amount),
+            (verifier_id, token_id.address(), deposit_amount, pool_admin),
         );
         let mut arr = [0u8; 32];
         arr[0] = 7;
@@ -1172,5 +1261,166 @@ mod tests {
 
         assert_eq!(client.get_pools().len(), 1);
         assert_eq!(client.get_pools().get(0).unwrap(), p1);
+    }
+
+    // ──────────────────────────────────────────────
+    //  Events: set_pools / set_disclosure_vk
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_set_pools_emits_pools_updated_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        let mut pools = soroban_sdk::Vec::new(&env);
+        pools.push_back(<Address as TestAddress>::generate(&env));
+
+        client.set_pools(&pools);
+
+        let expected = PoolsUpdatedEvent {
+            pool_count: pools.len(),
+            updated_by: &admin,
+        };
+        assert_eq!(
+            env.events().all(),
+            std::vec![expected.to_xdr(&env, &contract_id)],
+        );
+    }
+
+    #[test]
+    fn test_set_disclosure_vk_emits_disclosure_vk_updated_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        client.set_disclosure_vk(&disclosure_vk_bytes(&env));
+
+        let expected = DisclosureVkUpdatedEvent { updated_by: &admin };
+        assert_eq!(
+            env.events().all(),
+            std::vec![expected.to_xdr(&env, &contract_id)],
+        );
+    }
+
+    // ──────────────────────────────────────────────
+    //  Admin rotation
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_accept_admin_transfers_privileges() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        client.propose_admin(&new_admin);
+        client.accept_admin();
+
+        let stored_admin: Address = env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .get(&ComplianceContract::key_admin())
+                .unwrap()
+        });
+        assert_eq!(stored_admin, new_admin);
+        assert_ne!(stored_admin, admin);
+
+        // New admin can now perform privileged actions.
+        let kyc_hash = dummy_hash(&env, 1);
+        assert!(client.try_register_kyc(&kyc_hash).is_ok());
+    }
+
+    #[test]
+    fn test_old_admin_loses_access_after_rotation() {
+        let env = Env::default();
+        let (contract_id, admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        env.mock_all_auths();
+        client.propose_admin(&new_admin);
+        client.accept_admin();
+
+        // Explicitly mock only the OLD admin's auth for this call. The
+        // contract now requires new_admin's auth (fetched fresh from
+        // storage), so the old admin's mocked signature can't satisfy it.
+        let kyc_hash = dummy_hash(&env, 1);
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "register_kyc",
+                args: (kyc_hash.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let result = client.try_register_kyc(&kyc_hash);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accept_admin_requires_pending_admin_auth() {
+        let env = Env::default();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        env.mock_all_auths();
+        client.propose_admin(&new_admin);
+
+        // Nobody's auth is mocked for accept_admin itself in this branch.
+        env.set_auths(&[]);
+        let result = client.try_accept_admin();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accept_admin_without_proposal_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        let result = client.try_accept_admin();
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            ComplianceError::NoPendingAdmin
+        );
+    }
+
+    #[test]
+    fn test_propose_admin_requires_current_admin_auth() {
+        let env = Env::default();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        let result = client.try_propose_admin(&new_admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accept_admin_emits_admin_updated_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        client.propose_admin(&new_admin);
+        client.accept_admin();
+
+        let expected = AdminUpdatedEvent {
+            previous_admin: &admin,
+            new_admin: &new_admin,
+        };
+        assert_eq!(
+            env.events().all(),
+            std::vec![expected.to_xdr(&env, &contract_id)],
+        );
     }
 }

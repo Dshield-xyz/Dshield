@@ -44,8 +44,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     const id = ++seq.current;
     const resolved = tone ?? inferTone(message);
     setToasts((prev) => [...prev, { id, message, tone: resolved }]);
-    const delay = resolved === "error" ? 8000 : resolved === "success" ? 5000 : 3500;
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), delay);
+    const delay =
+      resolved === "error" ? 8000 : resolved === "success" ? 5000 : 3500;
+    setTimeout(
+      () => setToasts((prev) => prev.filter((t) => t.id !== id)),
+      delay,
+    );
   }, []);
 
   function dismiss(id: number) {
@@ -64,16 +68,24 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             key={t.id}
             className={cn(
               "flex animate-[fade-up_0.3s_cubic-bezier(0.16,1,0.3,1)_both] items-start justify-between gap-3 rounded-xl border px-4 py-3 text-sm shadow-xl backdrop-blur-sm",
-              t.tone === "error" && "border-red-500/40 bg-red-950/90 text-red-200",
+              t.tone === "error" &&
+                "border-red-500/40 bg-red-950/90 text-red-200",
               t.tone === "success" &&
                 "border-green-500/40 bg-green-950/85 text-green-200",
-              t.tone === "info" && "border-zinc-700 bg-zinc-900/95 text-zinc-200",
+              t.tone === "info" &&
+                "border-zinc-700 bg-zinc-900/95 text-zinc-200",
             )}
           >
             <span className="leading-relaxed">{t.message}</span>
             <button
               type="button"
               onClick={() => dismiss(t.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  dismiss(t.id);
+                }
+              }}
               aria-label="Dismiss"
               className="focus-ring mt-0.5 shrink-0 rounded opacity-50 transition-opacity hover:opacity-100"
             >

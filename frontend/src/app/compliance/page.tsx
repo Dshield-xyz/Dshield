@@ -2,7 +2,12 @@
 
 import { useState, useEffect, useReducer } from "react";
 import { zipSync, strToU8 } from "fflate";
-import { getNotes, saveNoteIfNew, type ShieldedNote } from "@/lib/notes";
+import {
+  getNotes,
+  saveNoteIfNew,
+  serializeNotes,
+  type ShieldedNote,
+} from "@/lib/notes";
 import { friendlyError } from "@/lib/errors";
 import { syncSpentNotes } from "@/lib/sync";
 import {
@@ -19,9 +24,8 @@ import { Button } from "@/components/ui/Button";
 import { SelectButton } from "@/components/ui/SelectButton";
 import { useToast } from "@/components/ui/Toast";
 import { NoteImport } from "@/components/ui/NoteImport";
-import ThresholdDisclosure from "./ThresholdDisclosure";
 
-type Mode = "generate" | "verify" | "threshold";
+type Mode = "generate" | "verify";
 
 type ReportStatus = "pending" | "loading" | "done" | "error";
 
@@ -34,18 +38,35 @@ interface ReportResult {
 
 export default function CompliancePage() {
   const [mode, setMode] = useState<Mode>("generate");
-  const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(new Set());
+  const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(
+    new Set(),
+  );
   const [results, setResults] = useState<ReportResult[]>([]);
-  const [expandedCommitment, setExpandedCommitment] = useState<string | null>(null);
+  const [expandedCommitment, setExpandedCommitment] = useState<string | null>(
+    null,
+  );
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
   const [, refresh] = useReducer((x: number) => x + 1, 0);
 
   useEffect(() => {
-    syncSpentNotes().then((n) => { if (n > 0) refresh(); });
+    syncSpentNotes().then((n) => {
+      if (n > 0) refresh();
+    });
   }, []);
 
   const allNotes = typeof window !== "undefined" ? getNotes() : [];
+
+  function downloadAllNotes() {
+    if (allNotes.length === 0) return;
+    const blob = new Blob([serializeNotes(allNotes)], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dshield-notes-${Date.now()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   function switchMode(m: Mode) {
     setMode(m);
@@ -165,212 +186,290 @@ export default function CompliancePage() {
       />
 
       {/* Mode toggle */}
-              {/* Mode toggle */}
-        
-      <div className="mt-8 grid grid-cols-3 gap-2">
-        <SelectButton selected={mode === "generate"} onClick={() => switchMode("generate")} disabled={isLoading} className="text-center font-medium">
+      <fieldset className="mt-8 grid grid-cols-2 gap-2">
+        <legend className="sr-only">Report Mode</legend>
+        <SelectButton
+          selected={mode === "generate"}
+          onClick={() => switchMode("generate")}
+          disabled={isLoading}
+          className="text-center font-medium"
+          aria-label="Generate Reports mode"
+        >
           Generate Reports
         </SelectButton>
-        <SelectButton selected={mode === "verify"} onClick={() => switchMode("verify")} disabled={isLoading} className="text-center font-medium">
+        <SelectButton
+          selected={mode === "verify"}
+          onClick={() => switchMode("verify")}
+          disabled={isLoading}
+          className="text-center font-medium"
+          aria-label="Verify Reports mode"
+        >
           Verify Reports
         </SelectButton>
-        <SelectButton selected={mode === "threshold"} onClick={() => switchMode("threshold")} disabled={isLoading} className="text-center font-medium">
-          Threshold Disclosure
-        </SelectButton>
-      </div>
+      </fieldset>
 
       <div className="mt-6 space-y-6">
-        {mode === "threshold" ? (
-          <ThresholdDisclosure notes={allNotes} />
-        ) : (
-          <>
-            {/* Note selection */}
-            {mode === "generate" && (
-              <Card>
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-medium text-zinc-400">
-                    Your Notes ({allNotes.length})
-                  </h3>
-                  {allNotes.length > 0 && (
+        {/* Note selection */}
+        {mode === "generate" && (
+          <Card>
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-medium text-zinc-400">
+                Your Notes ({allNotes.length})
+              </h2>
+              <div className="flex items-center gap-3">
+                {allNotes.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={downloadAllNotes}
+                      className="text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+                    >
+                      Download all
+                    </button>
                     <button
                       disabled={isLoading}
                       onClick={() =>
                         selectedCommitments.size === allNotes.length
                           ? setSelectedCommitments(new Set())
-                          : setSelectedCommitments(new Set(allNotes.map((n) => n.commitment)))
+                          : setSelectedCommitments(
+                              new Set(allNotes.map((n) => n.commitment)),
+                            )
                       }
                       className="text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
                     >
-                      {selectedCommitments.size === allNotes.length ? "Deselect all" : "Select all"}
+                      {selectedCommitments.size === allNotes.length
+                        ? "Deselect all"
+                        : "Select all"}
                     </button>
-                  )}
-                </div>
-
-                {allNotes.length === 0 ? (
-                  <p className="mt-3 text-sm text-zinc-500">No notes on this device yet. Make a deposit, or import a note below.</p>
-                ) : (
-                  <div className="mt-3 space-y-2">
-                    {allNotes.map((note) => {
-                      const selected = selectedCommitments.has(note.commitment);
-                      return (
-                        <button
-                          key={note.commitment}
-                          onClick={() => toggleNote(note)}
-                          disabled={isLoading}
-                          aria-pressed={selected}
-                          className={`focus-ring w-full rounded-xl border px-4 py-3 text-left transition-all disabled:pointer-events-none ${
-                            selected
-                              ? "border-brand-500/50 bg-brand-950/30"
-                              : "border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800/40"
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <div className={`h-4 w-4 shrink-0 rounded border transition-colors ${selected ? "border-brand-500 bg-brand-500" : "border-zinc-600"}`}>
-                              {selected && (
-                                <svg viewBox="0 0 16 16" fill="white" className="h-4 w-4">
-                                  <path d="M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z" />
-                                </svg>
-                              )}
-                            </div>
-                            <span className="font-mono text-xs text-zinc-300">
-                              {truncateMiddle(note.commitment, 16, 16)}
-                            </span>
-                            <Badge tone={note.spent ? "blue" : "green"} className="ml-auto shrink-0">
-                              {note.spent ? "Withdrawn" : "In pool"}
-                            </Badge>
-                          </div>
-                          <div className="ml-6 mt-1 text-xs text-zinc-500">Leaf #{note.leafIndex}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
+                  </>
                 )}
-              </Card>
-            )}
+              </div>
+            </div>
 
-            {/* NoteImport for both modes */}
-            <NoteImport
-              disabled={isLoading}
-              title={mode === "generate" ? "Or import a Shielded Note" : "Paste notes to verify"}
-              onImport={(notes) => {
-                const newSel = new Set(selectedCommitments);
-                for (const note of notes) {
-                  saveNoteIfNew(note);
-                  newSel.add(note.commitment);
-                }
-                setSelectedCommitments(newSel);
-                refresh();
-              }}
-            />
-
-            {/* Run button */}
-            {selectedNotes.length > 0 && !hasResults && (
-              <Button fullWidth size="lg" onClick={handleRun} disabled={isLoading}>
-                {isLoading
-                  ? "Reading chain…"
-                  : mode === "generate"
-                    ? selectedNotes.length === 1 ? "Generate Report" : `Generate ${selectedNotes.length} Reports`
-                    : selectedNotes.length === 1 ? "Verify Report" : `Verify ${selectedNotes.length} Reports`}
-              </Button>
-            )}
-
-            {/* Results accordion */}
-            {hasResults && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs text-zinc-500">
-                    {doneCount} of {results.length} complete
-                  </p>
-                  {doneCount > 1 && (
-                    <button
-                      onClick={downloadAllZip}
-                      className="flex items-center gap-1.5 text-xs font-medium text-brand-400 transition-colors hover:text-brand-300"
-                    >
-                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                      </svg>
-                      Download all (.zip)
-                    </button>
-                  )}
-                </div>
-
-                {results.map((r) => {
-                  const isExpanded = expandedCommitment === r.note.commitment;
+            {allNotes.length === 0 ? (
+              <p className="mt-3 text-sm text-zinc-500">
+                No notes on this device yet. Make a deposit, or import a note
+                below.
+              </p>
+            ) : (
+              <div className="mt-3 space-y-2">
+                {allNotes.map((note) => {
+                  const selected = selectedCommitments.has(note.commitment);
                   return (
-                    <div key={r.note.commitment} className="aurora-border overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/70 backdrop-blur-sm">
-                      {/* Accordion header */}
-                      <div className="relative z-10 flex items-center transition-colors hover:bg-zinc-800/40">
-                        <button
-                          onClick={() => setExpandedCommitment(isExpanded ? null : r.note.commitment)}
-                          aria-expanded={isExpanded}
-                          className="focus-ring flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left"
+                    <button
+                      key={note.commitment}
+                      onClick={() => toggleNote(note)}
+                      disabled={isLoading}
+                      aria-pressed={selected}
+                      aria-label={`${selected ? "Deselect" : "Select"} note ${truncateMiddle(note.commitment, 16, 16)}, status: ${note.spent ? "withdrawn" : "in pool"}`}
+                      className={`focus-ring w-full rounded-xl border px-4 py-3 text-left transition-all disabled:pointer-events-none ${
+                        selected
+                          ? "border-brand-500/50 bg-brand-950/30"
+                          : "border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800/40"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div
+                          className={`h-4 w-4 shrink-0 rounded border transition-colors ${selected ? "border-brand-500 bg-brand-500" : "border-zinc-600"}`}
                         >
-                          <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-300">
-                            {truncateMiddle(r.note.commitment, 14, 12)}
-                          </span>
-
-                          <StatusBadge status={r.status} />
-
-                          {/* Chevron */}
-                          <svg
-                            className={`h-4 w-4 shrink-0 text-zinc-500 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
-                            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                          </svg>
-                        </button>
-
-                        {/* Per-note .txt download */}
-                        {r.status === "done" && r.report && (
-                          <button
-                            type="button"
-                            onClick={() => downloadOneTxt(r.report!)}
-                            className="focus-ring mr-3 shrink-0 rounded-md px-2 py-1 text-[10px] font-medium text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-white"
-                          >
-                            .txt
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Accordion body */}
-                      {isExpanded && (
-                        <div className="border-t border-zinc-800 px-4 py-4">
-                          {r.status === "loading" && (
-                            <p className="text-sm text-zinc-500">Fetching from chain…</p>
-                          )}
-                          {r.status === "error" && (
-                            <p className="text-sm text-red-400">{r.error}</p>
-                          )}
-                          {r.status === "done" && r.report && (
-                            <ReportBody
-                              report={r.report}
-                              onDownloadPdf={() => downloadOnePdf(r.report!)}
-                              onDownloadTxt={() => downloadOneTxt(r.report!)}
-                            />
+                          {selected && (
+                            <svg
+                              viewBox="0 0 16 16"
+                              fill="white"
+                              className="h-4 w-4"
+                            >
+                              <path d="M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z" />
+                            </svg>
                           )}
                         </div>
-                      )}
-                    </div>
+                        <span className="font-mono text-xs text-zinc-300">
+                          {truncateMiddle(note.commitment, 16, 16)}
+                        </span>
+                        <Badge
+                          tone={note.spent ? "blue" : "green"}
+                          className="ml-auto shrink-0"
+                        >
+                          {note.spent ? "Withdrawn" : "In pool"}
+                        </Badge>
+                      </div>
+                      <div className="ml-6 mt-1 text-xs text-zinc-500">
+                        Leaf #{note.leafIndex}
+                      </div>
+                    </button>
                   );
                 })}
-
-                {/* Re-run / clear */}
-                <div className="flex gap-2">
-                  <Button fullWidth variant="outline" size="sm" onClick={handleRun} disabled={isLoading} className="text-xs">
-                    {isLoading ? "Running…" : "Re-run all"}
-                  </Button>
-                  <Button
-                    fullWidth variant="ghost" size="sm"
-                    onClick={() => { setResults([]); setExpandedCommitment(null); }}
-                    disabled={isLoading}
-                    className="text-xs text-zinc-500"
-                  >
-                    Clear results
-                  </Button>
-                </div>
               </div>
             )}
-          </>
+          </Card>
+        )}
+
+        {/* NoteImport for both modes */}
+        <NoteImport
+          disabled={isLoading}
+          title={
+            mode === "generate"
+              ? "Or import a Shielded Note"
+              : "Paste notes to verify"
+          }
+          onImport={(notes) => {
+            const newSel = new Set(selectedCommitments);
+            for (const note of notes) {
+              saveNoteIfNew(note);
+              newSel.add(note.commitment);
+            }
+            setSelectedCommitments(newSel);
+            refresh();
+          }}
+        />
+
+        {/* Run button */}
+        {selectedNotes.length > 0 && !hasResults && (
+          <Button fullWidth size="lg" onClick={handleRun} disabled={isLoading}>
+            {isLoading
+              ? "Reading chain…"
+              : mode === "generate"
+                ? selectedNotes.length === 1
+                  ? "Generate Report"
+                  : `Generate ${selectedNotes.length} Reports`
+                : selectedNotes.length === 1
+                  ? "Verify Report"
+                  : `Verify ${selectedNotes.length} Reports`}
+          </Button>
+        )}
+
+        {/* Results accordion */}
+        {hasResults && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-zinc-500">
+                {doneCount} of {results.length} complete
+              </p>
+              {doneCount > 1 && (
+                <button
+                  onClick={downloadAllZip}
+                  className="flex items-center gap-1.5 text-xs font-medium text-brand-400 transition-colors hover:text-brand-300"
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+                    />
+                  </svg>
+                  Download all (.zip)
+                </button>
+              )}
+            </div>
+
+            {results.map((r) => {
+              const isExpanded = expandedCommitment === r.note.commitment;
+              return (
+                <div
+                  key={r.note.commitment}
+                  className="aurora-border overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/70 backdrop-blur-sm"
+                >
+                  {/* Accordion header */}
+                  <div className="relative z-10 flex items-center transition-colors hover:bg-zinc-800/40">
+                    <button
+                      onClick={() =>
+                        setExpandedCommitment(
+                          isExpanded ? null : r.note.commitment,
+                        )
+                      }
+                      aria-expanded={isExpanded}
+                      className="focus-ring flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left"
+                    >
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-300">
+                        {truncateMiddle(r.note.commitment, 14, 12)}
+                      </span>
+
+                      <StatusBadge status={r.status} />
+
+                      {/* Chevron */}
+                      <svg
+                        className={`h-4 w-4 shrink-0 text-zinc-500 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M19 9l-7 7-7-7"
+                        />
+                      </svg>
+                    </button>
+
+                    {/* Per-note .txt download */}
+                    {r.status === "done" && r.report && (
+                      <button
+                        type="button"
+                        onClick={() => downloadOneTxt(r.report!)}
+                        className="focus-ring mr-3 shrink-0 rounded-md px-2 py-1 text-[10px] font-medium text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-white"
+                      >
+                        .txt
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Accordion body */}
+                  {isExpanded && (
+                    <div className="border-t border-zinc-800 px-4 py-4">
+                      {r.status === "loading" && (
+                        <p className="text-sm text-zinc-500">
+                          Fetching from chain…
+                        </p>
+                      )}
+                      {r.status === "error" && (
+                        <p className="text-sm text-red-400">{r.error}</p>
+                      )}
+                      {r.status === "done" && r.report && (
+                        <ReportBody
+                          report={r.report}
+                          onDownloadPdf={() => downloadOnePdf(r.report!)}
+                          onDownloadTxt={() => downloadOneTxt(r.report!)}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Re-run / clear */}
+            <div className="flex gap-2">
+              <Button
+                fullWidth
+                variant="outline"
+                size="sm"
+                onClick={handleRun}
+                disabled={isLoading}
+                className="text-xs"
+              >
+                {isLoading ? "Running…" : "Re-run all"}
+              </Button>
+              <Button
+                fullWidth
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setResults([]);
+                  setExpandedCommitment(null);
+                }}
+                disabled={isLoading}
+                className="text-xs text-zinc-500"
+              >
+                Clear results
+              </Button>
+            </div>
+          </div>
         )}
       </div>
     </PageShell>
@@ -380,7 +479,12 @@ export default function CompliancePage() {
 function StatusBadge({ status }: { status: ReportStatus }) {
   if (status === "loading") return <Badge tone="zinc">Loading…</Badge>;
   if (status === "done") return <Badge tone="green">Complete</Badge>;
-  if (status === "error") return <Badge tone="zinc" className="bg-red-950/40 text-red-400">Error</Badge>;
+  if (status === "error")
+    return (
+      <Badge tone="zinc" className="bg-red-950/40 text-red-400">
+        Error
+      </Badge>
+    );
   return <Badge tone="zinc">Pending</Badge>;
 }
 
@@ -407,7 +511,9 @@ function ReportBody({
           label="Deposit"
           value={
             report.depositConfirmed ? (
-              <span className="text-green-400">Confirmed on-chain (leaf #{report.leafIndex})</span>
+              <span className="text-green-400">
+                Confirmed on-chain (leaf #{report.leafIndex})
+              </span>
             ) : (
               <span className="text-yellow-400">Not found on-chain</span>
             )
@@ -423,26 +529,79 @@ function ReportBody({
             )
           }
         />
-        <ReportRow label="Commitment" value={<span className="break-all font-mono text-xs text-zinc-300">{report.commitment}</span>} />
-        <ReportRow label="Nullifier hash" value={<span className="break-all font-mono text-xs text-zinc-300">{report.nullifierHash}</span>} />
-        <ReportRow label="Pool contract" value={<ExplorerLink url={explorerContractUrl(report.poolId)} text={report.poolId} mono />} />
+        <ReportRow
+          label="Commitment"
+          value={
+            <span className="break-all font-mono text-xs text-zinc-300">
+              {report.commitment}
+            </span>
+          }
+        />
+        <ReportRow
+          label="Nullifier hash"
+          value={
+            <span className="break-all font-mono text-xs text-zinc-300">
+              {report.nullifierHash}
+            </span>
+          }
+        />
+        <ReportRow
+          label="Pool contract"
+          value={
+            <ExplorerLink
+              url={explorerContractUrl(report.poolId)}
+              text={report.poolId}
+              mono
+            />
+          }
+        />
         {report.depositTx && (
-          <ReportRow label="Deposit tx" value={<ExplorerLink url={explorerTxUrl(report.depositTx.hash)} text={report.depositTx.hash} sub={report.depositTx.at} mono />} />
+          <ReportRow
+            label="Deposit tx"
+            value={
+              <ExplorerLink
+                url={explorerTxUrl(report.depositTx.hash)}
+                text={report.depositTx.hash}
+                sub={report.depositTx.at}
+                mono
+              />
+            }
+          />
         )}
         {report.withdrawTx && (
-          <ReportRow label="Withdraw tx" value={<ExplorerLink url={explorerTxUrl(report.withdrawTx.hash)} text={report.withdrawTx.hash} sub={report.withdrawTx.at} mono />} />
+          <ReportRow
+            label="Withdraw tx"
+            value={
+              <ExplorerLink
+                url={explorerTxUrl(report.withdrawTx.hash)}
+                text={report.withdrawTx.hash}
+                sub={report.withdrawTx.at}
+                mono
+              />
+            }
+          />
         )}
       </dl>
 
       <div className="grid grid-cols-2 gap-2">
-        <Button variant="primary" onClick={onDownloadPdf}>Download PDF</Button>
-        <Button variant="outline" onClick={onDownloadTxt}>Download .txt</Button>
+        <Button variant="primary" onClick={onDownloadPdf}>
+          Download PDF
+        </Button>
+        <Button variant="outline" onClick={onDownloadTxt}>
+          Download .txt
+        </Button>
       </div>
     </div>
   );
 }
 
-function ReportRow({ label, value }: { label: string; value: React.ReactNode }) {
+function ReportRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
   return (
     <div className="flex flex-col gap-0.5 sm:flex-row sm:justify-between sm:gap-4">
       <dt className="shrink-0 text-zinc-500">{label}</dt>
@@ -451,12 +610,33 @@ function ReportRow({ label, value }: { label: string; value: React.ReactNode }) 
   );
 }
 
-function ExplorerLink({ url, text, sub, mono }: { url: string | null; text: string; sub?: string; mono?: boolean }) {
-  const body = <span className={mono ? "break-all font-mono text-xs" : "break-all"}>{text}</span>;
+function ExplorerLink({
+  url,
+  text,
+  sub,
+  mono,
+}: {
+  url: string | null;
+  text: string;
+  sub?: string;
+  mono?: boolean;
+}) {
+  const body = (
+    <span className={mono ? "break-all font-mono text-xs" : "break-all"}>
+      {text}
+    </span>
+  );
   return (
     <span className="inline-block">
       {url ? (
-        <a href={url} target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:text-brand-300">{body}</a>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-brand-400 hover:text-brand-300"
+        >
+          {body}
+        </a>
       ) : (
         <span className="text-zinc-300">{body}</span>
       )}
@@ -478,7 +658,8 @@ function escapeHtml(s: string): string {
 }
 
 function reportHtml(r: ComplianceReport): string {
-  const row = (k: string, v: string) => `<tr><td class="k">${escapeHtml(k)}</td><td class="v">${v}</td></tr>`;
+  const row = (k: string, v: string) =>
+    `<tr><td class="k">${escapeHtml(k)}</td><td class="v">${v}</td></tr>`;
   const link = (h: string) => {
     const u = explorerTxUrl(h);
     const safeHash = escapeHtml(h);
@@ -487,9 +668,20 @@ function reportHtml(r: ComplianceReport): string {
   const rows = [
     row("Generated", escapeHtml(new Date(r.generatedAt).toISOString())),
     row("Network", escapeHtml(r.network)),
-    row("Note integrity", r.integrityOk ? "OK — commitment matches" : "MISMATCH"),
-    row("Deposit", r.depositConfirmed ? `Confirmed on-chain (leaf #${r.leafIndex})` : "Not found on-chain"),
-    row("Status", r.withdrawn ? "Withdrawn (nullifier spent)" : "In pool (unspent)"),
+    row(
+      "Note integrity",
+      r.integrityOk ? "OK — commitment matches" : "MISMATCH",
+    ),
+    row(
+      "Deposit",
+      r.depositConfirmed
+        ? `Confirmed on-chain (leaf #${r.leafIndex})`
+        : "Not found on-chain",
+    ),
+    row(
+      "Status",
+      r.withdrawn ? "Withdrawn (nullifier spent)" : "In pool (unspent)",
+    ),
     row("Commitment", escapeHtml(r.commitment)),
     row("Nullifier hash", escapeHtml(r.nullifierHash)),
     row("Pool contract", escapeHtml(r.poolId)),

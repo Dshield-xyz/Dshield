@@ -1,8 +1,8 @@
 nullifier = "1234"
 secret = "5678"
-root = "0x0e829a70d5bfbb7c4ffe0be28454f1eefd47e898dfd330b0a4c61fc615453ed2"
-nullifier_hash = "0x2b0c9e50ac135931c5f87dff253337d63f6fe5f8b0f2489b92a5a9446cc4b3d2"
-recipient = "0xad77fd5de761a47844a8ce4405e9c67cd3a9518b78f7bd275da96a604da53f"
+root = "0x10aea39ac00016e6011dbfcfa33b700d3951b3a2186fa72252e6343b18e1d293"
+nullifier_hash = "0x188176ced46ba650f1f749ae68e5d688b11a7acb510335d2da255448167aa9fc"
+recipient = "42"
 path_bits = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 path_siblings = [
     "0x00",

@@ -17,6 +17,7 @@ node_modules/
 
 # Test snapshots
 **/__snapshots__/
+**/test_snapshots/
 
 # OS
 .DS_Store

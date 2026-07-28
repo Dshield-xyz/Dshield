@@ -6,6 +6,7 @@ import {
   getActiveNotes,
   generateRandomField,
   serializeNote,
+  serializeNotes,
   parseNote,
   saveNoteIfNew,
   generateNoteLink,
@@ -70,6 +71,52 @@ describe("serializeNote / parseNote", () => {
     expect(parseNote("tornado-eth-0.1-1-0xabc")).toBeNull();
     expect(parseNote("dshield-v2-a-0-1-c-n-s")).toBeNull();
     expect(parseNote("")).toBeNull();
+  });
+});
+
+describe("serializeNotes", () => {
+  it("joins one dshield-v1 line per note, newline-terminated", () => {
+    const notes = [
+      makeNote({ commitment: "aaa" }),
+      makeNote({ commitment: "bbb" }),
+      makeNote({ commitment: "ccc" }),
+    ];
+    const body = serializeNotes(notes);
+    expect(body.endsWith("\n")).toBe(true);
+    const lines = body.trim().split("\n");
+    expect(lines).toHaveLength(3);
+    for (const line of lines) expect(line).toMatch(/^dshield-v1-/);
+  });
+
+  it("round-trips every note's withdrawable fields through parseNote", () => {
+    const notes = [
+      makeNote({ commitment: "aaa", leafIndex: 1, amount: "1000" }),
+      makeNote({ commitment: "bbb", leafIndex: 2, amount: "2000" }),
+    ];
+    const restored = serializeNotes(notes)
+      .trim()
+      .split("\n")
+      .map(parseNote);
+    expect(restored.map((n) => n?.commitment)).toEqual(["aaa", "bbb"]);
+    expect(restored.map((n) => n?.leafIndex)).toEqual([1, 2]);
+    expect(restored.map((n) => n?.amount)).toEqual(["1000", "2000"]);
+  });
+
+  it("produces output that NoteImport's whitespace-split parsing recovers cleanly", () => {
+    // NoteImport splits pasted/uploaded text on /[\n\r\s]+/ and keeps only
+    // tokens starting with "dshield-v1-" — mirror that here without
+    // importing a React component into a lib-level test.
+    const notes = [makeNote({ commitment: "aaa" }), makeNote({ commitment: "bbb" })];
+    const tokens = serializeNotes(notes)
+      .split(/[\n\r\s]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.startsWith("dshield-v1-"));
+    expect(tokens).toHaveLength(2);
+    expect(tokens.map(parseNote).map((n) => n?.commitment)).toEqual(["aaa", "bbb"]);
+  });
+
+  it("returns an empty backup as a single trailing newline", () => {
+    expect(serializeNotes([])).toBe("\n");
   });
 });
 

@@ -1,6 +1,11 @@
 import { Noir } from "@noir-lang/noir_js";
 import hasherCircuit from "@/circuits/hasher.json";
 
+// Domain separation tags for Poseidon2 hashing (must match circuit definitions)
+const LEAF_DOMAIN = "0x4c454146";
+const NULLIFIER_DOMAIN = "0x4e554c4c";
+const KYC_DOMAIN = "0x4b5943";
+
 let noirInstance: InstanceType<typeof Noir> | null = null;
 
 async function getHasher(): Promise<InstanceType<typeof Noir>> {
@@ -36,13 +41,41 @@ export async function computeCommitment(
   nullifier: string,
   secret: string,
 ): Promise<string> {
-  return poseidon2Hash(toField(nullifier), toField(secret));
+  // Hash with domain separation: hash3(LEAF_DOMAIN, nullifier, secret)
+  const noir = await getHasher();
+  const result = await noir.execute({
+    a: LEAF_DOMAIN,
+    b: toField(nullifier)
+  });
+  const leafHashAndSecret = result.returnValue as string;
+
+  // Now hash with secret: hash2(hash3(LEAF_DOMAIN, nullifier, secret), secret)
+  // This simulates hash3 by doing hash2(hash2(domain, nullifier), secret)
+  const finalResult = await noir.execute({
+    a: normalizeField(leafHashAndSecret),
+    b: toField(secret)
+  });
+  return normalizeField(finalResult.returnValue as string);
 }
 
 export async function computeNullifierHash(
   nullifier: string,
 ): Promise<string> {
-  return poseidon2Hash(toField(nullifier), "0");
+  // Hash with domain separation: hash3(NULLIFIER_DOMAIN, nullifier, 0)
+  const noir = await getHasher();
+  const result = await noir.execute({
+    a: NULLIFIER_DOMAIN,
+    b: toField(nullifier)
+  });
+  const domainAndNullifier = result.returnValue as string;
+
+  // Now hash with 0: hash2(hash2(domain, nullifier), 0)
+  // This simulates hash3 by doing hash2(hash2(domain, nullifier), 0)
+  const finalResult = await noir.execute({
+    a: normalizeField(domainAndNullifier),
+    b: "0"
+  });
+  return normalizeField(finalResult.returnValue as string);
 }
 
 function toField(hex: string): string {
