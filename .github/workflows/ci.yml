@@ -184,7 +184,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 10
 
       - name: Install Nargo (for hasher circuit)
         run: |
@@ -220,7 +220,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 10
 
       - name: Install Nargo (for hasher circuit)
         run: |
@@ -277,7 +277,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 10
 
       - name: Install Stellar CLI
         run: |
