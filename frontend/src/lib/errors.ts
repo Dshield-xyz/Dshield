@@ -1,3 +1,5 @@
+import { RelayRateLimitedError } from "./stellar";
+
 /**
  * Converts raw SDK / network / contract errors into short, readable messages.
  * Call this inside every catch block before toasting.
@@ -5,6 +7,10 @@
 export function friendlyError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   const lower = raw.toLowerCase();
+
+  if (err instanceof RelayRateLimitedError) {
+    return `Relayer is rate-limited. Wait ${err.retryAfterSeconds}s and try again.`;
+  }
 
   if (
     lower.includes("user declined") ||

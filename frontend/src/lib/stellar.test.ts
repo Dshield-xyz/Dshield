@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { RelayRateLimitedError } from "./stellar";
 
 const ISSUER = "GABZWK2YLPOGBEOZT6VOCID6ROSSZGPSLAEPCTWIBGAJDHISO6DFKYYZ";
 const PASSPHRASE = "Standalone Network ; February 2017";
@@ -118,5 +119,25 @@ describe("relayWithdrawal", () => {
     await expect(s.relayWithdrawal(params)).rejects.toThrow(
       "Withdrawal simulation failed",
     );
+  });
+
+  it("throws a RelayRateLimitedError on 429 with Retry-After", async () => {
+    const s = await loadStellar(ISSUER);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 429,
+        ok: false,
+        headers: { get: (h: string) => (h === "Retry-After" ? "60" : null) },
+        json: async () => ({ error: "Too many relay requests. Try again later.", code: "rate_limited" }),
+      }),
+    );
+    try {
+      await s.relayWithdrawal(params);
+      throw new Error("expected relayWithdrawal to reject");
+    } catch (err) {
+      expect((err as Error).name).toBe("RelayRateLimitedError");
+      expect((err as { retryAfterSeconds: number }).retryAfterSeconds).toBe(60);
+    }
   });
 });

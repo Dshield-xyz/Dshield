@@ -162,10 +162,26 @@ export interface RelayResult {
 }
 
 /**
+ * Thrown when the relayer rate-limits the client (HTTP 429).
+ * Carries the Retry-After value so the UI can tell the user how long
+ * to wait instead of showing a raw error string.
+ */
+export class RelayRateLimitedError extends Error {
+  retryAfterSeconds: number;
+
+  constructor(message: string, retryAfterSeconds: number) {
+    super(message);
+    this.name = "RelayRateLimitedError";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+/**
  * Submit a withdrawal through the server-side relayer so the user's account
  * never appears on-chain (unlinkable withdrawal). Returns the relay result, or
  * `null` if no relayer is configured (HTTP 503) so the caller can fall back to
- * a wallet-signed submission.
+ * a wallet-signed submission. Throws {@link RelayRateLimitedError} on HTTP 429
+ * so callers can surface a friendly "wait and retry" state.
  */
 export async function relayWithdrawal(params: {
   poolId: string;
@@ -178,12 +194,19 @@ export async function relayWithdrawal(params: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
-  if (res.status === 503) return null; // relayer not configured
   const body = (await res.json().catch(() => ({}))) as {
     error?: string;
     hash?: string;
     relayer?: string;
   };
+  if (res.status === 503) return null; // relayer not configured
+  if (res.status === 429) {
+    const retryAfter = Number(res.headers.get("Retry-After")) || 30;
+    throw new RelayRateLimitedError(
+      body.error || "Too many relay requests. Try again later.",
+      retryAfter,
+    );
+  }
   if (!res.ok) {
     throw new Error(body.error || `Relayed withdrawal failed (${res.status})`);
   }

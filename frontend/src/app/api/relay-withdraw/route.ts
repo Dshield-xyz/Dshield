@@ -28,6 +28,18 @@ function isStrKeyContract(id: string): boolean {
 const RATE_LIMIT = 20;
 const RATE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
+/**
+ * Lightweight status check — returns whether the relayer is configured.
+ * The withdraw page calls this on mount to show a friendly banner when
+ * the relayer is unavailable (privacy relay offline)
+ * so the user knows withdrawals will fall back to wallet-signed submission.
+ */
+export async function GET() {
+  return NextResponse.json({
+    configured: !!process.env.RELAYER_SECRET,
+  });
+}
+
 export async function POST(req: NextRequest) {
   if (!RELAYER_SECRET) {
     return NextResponse.json(

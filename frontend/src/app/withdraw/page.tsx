@@ -42,6 +42,7 @@ import { Button, buttonVariants } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { ProgressSteps } from "@/components/ui/ProgressSteps";
 import { NoteImport } from "@/components/ui/NoteImport";
+import { StatusMessage } from "@/components/ui/StatusMessage";
 import { useToast } from "@/components/ui/Toast";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
@@ -93,6 +94,7 @@ export default function WithdrawPage() {
   const [step, setStep] = useState<WithdrawStep>("idle");
   const [proofStage, setProofStage] = useState<ProofStage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [relayerUnavailable, setRelayerUnavailable] = useState(false);
   const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(new Set());
   const [recipient, setRecipient] = useState("");
   const [batchResults, setBatchResults] = useState<NoteResult[] | null>(null);
@@ -114,6 +116,17 @@ export default function WithdrawPage() {
     syncSpentNotes().then((n) => {
       if (n > 0) refresh();
     });
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/relay-withdraw")
+      .then((r) => r.json())
+      .then((data: { configured?: boolean }) => {
+        if (!data.configured) setRelayerUnavailable(true);
+      })
+      .catch(() => {
+        /* network error — assume relayer is available */
+      });
   }, []);
 
   const activeNotes = typeof window !== "undefined" ? getActiveNotes() : [];
@@ -328,6 +341,13 @@ export default function WithdrawPage() {
         title="Withdraw"
         description="Choose the notes you want to redeem. DShield proves you own them without revealing which deposit was yours — nothing links the withdrawal back to you."
       />
+
+      {relayerUnavailable && (
+        <StatusMessage
+          className="mt-6"
+          message="The privacy relay is currently offline. Withdrawals will be submitted directly from your wallet — your account will be visible on-chain."
+        />
+      )}
 
       <div className="mt-8 space-y-6">
         {/* Note selector */}

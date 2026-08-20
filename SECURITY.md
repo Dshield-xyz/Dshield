@@ -28,6 +28,17 @@ Out of scope: issues that only affect local dev tooling, the demo scripts,
 or purely cosmetic frontend bugs with no security impact — file those as
 normal GitHub issues instead.
 
+## Relayer Trust Model
+
+The relayer is a single point of censorship (not theft). It can refuse to submit a
+withdrawal or delay it, but it cannot redirect funds — the withdrawal proof is
+cryptographically bound to the recipient address (see `recipient_hash_from_address`
+in the contract), and the contract rejects any mismatch. This is also what makes
+the relayer trustless: it can submit or refuse, but never steal.
+
+The project's README also documents this at
+[Security Model](README.md#security-model).
+
 ## Reporting a Vulnerability
 
 **Do not open a public GitHub issue for security vulnerabilities.**
