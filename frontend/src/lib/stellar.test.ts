@@ -46,7 +46,7 @@ describe("faucetUsdc", () => {
     const s = await loadStellar(ISSUER);
     const fetchMock = vi
       .fn()
-      .mockResolvedValue({ ok: true, json: async () => ({ hash: "h" }) });
+      .mockResolvedValue({ ok: true, json: async () => ({ hash: "h", amount: "100" }) });
     vi.stubGlobal("fetch", fetchMock);
 
     await s.faucetUsdc(ISSUER, BigInt(100));

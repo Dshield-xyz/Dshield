@@ -1,4 +1,5 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { FaucetResponse, RelayWithdrawResponse } from "@/lib/schemas";
 
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || "http://localhost:8000/soroban/rpc";
 const NETWORK_PASSPHRASE =
@@ -85,6 +86,9 @@ export async function faucetUsdc(
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error || `Faucet request failed (${res.status})`);
   }
+  // Validate response shape via the shared schema
+  const json = await res.json();
+  FaucetResponse.parse(json);
 }
 
 export interface PoolTier {
@@ -187,6 +191,8 @@ export async function relayWithdrawal(params: {
   if (!res.ok) {
     throw new Error(body.error || `Relayed withdrawal failed (${res.status})`);
   }
+  // Validate response shape via the shared schema
+  RelayWithdrawResponse.parse(body);
   return { hash: body.hash!, relayer: body.relayer! };
 }
 

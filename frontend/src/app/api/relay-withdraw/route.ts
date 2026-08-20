@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { checkRateLimit, clientKey } from "@/lib/rateLimit";
+import { RelayWithdrawRequest, RelayWithdrawResponse, ErrorResponse } from "@/lib/schemas";
 
 // Server-side relayer: submits a withdrawal on the user's behalf, paying the
 // transaction fee from the relayer account. Because the pool contract binds the
@@ -50,12 +51,16 @@ export async function POST(req: NextRequest) {
   let proof: string;
   try {
     const body = await req.json();
-    poolId = String(body.poolId || "");
-    recipient = String(body.recipient || "");
-    publicInputs = String(body.publicInputs || "");
-    proof = String(body.proof || "");
+    const parsed = RelayWithdrawRequest.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    }
+    poolId = parsed.data.poolId;
+    recipient = parsed.data.recipient;
+    publicInputs = parsed.data.publicInputs;
+    proof = parsed.data.proof;
   } catch {
-    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    return NextResponse.json(ErrorResponse.parse({ error: "Invalid request body." }), { status: 400 });
   }
 
   if (!isStrKeyContract(poolId)) {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { timingSafeEqual } from "crypto";
+import { RegisterKycRequest, RegisterKycResponse, ErrorResponse } from "@/lib/schemas";
 
 const ADMIN_SECRET = process.env.COMPLIANCE_ADMIN_SECRET || "";
 // Registering a KYC hash grants "compliance-verified" status, so this route
@@ -52,11 +53,17 @@ export async function POST(req: NextRequest) {
   let kycHashHex: string;
   try {
     const body = await req.json();
-    kycHashHex = String(body.kycHash || "");
+    const parsed = RegisterKycRequest.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    }
+    kycHashHex = parsed.data.kycHash;
   } catch {
-    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    return NextResponse.json(ErrorResponse.parse({ error: "Invalid request body." }), { status: 400 });
   }
 
+  // RegisterKycRequest already validates the hex format, but keep the
+  // explicit check for backward safety with the route test expectations.
   if (!/^[0-9a-fA-F]{64}$/.test(kycHashHex)) {
     return NextResponse.json(
       { error: "kycHash must be exactly 64 hex characters (32 bytes)." },

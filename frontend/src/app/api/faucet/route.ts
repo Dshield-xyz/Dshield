@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { checkRateLimit, clientKey } from "@/lib/rateLimit";
+import { FaucetRequest, FaucetResponse, ErrorResponse } from "@/lib/schemas";
 
 // Server-only faucet: mints test USDC to a recipient using the issuer secret.
 // The secret lives ONLY in this server route (env var without a NEXT_PUBLIC_
@@ -42,10 +43,14 @@ export async function POST(req: NextRequest) {
   let amount: bigint;
   try {
     const body = await req.json();
-    address = String(body.address || "");
-    amount = BigInt(body.amount ?? "0");
+    const parsed = FaucetRequest.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    }
+    address = parsed.data.address;
+    amount = BigInt(parsed.data.amount);
   } catch {
-    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    return NextResponse.json(ErrorResponse.parse({ error: "Invalid request body." }), { status: 400 });
   }
 
   if (!StellarSdk.StrKey.isValidEd25519PublicKey(address)) {
