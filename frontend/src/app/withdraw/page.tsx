@@ -326,10 +326,18 @@ export default function WithdrawPage() {
 
   if (!address) {
     return (
-      <ConnectGate
-        title="Withdraw"
-        prompt="Connect your wallet to redeem your shielded notes."
-      />
+      <>
+        {relayerUnavailable && (
+          <StatusMessage
+            className="mx-auto mt-6 max-w-2xl"
+            message="The privacy relay is currently offline. Withdrawals will be submitted directly from your wallet — your account will be visible on-chain."
+          />
+        )}
+        <ConnectGate
+          title="Withdraw"
+          prompt="Connect your wallet to redeem your shielded notes."
+        />
+      </>
     );
   }
 
