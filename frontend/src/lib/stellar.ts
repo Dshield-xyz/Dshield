@@ -14,6 +14,67 @@ export const COMPLIANCE_CONTRACT_ID = process.env.NEXT_PUBLIC_COMPLIANCE_CONTRAC
 export const USDC_CODE = process.env.NEXT_PUBLIC_USDC_CODE || "USDC";
 export const USDC_ISSUER = process.env.NEXT_PUBLIC_USDC_ISSUER || "";
 
+/**
+ * Guard that restrains the `NEXT_PUBLIC_DEV_SECRET_KEY` demo path to local
+ * development only.
+ *
+ * The dev key is a convenience for local demo/simulation (the UI auto-connects
+ * as that keypair with no wallet picker and signs transactions silently). Since
+ * it is `NEXT_PUBLIC_`-prefixed it ships verbatim in the client bundle whenever
+ * it is set, so the guard below is what keeps a misconfigured preview/staging
+ * deployment from letting any random visitor drain the keypair's funds:
+ *
+ * - `process.env.NODE_ENV === "production"` → the key is always inert. Next.js
+ *   statically replaces `process.env.NODE_ENV` at build time, so in a real
+ *   production build of this client bundle this branch compiles to a constant
+ *   `false` and the whole dev-key path is tree-shaken away.
+ * - Non-localhost origin (in non-production builds) → also inert, with a loud
+ *   console warning, so a preview/staging deploy doesn't silently activate it.
+ *
+ * Returns `true` when the dev key may be used.
+ */
+export function canUseDevKey(): boolean {
+  if (process.env.NODE_ENV === "production") return false;
+  if (typeof window !== "undefined") {
+    const hostname = window.location.hostname;
+    if (hostname && hostname !== "localhost" && hostname !== "127.0.0.1") {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Warn loudly when the dev key is configured but the guard blocks it. This keeps
+ * the failure front-and-center instead of silently falling back to normal flow.
+ */
+function warnDevKeyBlocked(): void {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[dshield] NEXT_PUBLIC_DEV_SECRET_KEY is set but ignored: the dev key is " +
+      "reserved strictly for local development (localhost + non-production " +
+      "build). Unset it in this environment to avoid shipping a live secret " +
+      "key in the client bundle.",
+  );
+}
+
+export function getDevKeypair(): StellarSdk.Keypair | null {
+  if (!DEV_SECRET_KEY) return null;
+  if (!canUseDevKey()) {
+    warnDevKeyBlocked();
+    return null;
+  }
+  return StellarSdk.Keypair.fromSecret(DEV_SECRET_KEY);
+}
+
+export function devSignTransaction(xdr: string): string {
+  const keypair = getDevKeypair();
+  if (!keypair) throw new Error("No dev secret key configured");
+  const tx = StellarSdk.TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
+  tx.sign(keypair);
+  return tx.toXDR();
+}
+
 export function getUsdcAsset(): StellarSdk.Asset | null {
   if (!USDC_ISSUER) return null;
   return new StellarSdk.Asset(USDC_CODE, USDC_ISSUER);
@@ -116,19 +177,6 @@ export function getRpcServer() {
 
 export function getNetworkPassphrase() {
   return NETWORK_PASSPHRASE;
-}
-
-export function getDevKeypair(): StellarSdk.Keypair | null {
-  if (!DEV_SECRET_KEY) return null;
-  return StellarSdk.Keypair.fromSecret(DEV_SECRET_KEY);
-}
-
-export function devSignTransaction(xdr: string): string {
-  const keypair = getDevKeypair();
-  if (!keypair) throw new Error("No dev secret key configured");
-  const tx = StellarSdk.TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
-  tx.sign(keypair);
-  return tx.toXDR();
 }
 
 export async function buildContractCall(

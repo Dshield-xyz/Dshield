@@ -6,15 +6,18 @@ const PASSPHRASE = "Standalone Network ; February 2017";
 
 // stellar.ts reads NEXT_PUBLIC_* env at module load, so each scenario reloads
 // the module with the desired env (same pattern as indexer.test.ts).
-async function loadStellar(issuer = "") {
+async function loadStellar(issuer = "", devSecret = "") {
   vi.resetModules();
   process.env.NEXT_PUBLIC_USDC_ISSUER = issuer;
   process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE = PASSPHRASE;
+  process.env.NEXT_PUBLIC_DEV_SECRET_KEY = devSecret;
   return await import("./stellar");
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 describe("getUsdcAsset / getUsdcSacId", () => {
@@ -118,5 +121,54 @@ describe("relayWithdrawal", () => {
     await expect(s.relayWithdrawal(params)).rejects.toThrow(
       "Withdrawal simulation failed",
     );
+  });
+});
+
+describe("dev key guard (NEXT_PUBLIC_DEV_SECRET_KEY)", () => {
+  const VALID_SECRET = StellarSdk.Keypair.random().secret();
+
+  it("canUseDevKey allows in non-production builds with no window hostname info", async () => {
+    const s = await loadStellar("", VALID_SECRET);
+    expect(s.canUseDevKey()).toBe(true);
+  });
+
+  it("canUseDevKey blocks when NODE_ENV is production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const s = await loadStellar("", VALID_SECRET);
+    expect(s.canUseDevKey()).toBe(false);
+  });
+
+  it("canUseDevKey blocks on non-localhost origins even in dev builds", async () => {
+    vi.stubGlobal("location", { hostname: "staging.dshield.example.com" });
+    const s = await loadStellar("", VALID_SECRET);
+    expect(s.canUseDevKey()).toBe(false);
+  });
+
+  it("canUseDevKey allows on localhost origins", async () => {
+    vi.stubGlobal("location", { hostname: "localhost" });
+    const s = await loadStellar("", VALID_SECRET);
+    expect(s.canUseDevKey()).toBe(true);
+  });
+
+  it("returns null (no warning) when no dev key is configured", async () => {
+    const s = await loadStellar("");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(s.getDevKeypair()).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("returns the keypair when the dev key is set and the guard passes", async () => {
+    const kp = StellarSdk.Keypair.random();
+    vi.stubGlobal("location", { hostname: "localhost" });
+    const s = await loadStellar("", kp.secret());
+    expect(s.getDevKeypair()?.publicKey()).toBe(kp.publicKey());
+  });
+
+  it("is inert and warns loudly when the dev key is set but the guard blocks it", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await loadStellar("", VALID_SECRET);
+    expect(s.getDevKeypair()).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
