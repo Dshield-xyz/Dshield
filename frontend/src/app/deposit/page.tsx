@@ -22,7 +22,6 @@ import {
 import { saveDeposit } from "@/lib/deposits";
 import { computeCommitment } from "@/lib/poseidon2";
 import { TOKEN_DECIMALS, TOKEN_SYMBOL, formatStroops } from "@/lib/format";
-import { friendlyError } from "@/lib/errors";
 import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -34,12 +33,12 @@ import {
   WhatsAppIcon,
   XIcon,
 } from "@/components/icons";
-import { useToast } from "@/components/ui/Toast";
+import { useNotify } from "@/components/NotificationProvider";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 export default function DepositPage() {
   const { address, signTransaction } = useWallet();
-  const { toast } = useToast();
+  const notify = useNotify();
   const [isLoading, setIsLoading] = useState(false);
   const [sessionNotes, setSessionNotes] = useState<ShieldedNote[]>([]);
   const [copiedKey, setCopiedKey] = useState<string>("");
@@ -77,7 +76,7 @@ export default function DepositPage() {
       // --- Pre‑sign setup (trustline, faucet) ---
       const sac = getUsdcSacId();
       if (sac) {
-        toast("Checking your USDC setup…");
+        notify.notify("Checking your USDC setup…");
         await ensureUsdcTrustline(address, signTransaction);
         const needed = selectedTier.amount * total;
         const balVal = await queryContract(sac, "balance", [
@@ -87,7 +86,7 @@ export default function DepositPage() {
           ? BigInt(StellarSdk.scValToNative(balVal) as string | number)
           : BigInt(0);
         if (balance < BigInt(needed)) {
-          toast("Topping up your wallet with test USDC…");
+          notify.notify("Topping up your wallet with test USDC…");
           await faucetUsdc(address, BigInt(needed) * BigInt(2) - balance);
         }
       }
@@ -137,14 +136,14 @@ export default function DepositPage() {
               address,
             );
 
-      toast(
+      notify.notify(
         total > 1
           ? `Shielding ${total} notes — please sign once in your wallet…`
           : "Please sign the transaction in your wallet…",
       );
       const signedXdr = await signTransaction(tx.toXDR());
 
-      toast("Sending to the network…");
+      notify.notify("Sending to the network…");
       await submitTransaction(signedXdr);
 
       for (const note of pending) {
@@ -159,15 +158,14 @@ export default function DepositPage() {
       }
 
       const totalUsdc = (total * selectedTier.amount) / 10 ** TOKEN_DECIMALS;
-      toast(
+      notify.notifySuccess(
         total > 1
           ? `${totalUsdc} ${TOKEN_SYMBOL} shielded across ${total} notes — save your notes below!`
           : `${totalUsdc} ${TOKEN_SYMBOL} is now shielded — save your note below!`,
-        "success",
       );
     } catch (err) {
       console.error("Deposit error:", err);
-      toast(friendlyError(err), "error");
+      notify.notifyError(err);
     } finally {
       setIsLoading(false);
       setCustomAmount("");
@@ -181,7 +179,7 @@ export default function DepositPage() {
       setTimeout(() => setCopiedKey((c) => (c === key ? "" : c)), 1500);
     } catch (err) {
       console.error("Copy to clipboard failed:", err);
-      toast("Couldn't copy to clipboard — please copy it manually.", "error");
+      notify.notify("Couldn't copy to clipboard — please copy it manually.", "error");
     }
   }
 

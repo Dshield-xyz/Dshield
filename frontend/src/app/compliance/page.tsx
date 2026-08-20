@@ -22,7 +22,7 @@ import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { SelectButton } from "@/components/ui/SelectButton";
-import { useToast } from "@/components/ui/Toast";
+import { useNotify } from "@/components/NotificationProvider";
 import { NoteImport } from "@/components/ui/NoteImport";
 
 type Mode = "generate" | "verify";
@@ -46,7 +46,7 @@ export default function CompliancePage() {
     null,
   );
   const [isLoading, setIsLoading] = useState(false);
-  const { toast } = useToast();
+  const notify = useNotify();
   const [, refresh] = useReducer((x: number) => x + 1, 0);
 
   useEffect(() => {
@@ -118,7 +118,7 @@ export default function CompliancePage() {
             return next;
           });
           if (!report.depositConfirmed) {
-            toast(
+            notify.notify(
               `Note ${truncateMiddle(note.commitment, 6, 4)}: deposit not found on-chain.`,
               "info",
             );

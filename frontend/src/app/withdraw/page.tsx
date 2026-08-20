@@ -42,7 +42,7 @@ import { Button, buttonVariants } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { ProgressSteps } from "@/components/ui/ProgressSteps";
 import { NoteImport } from "@/components/ui/NoteImport";
-import { useToast } from "@/components/ui/Toast";
+import { useNotify } from "@/components/NotificationProvider";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 type WithdrawStep =
@@ -89,7 +89,7 @@ interface NoteResult {
 
 export default function WithdrawPage() {
   const { address, signTransaction } = useWallet();
-  const { toast } = useToast();
+  const notify = useNotify();
   const [step, setStep] = useState<WithdrawStep>("idle");
   const [proofStage, setProofStage] = useState<ProofStage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -270,7 +270,7 @@ export default function WithdrawPage() {
       } catch (err) {
         const msg = friendlyError(err);
         results[i] = { ...results[i], status: "error", error: msg };
-        toast(`Note ${i + 1}/${results.length} failed: ${msg}`, "error");
+        notify.notify(`Note ${i + 1}/${results.length} failed: ${msg}`, "error");
       }
 
       setBatchResults([...results]);
@@ -282,7 +282,7 @@ export default function WithdrawPage() {
     const done = results.filter((r) => r.status === "done").length;
     const failed = results.filter((r) => r.status === "error").length;
     if (done > 0) {
-      toast(
+      notify.notify(
         failed > 0
           ? `${done} note${done > 1 ? "s" : ""} withdrawn, ${failed} failed.`
           : `${done} note${done > 1 ? "s" : ""} withdrawn successfully!`,
@@ -295,17 +295,17 @@ export default function WithdrawPage() {
   async function handleClearCacheAndResync() {
     const poolId = selectedNotes[0]?.poolId || POOL_CONTRACT_ID;
     if (!poolId) {
-      toast("Pool address is missing.", "error");
+      notify.notify("Pool address is missing.", "error");
       return;
     }
     setIsLoading(true);
     try {
       clearDeposits(poolId);
-      toast("Reloading deposit history from the network…");
+      notify.notify("Reloading deposit history from the network…");
       const synced = await syncDepositsFromChain(poolId);
-      toast(`Synced ${synced} deposit${synced !== 1 ? "s" : ""} — try your withdrawal again.`, "success");
+      notify.notify(`Synced ${synced} deposit${synced !== 1 ? "s" : ""} — try your withdrawal again.`, "success");
     } catch (err) {
-      toast(`Couldn't re-sync — ${friendlyError(err)}`, "error");
+      notify.notify(`Couldn't re-sync — ${friendlyError(err)}`, "error");
     } finally {
       setIsLoading(false);
     }

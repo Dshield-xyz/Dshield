@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { ShieldedNote } from "@/lib/notes";
 import { Button } from "@/components/ui/Button";
-import { useToast } from "@/components/ui/Toast";
+import { useNotify } from "@/components/NotificationProvider";
 
 interface Props {
   notes: ShieldedNote[];
@@ -18,7 +18,7 @@ export default function ThresholdDisclosure({ notes }: Props) {
   const [threshold, setThreshold] = useState<string>("");
   const [proof, setProof] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const { toast } = useToast();
+  const notify = useNotify();
 
   async function handleGenerate() {
     if (!selectedNote || !threshold) return;
@@ -29,7 +29,7 @@ export default function ThresholdDisclosure({ notes }: Props) {
           "auditor key, KYC hash and merkle path, which aren't available here.",
       );
     } catch (e) {
-      toast(`Error: ${e}`, "error");
+      notify.notifyError(e, "Threshold disclosure is not wired up yet.");
     } finally {
       setLoading(false);
     }

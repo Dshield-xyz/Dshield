@@ -1,8 +1,11 @@
 /**
  * Converts raw SDK / network / contract errors into short, readable messages.
  * Call this inside every catch block before toasting.
+ *
+ * @param fallback — Used when the raw error message is too long to display
+ *   as-is and no known pattern matched.
  */
-export function friendlyError(err: unknown): string {
+export function friendlyError(err: unknown, fallback?: string): string {
   const raw = err instanceof Error ? err.message : String(err);
   const lower = raw.toLowerCase();
 
@@ -40,5 +43,5 @@ export function friendlyError(err: unknown): string {
   // Keep raw message only if it's short enough to be readable as-is
   if (raw.length < 100) return raw;
 
-  return "Something went wrong — please try again.";
+  return fallback ?? "Something went wrong — please try again.";
 }

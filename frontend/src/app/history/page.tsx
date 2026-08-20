@@ -6,6 +6,7 @@ import { useWallet } from "@/components/WalletProvider";
 import { Button, buttonVariants } from "@/components/ui/Button";
 import { getNotes, serializeNotes } from "@/lib/notes";
 import { getKyc } from "@/lib/kyc";
+import { useNotify } from "@/components/NotificationProvider";
 
 function downloadAllNotes() {
   const allNotes = getNotes();
@@ -93,6 +94,7 @@ export default function HistoryPage() {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef(false);
   const allNotes = typeof window !== "undefined" ? getNotes() : [];
+  const notify = useNotify();
 
   const filtered =
     filter === "all" ? activity : activity.filter((a) => a.type === filter);
@@ -122,6 +124,7 @@ export default function HistoryPage() {
     a.download = `dshield-history-${Date.now()}.${kind}`;
     a.click();
     URL.revokeObjectURL(url);
+    notify.notify(`Exported ${filtered.length} item${filtered.length !== 1 ? "s" : ""} as ${kind.toUpperCase()}.`, "success");
   }
 
   // Reveal the next batch when the sentinel near the end of the list scrolls

@@ -7,6 +7,7 @@ import { ShieldField } from "@/components/ShieldField";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import { ToastProvider } from "@/components/ui/Toast";
+import { NotificationProvider } from "@/components/NotificationProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -66,9 +67,11 @@ export default function RootLayout({
         <ShieldField className="pointer-events-none fixed inset-0 -z-10 h-full w-full opacity-70 [mask-image:radial-gradient(52rem_34rem_at_50%_0%,black,transparent_72%)]" />
         <WalletProvider>
           <ToastProvider>
-            <Header />
-            <main className="flex-1">{children}</main>
-            <Footer />
+            <NotificationProvider>
+              <Header />
+              <main className="flex-1">{children}</main>
+              <Footer />
+            </NotificationProvider>
           </ToastProvider>
         </WalletProvider>
       </body>
