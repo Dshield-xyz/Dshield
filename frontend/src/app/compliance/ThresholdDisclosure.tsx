@@ -69,7 +69,7 @@ export default function ThresholdDisclosure({ notes }: Props) {
         {loading ? "Generating…" : "Generate Proof"}
       </Button>
       {proof && (
-        <pre className="mt-4 max-h-64 overflow-auto rounded bg-zinc-900 p-2 text-xs text-green-400">
+        <pre className="mt-4 max-h-64 overflow-auto rounded bg-surface-card p-2 text-xs text-green-400">
           {proof}
         </pre>
       )}

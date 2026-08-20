@@ -145,16 +145,16 @@ export function NoteImport({
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
     >
-      <h3 className="text-sm font-medium text-zinc-400">{title}</h3>
-      <p className="mt-1 text-xs text-zinc-500">
-        Paste a <code className="text-zinc-400">dshield-v1-…</code> note and press{" "}
-        <kbd className="rounded border border-zinc-700 px-1 text-[10px] text-zinc-400">Enter</kbd>{" "}
+      <h3 className="text-sm font-medium text-ink-muted">{title}</h3>
+      <p className="mt-1 text-xs text-ink-subtle">
+        Paste a <code className="text-ink-muted">dshield-v1-…</code> note and press{" "}
+        <kbd className="rounded border border-edge-strong px-1 text-[10px] text-ink-muted">Enter</kbd>{" "}
         to tag it. Add as many as you need, or upload a backup file.
       </p>
 
       {/* Tag input box */}
       <div
-        className="mt-3 flex min-h-[44px] flex-wrap items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-2 transition-colors focus-within:border-brand-500/50"
+        className="mt-3 flex min-h-[44px] flex-wrap items-center gap-1.5 rounded-lg border border-edge-default bg-surface-card px-2 py-2 transition-colors focus-within:border-brand-500/50"
         onClick={() => inputRef.current?.focus()}
       >
         {tags.map((tag, i) => (
@@ -183,7 +183,7 @@ export function NoteImport({
           onPaste={handlePaste}
           disabled={disabled}
           placeholder={tags.length === 0 ? "dshield-v1-â€¦ (paste & Enter)" : "Add anotherâ€¦"}
-          className="min-w-[200px] flex-1 bg-transparent font-mono text-xs text-zinc-300 outline-none placeholder-zinc-600 disabled:opacity-50"
+          className="min-w-[200px] flex-1 bg-transparent font-mono text-xs text-ink-secondary outline-none placeholder-ink-faint disabled:opacity-50"
         />
       </div>
       {/* File picker */}
@@ -203,7 +203,7 @@ export function NoteImport({
         type="button"
         disabled={disabled}
         onClick={() => fileRef.current?.click()}
-        className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-zinc-700 px-3 py-2 text-xs text-zinc-500 transition-colors hover:border-zinc-500 hover:text-zinc-300 disabled:pointer-events-none disabled:opacity-50"
+        className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-edge-strong px-3 py-2 text-xs text-ink-subtle transition-colors hover:border-edge-default hover:text-ink-secondary disabled:pointer-events-none disabled:opacity-50"
       >
         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />

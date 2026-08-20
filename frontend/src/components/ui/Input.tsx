@@ -20,7 +20,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   return (
     <div>
       {label && (
-        <label htmlFor={inputId} className="mb-1.5 block text-xs text-zinc-500">
+        <label htmlFor={inputId} className="mb-1.5 block text-xs text-ink-subtle">
           {label}
         </label>
       )}
@@ -29,14 +29,14 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
         id={inputId}
         aria-describedby={hint ? hintId : undefined}
         className={cn(
-          "aurora-field w-full rounded-xl p-3 text-sm text-zinc-200 placeholder-zinc-600 outline-none",
+          "aurora-field w-full rounded-xl p-3 text-sm text-ink-primary placeholder-ink-faint outline-none",
           mono && "font-mono text-xs",
           className,
         )}
         {...props}
       />
       {hint && (
-        <p id={hintId} className="mt-1.5 text-xs text-zinc-600">
+        <p id={hintId} className="mt-1.5 text-xs text-ink-faint">
           {hint}
         </p>
       )}

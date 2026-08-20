@@ -113,12 +113,12 @@ export function Header() {
         hidden && "-translate-y-full",
       )}
     >
-      <div className="aurora-border mx-auto max-w-5xl rounded-2xl border border-zinc-800/80 bg-zinc-950/70 shadow-lg shadow-black/20 backdrop-blur-xl">
+      <div className="aurora-border mx-auto max-w-5xl rounded-2xl border border-edge-default/80 bg-surface-page/70 shadow-lg shadow-black/20 backdrop-blur-xl">
         <div className="flex h-14 items-center justify-between px-3 sm:px-4">
           {/* Logo */}
           <Link
             href="/"
-            className="flex items-center gap-2 text-lg font-bold text-white"
+            className="flex items-center gap-2 text-lg font-bold text-ink-primary"
           >
             <Image
               src="/dshield-mark.png"
@@ -151,8 +151,8 @@ export function Header() {
                   className={cn(
                     "rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                     pathname === href
-                      ? "bg-zinc-800 text-white"
-                      : "text-zinc-400 hover:bg-zinc-800/50 hover:text-white",
+                      ? "bg-surface-raised text-ink-primary"
+                      : "text-ink-muted hover:bg-surface-raised/50 hover:text-ink-primary",
                   )}
                 >
                   {label}
@@ -171,40 +171,40 @@ export function Header() {
                     onClick={() => setBalanceOpen((o) => !o)}
                     aria-expanded={balanceOpen}
                     aria-haspopup="true"
-                    className="focus-ring rounded-full bg-zinc-800 px-3 py-1.5 font-mono text-xs text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white"
+                    className="focus-ring rounded-full bg-surface-raised px-3 py-1.5 font-mono text-xs text-ink-secondary transition-colors hover:bg-surface-interactive hover:text-ink-primary"
                   >
                     {truncateMiddle(address, 4, 4)}
                   </button>
 
                   {balanceOpen && (
-                    <div className="absolute right-0 top-full mt-2 w-48 rounded-xl border border-zinc-800 bg-zinc-950 p-3 shadow-xl shadow-black/40">
-                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                    <div className="absolute right-0 top-full mt-2 w-48 rounded-xl border border-edge-default bg-surface-page p-3 shadow-xl shadow-black/40">
+                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-ink-subtle">
                         Balances
                       </p>
                       {loadingBalances ? (
-                        <p className="text-xs text-zinc-500">Loading…</p>
+                        <p className="text-xs text-ink-subtle">Loading…</p>
                       ) : balances ? (
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <span className="text-xs text-zinc-400">XLM</span>
-                            <span className="font-mono text-xs text-white">
+                            <span className="text-xs text-ink-muted">XLM</span>
+                            <span className="font-mono text-xs text-ink-primary">
                               {balances.xlm}
                             </span>
                           </div>
                           <div className="flex items-center justify-between">
-                            <span className="text-xs text-zinc-400">USDC</span>
-                            <span className="font-mono text-xs text-white">
+                            <span className="text-xs text-ink-muted">USDC</span>
+                            <span className="font-mono text-xs text-ink-primary">
                               {balances.usdc}
                             </span>
                           </div>
                         </div>
                       ) : (
-                        <p className="text-xs text-zinc-500">Unavailable</p>
+                        <p className="text-xs text-ink-subtle">Unavailable</p>
                       )}
-                      <div className="mt-3 border-t border-zinc-800 pt-2">
+                      <div className="mt-3 border-t border-edge-default pt-2">
                         <button
                           onClick={() => { disconnect(); setBalanceOpen(false); }}
-                          className="w-full text-left text-xs text-zinc-500 transition-colors hover:text-red-400"
+                          className="w-full text-left text-xs text-ink-subtle transition-colors hover:text-red-400"
                         >
                           Disconnect
                         </button>
@@ -217,7 +217,7 @@ export function Header() {
                   variant="ghost"
                   size="sm"
                   onClick={disconnect}
-                  className="text-zinc-500 sm:hidden"
+                  className="text-ink-subtle sm:hidden"
                 >
                   Disconnect
                 </Button>
@@ -238,7 +238,7 @@ export function Header() {
               <button
                 onClick={() => setMobileOpen(!mobileOpen)}
                 aria-expanded={mobileOpen}
-                className="focus-ring flex items-center justify-center rounded-lg p-2 text-zinc-400 transition-colors hover:text-white md:hidden"
+                className="focus-ring flex items-center justify-center rounded-lg p-2 text-ink-muted transition-colors hover:text-ink-primary md:hidden"
                 aria-label="Toggle menu"
               >
                 {mobileOpen ? (
@@ -253,7 +253,7 @@ export function Header() {
 
         {/* Mobile nav dropdown — hidden on landing page */}
         {!isLanding && mobileOpen && (
-          <nav className="border-t border-zinc-800 px-3 py-3 md:hidden">
+          <nav className="border-t border-edge-default px-3 py-3 md:hidden">
             <div className="flex flex-col gap-1">
               {NAV_ITEMS.map(({ href, label }) => (
                 <Link
@@ -263,8 +263,8 @@ export function Header() {
                   className={cn(
                     "rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                     pathname === href
-                      ? "bg-zinc-800 text-white"
-                      : "text-zinc-400 hover:bg-zinc-800/50 hover:text-white",
+                      ? "bg-surface-raised text-ink-primary"
+                      : "text-ink-muted hover:bg-surface-raised/50 hover:text-ink-primary",
                   )}
                 >
                   {label}
@@ -272,8 +272,8 @@ export function Header() {
               ))}
             </div>
             {address && (
-              <div className="mt-2 border-t border-zinc-800/50 pt-2">
-                <span className="block rounded-lg px-3 py-2 font-mono text-xs text-zinc-500">
+              <div className="mt-2 border-t border-edge-default/50 pt-2">
+                <span className="block rounded-lg px-3 py-2 font-mono text-xs text-ink-subtle">
                   {truncateMiddle(address, 8, 8)}
                 </span>
               </div>

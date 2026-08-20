@@ -21,12 +21,40 @@
   /* Entrance animations — restrained, used for first-paint reveals. */
   --animate-fade-up: fade-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
   --animate-fade-in: fade-in 0.8s ease both;
+
+  /* ── Semantic surface tokens ──────────────────────────────────────── */
+  /* Page-level background. */
+  --color-surface-page: #09090b;                    /* was zinc-950 */
+  /* Card, panel, and container backgrounds. */
+  --color-surface-card: #18181b;                    /* was zinc-900 */
+  /* Elevated surfaces (progress bars, badges, status blocks). */
+  --color-surface-raised: #27272a;                   /* was zinc-800 */
+  /* Interactive hover/active surfaces. */
+  --color-surface-interactive: #3f3f46;              /* was zinc-700 */
+
+  /* ── Semantic foreground (ink) tokens ─────────────────────────────── */
+  /* Highest-emphasis text (headings, primary labels). */
+  --color-ink-primary: #fafafa;                      /* was white / zinc-100 */
+  /* Body text, secondary labels. */
+  --color-ink-secondary: #d4d4d8;                    /* was zinc-300 */
+  /* Muted text (descriptions, supplementary info). */
+  --color-ink-muted: #a1a1aa;                        /* was zinc-400 */
+  /* Subtle text (metadata, hints, dimensions). */
+  --color-ink-subtle: #71717a;                       /* was zinc-500 */
+  /* Faintest text (disabled placeholders, secondary hints). */
+  --color-ink-faint: #52525b;                        /* was zinc-600 */
+
+  /* ── Semantic border (edge) tokens ────────────────────────────────── */
+  /* Default hairline / card border. */
+  --color-edge-default: #27272a;                     /* was zinc-800 */
+  /* Stronger border (hover, dashed upload zones). */
+  --color-edge-strong: #3f3f46;                      /* was zinc-700 */
 }
 
 @layer base {
   :root {
     /* Page background. */
-    --bg: #09090b; /* zinc-950 */
+    --bg: var(--color-surface-page); /* zinc-950 */
   }
 
   html {
@@ -37,6 +65,7 @@
     position: relative;
     overflow-x: hidden;
     background-color: var(--bg);
+    color: var(--color-ink-primary);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
@@ -149,7 +178,7 @@
 @layer components {
   /* Shared focus ring for interactive primitives (buttons, inputs, cards). */
   .focus-ring {
-    @apply outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950;
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-page;
   }
 
   /*

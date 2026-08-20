@@ -20,12 +20,12 @@ const LINKS = [
 ];
 
 const linkClass =
-  "text-xs text-zinc-500 transition-colors hover:text-white";
+  "text-xs text-ink-subtle transition-colors hover:text-ink-primary";
 
 export function Footer() {
   return (
     <footer className="mt-12 px-3 pb-3 sm:px-4 sm:pb-4">
-      <div className="aurora-border mx-auto max-w-5xl rounded-2xl border border-zinc-800/80 bg-zinc-900/40 px-5 py-8 backdrop-blur-sm sm:px-8 sm:py-10">
+      <div className="aurora-border mx-auto max-w-5xl rounded-2xl border border-edge-default/80 bg-surface-card/40 px-5 py-8 backdrop-blur-sm sm:px-8 sm:py-10">
         <div className="grid gap-6 sm:grid-cols-3 sm:gap-8">
           <div>
             <div className="flex items-center gap-2">
@@ -35,9 +35,9 @@ export function Footer() {
                 width={22}
                 height={24}
               />
-              <h4 className="text-sm font-semibold text-white">DShield</h4>
+              <h4 className="text-sm font-semibold text-ink-primary">DShield</h4>
             </div>
-            <p className="mt-2 text-xs leading-relaxed text-zinc-500">
+            <p className="mt-2 text-xs leading-relaxed text-ink-subtle">
               Private by Default. Compliant by Choice.
               <br />A shielded stablecoin wallet built on Stellar using
               Zero-Knowledge Proofs.
@@ -45,7 +45,7 @@ export function Footer() {
           </div>
 
           <div>
-            <h4 className="text-sm font-semibold text-white">Contracts</h4>
+            <h4 className="text-sm font-semibold text-ink-primary">Contracts</h4>
             <ul className="mt-2 space-y-1.5">
               {CONTRACTS.map(
                 ({ label, id }) =>
@@ -69,7 +69,7 @@ export function Footer() {
           </div>
 
           <div>
-            <h4 className="text-sm font-semibold text-white">Links</h4>
+            <h4 className="text-sm font-semibold text-ink-primary">Links</h4>
             <ul className="mt-2 space-y-1.5">
               {LINKS.map(({ label, href }) => (
                 <li key={href}>
@@ -87,12 +87,12 @@ export function Footer() {
           </div>
         </div>
 
-        <div className="mt-8 flex flex-col items-center gap-2 border-t border-zinc-800/50 pt-6">
-          <p className="text-xs text-zinc-600">
+        <div className="mt-8 flex flex-col items-center gap-2 border-t border-edge-default/50 pt-6">
+          <p className="text-xs text-ink-faint">
             Built for{" "}
-            <span className="text-zinc-400">Stellar Hacks: Real-World ZK</span>
+            <span className="text-ink-muted">Stellar Hacks: Real-World ZK</span>
           </p>
-          <p className="text-xs text-zinc-700">
+          <p className="text-xs text-ink-faint">
             Testnet demo only &mdash; unaudited. Not for production use.
           </p>
         </div>

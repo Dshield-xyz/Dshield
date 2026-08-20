@@ -9,7 +9,7 @@ const badge = cva(
         green: "bg-green-900/30 text-green-400",
         blue: "bg-blue-900/30 text-blue-400",
         purple: "bg-purple-900/30 text-purple-400",
-        zinc: "bg-zinc-800 text-zinc-300",
+        zinc: "bg-surface-raised text-ink-secondary",
       },
     },
     defaultVariants: { tone: "zinc" },

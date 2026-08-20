@@ -44,7 +44,7 @@ export function PageHeader({
     <div>
       <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
       {description && (
-        <p className="mt-2 text-sm leading-relaxed text-zinc-400">
+        <p className="mt-2 text-sm leading-relaxed text-ink-muted">
           {description}
         </p>
       )}
@@ -69,7 +69,7 @@ export function ConnectGate({
     <PageShell>
       <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
       <Card className="mt-6 p-8 text-center">
-        <p className="text-zinc-400">{prompt}</p>
+        <p className="text-ink-muted">{prompt}</p>
         <Button
           size="lg"
           className="mt-6"

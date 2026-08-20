@@ -9,15 +9,15 @@ export const buttonVariants = cva(
       variant: {
         // High-emphasis call to action.
         primary:
-          "bg-gradient-to-b from-brand-500 to-brand-600 text-white shadow-lg shadow-brand-950/50 hover:from-brand-400 hover:to-brand-500 hover:shadow-xl hover:shadow-brand-950/60",
+          "bg-gradient-to-b from-brand-500 to-brand-600 text-ink-primary shadow-lg shadow-brand-950/50 hover:from-brand-400 hover:to-brand-500 hover:shadow-xl hover:shadow-brand-950/60",
         // Brand-accented action (e.g. threshold disclosure).
         accent:
-          "bg-brand-600 text-white shadow-lg shadow-brand-950/50 hover:bg-brand-500",
+          "bg-brand-600 text-ink-primary shadow-lg shadow-brand-950/50 hover:bg-brand-500",
         // Bordered, lower emphasis.
         outline:
-          "border border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white",
+          "border border-edge-strong text-ink-secondary hover:border-edge-strong hover:text-ink-primary",
         // Quiet, text-only.
-        ghost: "text-zinc-400 hover:bg-zinc-800/60 hover:text-white",
+        ghost: "text-ink-muted hover:bg-surface-interactive hover:text-ink-primary",
       },
       size: {
         sm: "px-3 py-1.5 text-xs",

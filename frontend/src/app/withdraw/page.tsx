@@ -333,7 +333,7 @@ export default function WithdrawPage() {
         {/* Note selector */}
         <Card>
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium text-zinc-400">
+            <h3 className="text-sm font-medium text-ink-muted">
               Your Notes ({activeNotes.length} available)
             </h3>
             <div className="flex items-center gap-3">
@@ -341,7 +341,7 @@ export default function WithdrawPage() {
                 <button
                   type="button"
                   onClick={downloadAllNotes}
-                  className="text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+                  className="text-xs text-ink-subtle transition-colors hover:text-ink-secondary"
                 >
                   Download all
                 </button>
@@ -354,7 +354,7 @@ export default function WithdrawPage() {
                       ? setSelectedCommitments(new Set())
                       : setSelectedCommitments(new Set(activeNotes.map((n) => n.commitment)))
                   }
-                  className="text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
+                  className="text-xs text-ink-subtle transition-colors hover:text-ink-secondary disabled:pointer-events-none"
                 >
                   {selectedCommitments.size === activeNotes.length ? "Deselect all" : "Select all"}
                 </button>
@@ -364,7 +364,7 @@ export default function WithdrawPage() {
 
           {activeNotes.length === 0 ? (
             <div className="mt-3 py-4 text-center">
-              <p className="text-sm text-zinc-500">
+              <p className="text-sm text-ink-subtle">
                 You don&apos;t have any notes to withdraw yet.
               </p>
               <Link
@@ -373,7 +373,7 @@ export default function WithdrawPage() {
               >
                 Make a deposit
               </Link>
-              <p className="mt-3 text-xs text-zinc-600">
+              <p className="mt-3 text-xs text-ink-faint">
                 Received a note from someone? Import it below.
               </p>
             </div>
@@ -391,7 +391,7 @@ export default function WithdrawPage() {
                     className={`focus-ring w-full rounded-xl border px-4 py-3 text-left transition-all disabled:pointer-events-none ${
                       selected
                         ? "border-brand-500/50 bg-brand-950/30"
-                        : "border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800/40"
+                        : "border-edge-default hover:border-edge-strong hover:bg-surface-raised/40"
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
@@ -400,7 +400,7 @@ export default function WithdrawPage() {
                           className={`mt-0.5 h-4 w-4 shrink-0 rounded border transition-colors ${
                             selected
                               ? "border-brand-500 bg-brand-500"
-                              : "border-zinc-600"
+                              : "border-edge-strong"
                           }`}
                         >
                           {selected && (
@@ -409,7 +409,7 @@ export default function WithdrawPage() {
                             </svg>
                           )}
                         </div>
-                        <span className="font-mono text-xs text-zinc-300">
+                        <span className="font-mono text-xs text-ink-secondary">
                           {truncateMiddle(note.commitment, 14, 14)}
                         </span>
                       </div>
@@ -424,7 +424,7 @@ export default function WithdrawPage() {
                                 ? "bg-red-950/60 text-red-400"
                                 : result.status === "processing"
                                   ? "bg-brand-950/60 text-brand-400"
-                                  : "bg-zinc-800 text-zinc-500"
+                                  : "bg-surface-raised text-ink-subtle"
                           }`}
                         >
                           {result.status === "done"
@@ -437,7 +437,7 @@ export default function WithdrawPage() {
                         </span>
                       )}
                     </div>
-                    <div className="ml-6 mt-1 flex gap-4 text-xs text-zinc-500">
+                    <div className="ml-6 mt-1 flex gap-4 text-xs text-ink-subtle">
                       <span>{new Date(note.createdAt).toLocaleDateString()}</span>
                       <span>Leaf #{note.leafIndex}</span>
                     </div>
@@ -469,7 +469,7 @@ export default function WithdrawPage() {
         {selectedNotes.length > 0 && (
           <>
             <Card>
-              <h3 className="mb-3 text-sm font-medium text-zinc-400">Recipient Address</h3>
+              <h3 className="mb-3 text-sm font-medium text-ink-muted">Recipient Address</h3>
               <Input
                 type="text"
                 mono
@@ -493,13 +493,13 @@ export default function WithdrawPage() {
                   : `Generate Proofs & Withdraw ${selectedNotes.length} Notes`}
             </Button>
 
-            <p className="text-center text-xs text-zinc-600">
+            <p className="text-center text-xs text-ink-faint">
               Withdrawal failing because your data is out of sync?{" "}
               <button
                 type="button"
                 onClick={handleClearCacheAndResync}
                 disabled={isLoading}
-                className="focus-ring rounded font-medium text-zinc-400 underline decoration-zinc-700 underline-offset-2 transition-colors hover:text-white disabled:pointer-events-none disabled:opacity-50"
+                className="focus-ring rounded font-medium text-ink-muted underline decoration-zinc-700 underline-offset-2 transition-colors hover:text-ink-primary disabled:pointer-events-none disabled:opacity-50"
               >
                 Re-sync from network
               </button>
@@ -511,7 +511,7 @@ export default function WithdrawPage() {
         {isLoading && processingNote && step !== "idle" && (
           <div className="space-y-2">
             {batchResults && batchResults.length > 1 && (
-              <p className="text-xs text-zinc-500">
+              <p className="text-xs text-ink-subtle">
                 Note {batchResults.findIndex((r) => r.status === "processing") + 1} of{" "}
                 {batchResults.length}
               </p>

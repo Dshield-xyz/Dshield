@@ -57,7 +57,7 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
     >
-      <body className="min-h-full flex flex-col bg-zinc-950 text-white">
+      <body className="min-h-full flex flex-col bg-surface-page text-ink-primary">
         <Background />
         {/* Live constellation, present on every page — fixed to the viewport
             (not the document) so it never scrolls away on tall pages, and

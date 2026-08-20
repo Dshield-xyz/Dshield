@@ -214,8 +214,8 @@ export default function DepositPage() {
 
       <Card className="mt-8">
         <div className="mb-6">
-          <h3 className="text-sm font-medium text-zinc-400">How it works</h3>
-          <ol className="mt-3 space-y-2 text-sm text-zinc-500">
+          <h3 className="text-sm font-medium text-ink-muted">How it works</h3>
+          <ol className="mt-3 space-y-2 text-sm text-ink-subtle">
             <li>1. Choose an amount — deposits use fixed sizes so they blend in with everyone else&apos;s</li>
             <li>2. Your {TOKEN_SYMBOL} moves into the shielded pool in one signed transaction</li>
             <li>3. You receive a private note, saved on this device — back it up right away</li>
@@ -224,7 +224,7 @@ export default function DepositPage() {
 
         {tiers.length > 1 && (
           <div className="mb-4">
-            <label className="mb-2 block text-xs text-zinc-500">
+            <label className="mb-2 block text-xs text-ink-subtle">
               Select Denomination
             </label>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -268,12 +268,12 @@ export default function DepositPage() {
                 return (
                   <>
                     Creates{" "}
-                    <span className="text-zinc-400">
+                    <span className="text-ink-muted">
                       {noteCount} note{noteCount > 1 ? "s" : ""}
                     </span>{" "}
                     of {formatStroops(selectedTier.amount)} each
                     {" = "}
-                    <span className="text-zinc-400">
+                    <span className="text-ink-muted">
                       {shielded} {TOKEN_SYMBOL}
                     </span>{" "}
                     shielded
@@ -338,10 +338,10 @@ export default function DepositPage() {
               return (
                 <div
                   key={note.commitment}
-                  className="rounded-xl bg-zinc-800/80 p-3"
+                  className="rounded-xl bg-surface-raised/80 p-3"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs text-zinc-500">
+                    <p className="text-xs text-ink-subtle">
                       Shielded Note
                       {sessionNotes.length > 1
                         ? ` ${i + 1}/${sessionNotes.length}`
@@ -363,22 +363,22 @@ export default function DepositPage() {
                             k === note.commitment ? "" : note.commitment,
                           )
                         }
-                        className="text-xs font-medium text-zinc-400 hover:text-white"
+                        className="text-xs font-medium text-ink-muted hover:text-ink-primary"
                       >
                         {shareOpen ? "Close" : "Share"}
                       </button>
                     </div>
                   </div>
-                  <p className="mt-1.5 break-all font-mono text-xs text-zinc-200">
+                  <p className="mt-1.5 break-all font-mono text-xs text-ink-primary">
                     {serialized}
                   </p>
-                  <p className="mt-2 break-all font-mono text-[11px] text-zinc-600">
+                  <p className="mt-2 break-all font-mono text-[11px] text-ink-faint">
                     Commitment: {note.commitment}
                   </p>
 
                   {shareOpen && (
-                    <div className="mt-3 rounded-lg border border-zinc-700 bg-zinc-900 p-3">
-                      <p className="text-xs font-medium text-zinc-300">
+                    <div className="mt-3 rounded-lg border border-edge-strong bg-surface-card p-3">
+                      <p className="text-xs font-medium text-ink-secondary">
                         Share to claim
                       </p>
                       <p className="mt-1 text-[11px] text-yellow-400/80">
@@ -386,7 +386,7 @@ export default function DepositPage() {
                         opens it can withdraw the funds — share only with the
                         intended recipient via a private channel.
                       </p>
-                      <p className="mt-2 break-all font-mono text-[11px] text-zinc-500">
+                      <p className="mt-2 break-all font-mono text-[11px] text-ink-subtle">
                         {shareLink}
                       </p>
                       <div className="mt-3 flex flex-wrap gap-2">
@@ -400,7 +400,7 @@ export default function DepositPage() {
                               ? "Copied!"
                               : "Copy link"
                           }
-                          className="rounded-lg border border-zinc-600 p-2 text-zinc-300 hover:border-zinc-400 hover:text-white"
+                          className="rounded-lg border border-edge-strong p-2 text-ink-secondary hover:border-edge-default hover:text-ink-primary"
                         >
                           <CopyIcon className="h-4 w-4" />
                         </button>
@@ -409,7 +409,7 @@ export default function DepositPage() {
                           target="_blank"
                           rel="noopener noreferrer"
                           title="Telegram"
-                          className="rounded-lg border border-zinc-600 p-2 text-zinc-300 hover:border-zinc-400 hover:text-white"
+                          className="rounded-lg border border-edge-strong p-2 text-ink-secondary hover:border-edge-default hover:text-ink-primary"
                         >
                           <TelegramIcon className="h-4 w-4" />
                         </a>
@@ -424,7 +424,7 @@ export default function DepositPage() {
                           target="_blank"
                           rel="noopener noreferrer"
                           title="WhatsApp"
-                          className="rounded-lg border border-zinc-600 p-2 text-zinc-300 hover:border-zinc-400 hover:text-white"
+                          className="rounded-lg border border-edge-strong p-2 text-ink-secondary hover:border-edge-default hover:text-ink-primary"
                         >
                           <WhatsAppIcon className="h-4 w-4" />
                         </a>
@@ -442,7 +442,7 @@ export default function DepositPage() {
                             );
                           }}
                           title="X (public) — posts your private note publicly"
-                          className="rounded-lg border border-zinc-600 p-2 text-zinc-300 hover:border-zinc-400 hover:text-white"
+                          className="rounded-lg border border-edge-strong p-2 text-ink-secondary hover:border-edge-default hover:text-ink-primary"
                         >
                           <XIcon className="h-4 w-4" />
                         </button>

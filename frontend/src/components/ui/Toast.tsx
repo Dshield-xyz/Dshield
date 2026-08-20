@@ -73,7 +73,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               t.tone === "success" &&
                 "border-green-500/40 bg-green-950/85 text-green-200",
               t.tone === "info" &&
-                "border-zinc-700 bg-zinc-900/95 text-zinc-200",
+                "border-edge-strong bg-surface-card/95 text-ink-primary",
             )}
           >
             <span className="leading-relaxed">{t.message}</span>

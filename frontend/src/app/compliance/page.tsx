@@ -213,7 +213,7 @@ export default function CompliancePage() {
         {mode === "generate" && (
           <Card>
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-medium text-zinc-400">
+              <h2 className="text-sm font-medium text-ink-muted">
                 Your Notes ({allNotes.length})
               </h2>
               <div className="flex items-center gap-3">
@@ -222,7 +222,7 @@ export default function CompliancePage() {
                     <button
                       type="button"
                       onClick={downloadAllNotes}
-                      className="text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+                      className="text-xs text-ink-subtle transition-colors hover:text-ink-secondary"
                     >
                       Download all
                     </button>
@@ -235,7 +235,7 @@ export default function CompliancePage() {
                               new Set(allNotes.map((n) => n.commitment)),
                             )
                       }
-                      className="text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
+                      className="text-xs text-ink-subtle transition-colors hover:text-ink-secondary disabled:pointer-events-none"
                     >
                       {selectedCommitments.size === allNotes.length
                         ? "Deselect all"
@@ -247,7 +247,7 @@ export default function CompliancePage() {
             </div>
 
             {allNotes.length === 0 ? (
-              <p className="mt-3 text-sm text-zinc-500">
+              <p className="mt-3 text-sm text-ink-subtle">
                 No notes on this device yet. Make a deposit, or import a note
                 below.
               </p>
@@ -265,12 +265,12 @@ export default function CompliancePage() {
                       className={`focus-ring w-full rounded-xl border px-4 py-3 text-left transition-all disabled:pointer-events-none ${
                         selected
                           ? "border-brand-500/50 bg-brand-950/30"
-                          : "border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800/40"
+                          : "border-edge-default hover:border-edge-strong hover:bg-surface-raised/40"
                       }`}
                     >
                       <div className="flex items-center gap-2">
                         <div
-                          className={`h-4 w-4 shrink-0 rounded border transition-colors ${selected ? "border-brand-500 bg-brand-500" : "border-zinc-600"}`}
+                          className={`h-4 w-4 shrink-0 rounded border transition-colors ${selected ? "border-brand-500 bg-brand-500" : "border-edge-strong"}`}
                         >
                           {selected && (
                             <svg
@@ -282,7 +282,7 @@ export default function CompliancePage() {
                             </svg>
                           )}
                         </div>
-                        <span className="font-mono text-xs text-zinc-300">
+                        <span className="font-mono text-xs text-ink-secondary">
                           {truncateMiddle(note.commitment, 16, 16)}
                         </span>
                         <Badge
@@ -292,7 +292,7 @@ export default function CompliancePage() {
                           {note.spent ? "Withdrawn" : "In pool"}
                         </Badge>
                       </div>
-                      <div className="ml-6 mt-1 text-xs text-zinc-500">
+                      <div className="ml-6 mt-1 text-xs text-ink-subtle">
                         Leaf #{note.leafIndex}
                       </div>
                     </button>
@@ -341,7 +341,7 @@ export default function CompliancePage() {
         {hasResults && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <p className="text-xs text-zinc-500">
+              <p className="text-xs text-ink-subtle">
                 {doneCount} of {results.length} complete
               </p>
               {doneCount > 1 && (
@@ -372,10 +372,10 @@ export default function CompliancePage() {
               return (
                 <div
                   key={r.note.commitment}
-                  className="aurora-border overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/70 backdrop-blur-sm"
+                  className="aurora-border overflow-hidden rounded-2xl border border-edge-default bg-surface-card/70 backdrop-blur-sm"
                 >
                   {/* Accordion header */}
-                  <div className="relative z-10 flex items-center transition-colors hover:bg-zinc-800/40">
+                  <div className="relative z-10 flex items-center transition-colors hover:bg-surface-raised/40">
                     <button
                       onClick={() =>
                         setExpandedCommitment(
@@ -385,7 +385,7 @@ export default function CompliancePage() {
                       aria-expanded={isExpanded}
                       className="focus-ring flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left"
                     >
-                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-300">
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-secondary">
                         {truncateMiddle(r.note.commitment, 14, 12)}
                       </span>
 
@@ -393,7 +393,7 @@ export default function CompliancePage() {
 
                       {/* Chevron */}
                       <svg
-                        className={`h-4 w-4 shrink-0 text-zinc-500 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
+                        className={`h-4 w-4 shrink-0 text-ink-subtle transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
                         fill="none"
                         viewBox="0 0 24 24"
                         stroke="currentColor"
@@ -412,7 +412,7 @@ export default function CompliancePage() {
                       <button
                         type="button"
                         onClick={() => downloadOneTxt(r.report!)}
-                        className="focus-ring mr-3 shrink-0 rounded-md px-2 py-1 text-[10px] font-medium text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-white"
+                        className="focus-ring mr-3 shrink-0 rounded-md px-2 py-1 text-[10px] font-medium text-ink-muted transition-colors hover:bg-surface-interactive hover:text-ink-primary"
                       >
                         .txt
                       </button>
@@ -421,9 +421,9 @@ export default function CompliancePage() {
 
                   {/* Accordion body */}
                   {isExpanded && (
-                    <div className="border-t border-zinc-800 px-4 py-4">
+                    <div className="border-t border-edge-default px-4 py-4">
                       {r.status === "loading" && (
-                        <p className="text-sm text-zinc-500">
+                        <p className="text-sm text-ink-subtle">
                           Fetching from chain…
                         </p>
                       )}
@@ -464,7 +464,7 @@ export default function CompliancePage() {
                   setExpandedCommitment(null);
                 }}
                 disabled={isLoading}
-                className="text-xs text-zinc-500"
+                className="text-xs text-ink-subtle"
               >
                 Clear results
               </Button>
@@ -525,14 +525,14 @@ function ReportBody({
             report.withdrawn ? (
               <span className="text-blue-400">Withdrawn (nullifier spent)</span>
             ) : (
-              <span className="text-zinc-300">In pool (unspent)</span>
+              <span className="text-ink-secondary">In pool (unspent)</span>
             )
           }
         />
         <ReportRow
           label="Commitment"
           value={
-            <span className="break-all font-mono text-xs text-zinc-300">
+            <span className="break-all font-mono text-xs text-ink-secondary">
               {report.commitment}
             </span>
           }
@@ -540,7 +540,7 @@ function ReportBody({
         <ReportRow
           label="Nullifier hash"
           value={
-            <span className="break-all font-mono text-xs text-zinc-300">
+            <span className="break-all font-mono text-xs text-ink-secondary">
               {report.nullifierHash}
             </span>
           }
@@ -604,7 +604,7 @@ function ReportRow({
 }) {
   return (
     <div className="flex flex-col gap-0.5 sm:flex-row sm:justify-between sm:gap-4">
-      <dt className="shrink-0 text-zinc-500">{label}</dt>
+      <dt className="shrink-0 text-ink-subtle">{label}</dt>
       <dd className="min-w-0 text-right sm:text-right">{value}</dd>
     </div>
   );
@@ -638,9 +638,9 @@ function ExplorerLink({
           {body}
         </a>
       ) : (
-        <span className="text-zinc-300">{body}</span>
+        <span className="text-ink-secondary">{body}</span>
       )}
-      {sub && <span className="block text-xs text-zinc-600">{sub}</span>}
+      {sub && <span className="block text-xs text-ink-faint">{sub}</span>}
     </span>
   );
 }

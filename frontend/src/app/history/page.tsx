@@ -184,19 +184,19 @@ export default function HistoryPage() {
       <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Card padding="sm" className="text-center">
           <p className="text-2xl font-bold text-green-400">{stats.deposits}</p>
-          <p className="mt-1 text-xs text-zinc-500">Deposits</p>
+          <p className="mt-1 text-xs text-ink-subtle">Deposits</p>
         </Card>
         <Card padding="sm" className="text-center">
           <p className="text-2xl font-bold text-blue-400">
             {stats.withdrawals}
           </p>
-          <p className="mt-1 text-xs text-zinc-500">Withdrawals</p>
+          <p className="mt-1 text-xs text-ink-subtle">Withdrawals</p>
         </Card>
         <Card padding="sm" className="text-center">
           <p className="text-2xl font-bold text-purple-400">
             {stats.compliance}
           </p>
-          <p className="mt-1 text-xs text-zinc-500">Compliance</p>
+          <p className="mt-1 text-xs text-ink-subtle">Compliance</p>
         </Card>
       </div>
 
@@ -217,8 +217,8 @@ export default function HistoryPage() {
             className={cn(
               "focus-ring rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
               filter === key
-                ? "bg-zinc-800 text-white"
-                : "text-zinc-500 hover:bg-zinc-800/50 hover:text-white",
+                ? "bg-surface-raised text-ink-primary"
+                : "text-ink-subtle hover:bg-surface-raised/50 hover:text-ink-primary",
             )}
           >
             {label}
@@ -229,7 +229,7 @@ export default function HistoryPage() {
       {/* Export */}
       {filtered.length > 0 && (
         <div className="mt-4 flex items-center justify-between">
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-ink-subtle">
             {filtered.length} item{filtered.length === 1 ? "" : "s"}
           </p>
           <div className="flex gap-3">
@@ -255,7 +255,7 @@ export default function HistoryPage() {
       <div className="mt-6 space-y-2">
         {filtered.length === 0 ? (
           <Card className="p-8 text-center">
-            <p className="text-sm text-zinc-500">
+            <p className="text-sm text-ink-subtle">
               {activity.length === 0
                 ? "No activity yet — your shielded history will appear here."
                 : "Nothing matches this filter."}
@@ -288,16 +288,16 @@ export default function HistoryPage() {
                         {TYPE_META[item.type].label}
                       </Badge>
                       {item.type !== "compliance" && (
-                        <span className="text-sm font-semibold text-white">
+                        <span className="text-sm font-semibold text-ink-primary">
                           {formatStroopsOrDash(item.amount)}
                         </span>
                       )}
                     </div>
-                    <p className="mt-2 truncate font-mono text-xs text-zinc-600">
+                    <p className="mt-2 truncate font-mono text-xs text-ink-faint">
                       {item.commitment}
                     </p>
                   </div>
-                  <span className="flex-shrink-0 text-xs text-zinc-600">
+                  <span className="flex-shrink-0 text-xs text-ink-faint">
                     {new Date(item.timestamp).toLocaleDateString()}
                   </span>
                 </div>
@@ -308,7 +308,7 @@ export default function HistoryPage() {
             {hasMore && (
               <div
                 ref={sentinelRef}
-                className="flex items-center justify-center gap-2 py-4 text-xs text-zinc-500"
+                className="flex items-center justify-center gap-2 py-4 text-xs text-ink-subtle"
               >
                 <Spinner />
                 {loadingMore ? "Loading more…" : "Scroll to load more"}
@@ -316,7 +316,7 @@ export default function HistoryPage() {
             )}
 
             {!hasMore && filtered.length > PAGE_SIZE && (
-              <p className="py-4 text-center text-xs text-zinc-600">
+              <p className="py-4 text-center text-xs text-ink-faint">
                 That&apos;s everything — {filtered.length} item
                 {filtered.length === 1 ? "" : "s"}.
               </p>

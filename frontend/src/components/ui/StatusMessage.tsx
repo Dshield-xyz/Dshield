@@ -6,7 +6,7 @@ const status = cva("rounded-xl p-3 text-sm", {
     tone: {
       error: "bg-red-900/30 text-red-400",
       success: "bg-green-900/30 text-green-400",
-      info: "bg-zinc-800 text-zinc-300",
+      info: "bg-surface-raised text-ink-secondary",
     },
   },
   defaultVariants: { tone: "info" },

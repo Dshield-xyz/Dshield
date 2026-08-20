@@ -1,10 +1,10 @@
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/cn";
 
-const card = cva("aurora-border rounded-2xl border bg-zinc-900/70 backdrop-blur-sm", {
+const card = cva("aurora-border rounded-2xl border bg-surface-card/70 backdrop-blur-sm", {
   variants: {
     border: {
-      default: "border-zinc-800",
+      default: "border-edge-default",
       brand: "border-brand-500/30 bg-brand-950/10",
     },
     interactive: {
@@ -48,7 +48,7 @@ export function CardLabel({
 }: React.HTMLAttributes<HTMLHeadingElement>) {
   return (
     <h3
-      className={cn("text-sm font-medium text-zinc-400", className)}
+      className={cn("text-sm font-medium text-ink-muted", className)}
       {...props}
     />
   );
