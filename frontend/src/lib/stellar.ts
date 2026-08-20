@@ -3,7 +3,11 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || "http://localhost:8000/soroban/rpc";
 const NETWORK_PASSPHRASE =
   process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE || "Standalone Network ; February 2017";
-const DEV_SECRET_KEY = process.env.NEXT_PUBLIC_DEV_SECRET_KEY || "";
+const DEV_SECRET_KEY_CONFIGURED =
+  process.env.NEXT_PUBLIC_DEV_SECRET_KEY_CONFIGURED === "true" ||
+  Boolean(process.env.NEXT_PUBLIC_DEV_SECRET_KEY);
+const DEV_SECRET_KEY_WARNING =
+  "NEXT_PUBLIC_DEV_SECRET_KEY is configured but ignored because it is only allowed on localhost during non-production builds.";
 
 export const POOL_CONTRACT_ID = process.env.NEXT_PUBLIC_POOL_CONTRACT_ID || "";
 export const COMPLIANCE_CONTRACT_ID = process.env.NEXT_PUBLIC_COMPLIANCE_CONTRACT_ID || "";
@@ -118,14 +122,67 @@ export function getNetworkPassphrase() {
   return NETWORK_PASSPHRASE;
 }
 
+function isLocalHostname(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname === "127.0.0.1" ||
+    hostname === "0.0.0.0" ||
+    hostname === "::1" ||
+    hostname === "[::1]"
+  );
+}
+
+function getBrowserHostname(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.location?.hostname || null;
+}
+
+function getConfiguredDevSecretKey(): string {
+  // Keep production builds from reading this NEXT_PUBLIC_ value at all. That
+  // lets the bundler remove the dev-secret path instead of inlining a
+  // accidentally configured secret into shipped client JavaScript.
+  if (process.env.NODE_ENV === "production") return "";
+  return process.env.NEXT_PUBLIC_DEV_SECRET_KEY || "";
+}
+
+export function isDevSecretKeyAllowedForEnvironment({
+  devSecretKey,
+  nodeEnv,
+  hostname,
+}: {
+  devSecretKey: string;
+  nodeEnv: string | undefined;
+  hostname: string | null;
+}): boolean {
+  if (!devSecretKey) return false;
+  if (nodeEnv === "production") return false;
+  if (hostname === null) return true;
+  return isLocalHostname(hostname);
+}
+
+export function isDevSecretKeyAllowed(): boolean {
+  return isDevSecretKeyAllowedForEnvironment({
+    devSecretKey: getConfiguredDevSecretKey(),
+    nodeEnv: process.env.NODE_ENV,
+    hostname: getBrowserHostname(),
+  });
+}
+
+export function getDevSecretKeyWarning(): string | null {
+  if (!DEV_SECRET_KEY_CONFIGURED || isDevSecretKeyAllowed()) return null;
+  return DEV_SECRET_KEY_WARNING;
+}
+
 export function getDevKeypair(): StellarSdk.Keypair | null {
-  if (!DEV_SECRET_KEY) return null;
-  return StellarSdk.Keypair.fromSecret(DEV_SECRET_KEY);
+  const devSecretKey = getConfiguredDevSecretKey();
+  if (!devSecretKey || !isDevSecretKeyAllowed()) return null;
+  return StellarSdk.Keypair.fromSecret(devSecretKey);
 }
 
 export function devSignTransaction(xdr: string): string {
   const keypair = getDevKeypair();
-  if (!keypair) throw new Error("No dev secret key configured");
+  if (!keypair) throw new Error(getDevSecretKeyWarning() || "No dev secret key configured");
   const tx = StellarSdk.TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
   tx.sign(keypair);
   return tx.toXDR();

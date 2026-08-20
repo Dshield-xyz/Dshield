@@ -6,16 +6,24 @@ const PASSPHRASE = "Standalone Network ; February 2017";
 
 // stellar.ts reads NEXT_PUBLIC_* env at module load, so each scenario reloads
 // the module with the desired env (same pattern as indexer.test.ts).
-async function loadStellar(issuer = "") {
+const DEV_SECRET = "SBH2ZEBGNF6OEIWRQSZD5YKSWV7FU2EHZKDKEXRJGQLS42Q3XWJDVEDL";
+
+async function loadStellar(issuer = "", devSecret = "") {
   vi.resetModules();
   process.env.NEXT_PUBLIC_USDC_ISSUER = issuer;
   process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE = PASSPHRASE;
+  process.env.NEXT_PUBLIC_DEV_SECRET_KEY = devSecret;
   return await import("./stellar");
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
+
+function setHostname(hostname: string) {
+  vi.stubGlobal("window", { location: { hostname } });
+}
 
 describe("getUsdcAsset / getUsdcSacId", () => {
   it("returns null when no issuer is configured", async () => {
@@ -30,6 +38,45 @@ describe("getUsdcAsset / getUsdcSacId", () => {
     expect(s.getUsdcSacId()).toBe(expected);
     // Sanity: a contract (C...) strkey.
     expect(StellarSdk.StrKey.isValidContract(s.getUsdcSacId()!)).toBe(true);
+  });
+});
+
+describe("local-only dev secret guard", () => {
+  it("allows NEXT_PUBLIC_DEV_SECRET_KEY for non-production localhost development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    setHostname("localhost");
+
+    const s = await loadStellar("", DEV_SECRET);
+
+    expect(s.getDevSecretKeyWarning()).toBeNull();
+    expect(s.getDevKeypair()?.secret()).toBe(DEV_SECRET);
+  });
+
+  it("ignores NEXT_PUBLIC_DEV_SECRET_KEY in production builds", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    setHostname("localhost");
+
+    const s = await loadStellar("", DEV_SECRET);
+
+    expect(s.getDevKeypair()).toBeNull();
+    expect(s.getDevSecretKeyWarning()).toContain("ignored");
+    expect(
+      s.isDevSecretKeyAllowedForEnvironment({
+        devSecretKey: DEV_SECRET,
+        nodeEnv: "production",
+        hostname: "localhost",
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores NEXT_PUBLIC_DEV_SECRET_KEY on non-localhost origins", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    setHostname("preview.dshield.example");
+
+    const s = await loadStellar("", DEV_SECRET);
+
+    expect(s.getDevKeypair()).toBeNull();
+    expect(s.getDevSecretKeyWarning()).toContain("localhost");
   });
 });
 

@@ -10,7 +10,12 @@ import {
   type ReactNode,
 } from "react";
 import { StellarWalletsKit, type Networks } from "@creit.tech/stellar-wallets-kit";
-import { getNetworkPassphrase, getDevKeypair, devSignTransaction } from "@/lib/stellar";
+import {
+  getNetworkPassphrase,
+  getDevKeypair,
+  getDevSecretKeyWarning,
+  devSignTransaction,
+} from "@/lib/stellar";
 import { FreighterModule } from "@creit.tech/stellar-wallets-kit/modules/freighter";
 import { xBullModule } from "@creit.tech/stellar-wallets-kit/modules/xbull";
 import { LobstrModule } from "@creit.tech/stellar-wallets-kit/modules/lobstr";
@@ -41,11 +46,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const initialized = useRef(false);
   const [address, setAddress] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [devSecretWarning, setDevSecretWarning] = useState<string | null>(null);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useLayoutEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
+
+    const warning = getDevSecretKeyWarning();
+    setDevSecretWarning(warning);
+    if (warning) {
+      console.error(warning);
+    }
 
     const devKeypair = getDevKeypair();
     if (devKeypair) {
@@ -121,6 +133,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     <WalletContext.Provider
       value={{ address, connect, disconnect, signTransaction, isConnecting }}
     >
+      {devSecretWarning ? (
+        <div role="alert" style={{ color: "#fca5a5", padding: "0.75rem" }}>
+          {devSecretWarning}
+        </div>
+      ) : null}
       {children}
     </WalletContext.Provider>
   );

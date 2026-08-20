@@ -9,7 +9,13 @@ const withBundleAnalyzer = withBundleAnalyzerFactory({
 });
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  env: {
+    // Expose only a boolean so production clients can warn about a blocked
+    // dev-secret configuration without ever inlining the secret value itself.
+    NEXT_PUBLIC_DEV_SECRET_KEY_CONFIGURED: process.env.NEXT_PUBLIC_DEV_SECRET_KEY
+      ? "true"
+      : "",
+  },
 };
 
 export default withBundleAnalyzer(nextConfig);
