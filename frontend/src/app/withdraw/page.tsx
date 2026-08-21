@@ -32,36 +32,31 @@ import {
   fetchCommitmentsFromChain,
 } from "@/lib/indexer";
 import { proveWithdrawal, type ProofStage } from "@/lib/prover";
-import { friendlyError } from "@/lib/errors";
 import { syncSpentNotes } from "@/lib/sync";
 import { truncateMiddle } from "@/lib/format";
 import Link from "next/link";
-import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
+import { PageShell, PageHeader } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
 import { Button, buttonVariants } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { ProgressSteps } from "@/components/ui/ProgressSteps";
 import { NoteImport } from "@/components/ui/NoteImport";
 import { useToast } from "@/components/ui/Toast";
+import { useWizardFlow } from "@/lib/useWizardFlow";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 type WithdrawStep =
-  | "idle"
   | "checking_nullifier"
   | "building_tree"
   | "generating_proof"
   | "signing"
-  | "submitting"
-  | "done";
+  | "submitting";
 
 const STEP_LABELS: Record<WithdrawStep, string> = {
-  idle: "",
   checking_nullifier: "Checking note status…",
   building_tree: "Syncing with the pool…",
   generating_proof: "Generating your private proof — this can take about a minute…",
   signing: "Waiting for your signature…",
   submitting: "Sending to the network…",
-  done: "Done!",
 };
 
 // Finer-grained status shown during "generating_proof", which is by far the
@@ -90,9 +85,24 @@ interface NoteResult {
 export default function WithdrawPage() {
   const { address, signTransaction } = useWallet();
   const { toast } = useToast();
-  const [step, setStep] = useState<WithdrawStep>("idle");
+  const {
+    step,
+    setStep,
+    isLoading,
+    setIsLoading,
+    reportError,
+    renderProgress,
+    walletGate,
+  } = useWizardFlow<WithdrawStep>({
+    steps: PROGRESS_STEPS,
+    labels: STEP_LABELS,
+    gate: {
+      title: "Withdraw",
+      prompt: "Connect your wallet to redeem your shielded notes.",
+    },
+  });
+
   const [proofStage, setProofStage] = useState<ProofStage | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(new Set());
   const [recipient, setRecipient] = useState("");
   const [batchResults, setBatchResults] = useState<NoteResult[] | null>(null);
@@ -150,12 +160,11 @@ export default function WithdrawPage() {
   async function withdrawNote(
     note: ShieldedNote,
     recipientAddr: string,
-    onStep: (s: WithdrawStep) => void,
   ): Promise<string> {
     const poolId = note.poolId || POOL_CONTRACT_ID;
     if (!poolId) throw new Error("Pool address missing — refresh and try again.");
 
-    onStep("checking_nullifier");
+    setStep("checking_nullifier");
     const nullifierHash = await computeNullifierHash(note.nullifier);
     const nullifierHashClean = nullifierHash.replace(/^0x/, "");
     const isUsed = await queryContract(poolId, "is_nullifier_used", [
@@ -165,7 +174,7 @@ export default function WithdrawPage() {
       throw new Error("This note has already been withdrawn.");
     }
 
-    onStep("building_tree");
+    setStep("building_tree");
     const rootVal = await queryContract(poolId, "get_root");
     if (!rootVal) throw new Error("No deposits in this pool yet.");
     const rootBytes = StellarSdk.scValToNative(rootVal) as Buffer;
@@ -196,7 +205,7 @@ export default function WithdrawPage() {
       }
     }
 
-    onStep("generating_proof");
+    setStep("generating_proof");
     setProofStage(null);
     const recipientHash = await computeRecipientHash(recipientAddr);
     const { proof, publicInputs } = await proveWithdrawal(
@@ -213,14 +222,14 @@ export default function WithdrawPage() {
     );
     setProofStage(null);
 
-    onStep("submitting");
+    setStep("submitting");
     const relayed = await relayWithdrawal({ poolId, recipient: recipientAddr, publicInputs, proof });
     if (relayed) {
       await markNoteSpent(note.commitment);
       return relayed.hash;
     }
 
-    onStep("signing");
+    setStep("signing");
     const tx = await buildContractCall(
       poolId,
       "withdraw",
@@ -232,7 +241,7 @@ export default function WithdrawPage() {
       address!,
     );
     const signedXdr = await signTransaction(tx.toXDR());
-    onStep("submitting");
+    setStep("submitting");
     const txHash = await submitTransaction(signedXdr);
     await markNoteSpent(note.commitment);
     return txHash;
@@ -243,7 +252,7 @@ export default function WithdrawPage() {
     const recipientAddr = recipient.trim() || address;
 
     setIsLoading(true);
-    setStep("idle");
+    setStep("checking_nullifier");
 
     const results: NoteResult[] = selectedNotes.map((note) => ({
       note,
@@ -259,7 +268,6 @@ export default function WithdrawPage() {
         const txHash = await withdrawNote(
           results[i].note,
           recipientAddr,
-          setStep,
         );
         results[i] = { ...results[i], status: "done", txHash };
         setSelectedCommitments((prev) => {
@@ -268,7 +276,7 @@ export default function WithdrawPage() {
           return next;
         });
       } catch (err) {
-        const msg = friendlyError(err);
+        const msg = reportError(err);
         results[i] = { ...results[i], status: "error", error: msg };
         toast(`Note ${i + 1}/${results.length} failed: ${msg}`, "error");
       }
@@ -276,8 +284,8 @@ export default function WithdrawPage() {
       setBatchResults([...results]);
     }
 
-    setStep("idle");
     setIsLoading(false);
+    setStep("checking_nullifier");
 
     const done = results.filter((r) => r.status === "done").length;
     const failed = results.filter((r) => r.status === "error").length;
@@ -305,19 +313,15 @@ export default function WithdrawPage() {
       const synced = await syncDepositsFromChain(poolId);
       toast(`Synced ${synced} deposit${synced !== 1 ? "s" : ""} — try your withdrawal again.`, "success");
     } catch (err) {
-      toast(`Couldn't re-sync — ${friendlyError(err)}`, "error");
+      const msg = reportError(err);
+      toast(`Couldn't re-sync — ${msg}`, "error");
     } finally {
       setIsLoading(false);
     }
   }
 
   if (!address) {
-    return (
-      <ConnectGate
-        title="Withdraw"
-        prompt="Connect your wallet to redeem your shielded notes."
-      />
-    );
+    return <>{walletGate}</>;
   }
 
   const processingNote = batchResults?.find((r) => r.status === "processing")?.note;
@@ -508,7 +512,7 @@ export default function WithdrawPage() {
         )}
 
         {/* Progress for current note */}
-        {isLoading && processingNote && step !== "idle" && (
+        {isLoading && processingNote && step && (
           <div className="space-y-2">
             {batchResults && batchResults.length > 1 && (
               <p className="text-xs text-zinc-500">
@@ -516,15 +520,11 @@ export default function WithdrawPage() {
                 {batchResults.length}
               </p>
             )}
-            <ProgressSteps
-              label={
-                step === "generating_proof" && proofStage
-                  ? PROOF_STAGE_LABELS[proofStage]
-                  : STEP_LABELS[step]
-              }
-              steps={PROGRESS_STEPS}
-              current={step}
-            />
+            {renderProgress(
+              step === "generating_proof" && proofStage
+                ? PROOF_STAGE_LABELS[proofStage]
+                : STEP_LABELS[step],
+            )}
           </div>
         )}
       </div>

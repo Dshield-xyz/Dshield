@@ -22,8 +22,7 @@ import {
 import { saveDeposit } from "@/lib/deposits";
 import { computeCommitment } from "@/lib/poseidon2";
 import { TOKEN_DECIMALS, TOKEN_SYMBOL, formatStroops } from "@/lib/format";
-import { friendlyError } from "@/lib/errors";
-import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
+import { PageShell, PageHeader } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -34,13 +33,22 @@ import {
   WhatsAppIcon,
   XIcon,
 } from "@/components/icons";
+import { useWizardFlow } from "@/lib/useWizardFlow";
 import { useToast } from "@/components/ui/Toast";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 export default function DepositPage() {
-  const { address, signTransaction } = useWallet();
   const { toast } = useToast();
-  const [isLoading, setIsLoading] = useState(false);
+  const { address, signTransaction } = useWallet();
+  const { walletGate, isLoading, setIsLoading, reportError } =
+    useWizardFlow({
+      gate: {
+        title: "Deposit",
+        prompt:
+          "Connect your wallet to shield USDC and receive a private note.",
+      },
+    });
+
   const [sessionNotes, setSessionNotes] = useState<ShieldedNote[]>([]);
   const [copiedKey, setCopiedKey] = useState<string>("");
   const [shareOpenKey, setShareOpenKey] = useState<string>("");
@@ -166,8 +174,7 @@ export default function DepositPage() {
         "success",
       );
     } catch (err) {
-      console.error("Deposit error:", err);
-      toast(friendlyError(err), "error");
+      reportError(err);
     } finally {
       setIsLoading(false);
       setCustomAmount("");
@@ -197,12 +204,7 @@ export default function DepositPage() {
   }
 
   if (!address) {
-    return (
-      <ConnectGate
-        title="Deposit"
-        prompt="Connect your wallet to shield USDC and receive a private note."
-      />
-    );
+    return <>{walletGate}</>;
   }
 
   return (

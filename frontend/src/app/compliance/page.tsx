@@ -8,7 +8,7 @@ import {
   serializeNotes,
   type ShieldedNote,
 } from "@/lib/notes";
-import { friendlyError } from "@/lib/errors";
+import { useWizardFlow } from "@/lib/useWizardFlow";
 import { syncSpentNotes } from "@/lib/sync";
 import {
   buildComplianceReport,
@@ -45,8 +45,8 @@ export default function CompliancePage() {
   const [expandedCommitment, setExpandedCommitment] = useState<string | null>(
     null,
   );
-  const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
+  const { isLoading, setIsLoading, reportError } = useWizardFlow();
   const [, refresh] = useReducer((x: number) => x + 1, 0);
 
   useEffect(() => {
@@ -124,9 +124,10 @@ export default function CompliancePage() {
             );
           }
         } catch (err) {
+          const msg = reportError(err);
           setResults((prev) => {
             const next = [...prev];
-            next[i] = { note, status: "error", error: friendlyError(err) };
+            next[i] = { note, status: "error", error: msg };
             return next;
           });
         }
