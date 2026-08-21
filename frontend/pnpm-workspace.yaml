@@ -1,3 +1,6 @@
+packages:
+  - "."
+
 overrides:
   # Transitive dependencies of wallet-connector SDKs (trezor/near/walletconnect
   # via @creit.tech/stellar-wallets-kit) pinned to patched versions so

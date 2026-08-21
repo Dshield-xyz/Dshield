@@ -253,6 +253,10 @@ jobs:
         working-directory: frontend
         run: pnpm test
 
+      - name: Storybook build
+        working-directory: frontend
+        run: pnpm build-storybook
+
       - name: Type check & build
         working-directory: frontend
         run: pnpm build

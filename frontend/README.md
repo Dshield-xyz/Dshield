@@ -24,6 +24,26 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
+The reusable `ui/` component library lives in `src/components/ui/` and is documented
+in an isolated Storybook environment:
+
+```bash
+pnpm storybook
+```
+
+Open [http://localhost:6006](http://localhost:6006) to browse every primitive
+(Button, Card, Input, Badge, Spinner, Toast, StatusMessage, ProgressSteps,
+SelectButton, PageShell) with its key states and variants. To produce the static
+build for CI smoke tests:
+
+```bash
+pnpm build-storybook
+```
+
+The Storybook build is also run as a CI job (`.github/workflows/ci.yml`,
+`storybook-build`) so visual regressions in the component library are caught
+without navigating the full app.
+
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
 ## Learn More
