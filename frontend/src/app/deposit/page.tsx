@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useWallet } from "@/components/WalletProvider";
 import {
   buildContractCall,
@@ -17,6 +17,9 @@ import {
   serializeNote,
   generateNoteLink,
   generateRandomField,
+  saveDraftNotes,
+  getDraftNotes,
+  clearDraftNotes,
   type ShieldedNote,
 } from "@/lib/notes";
 import { saveDeposit } from "@/lib/deposits";
@@ -38,7 +41,7 @@ import { useToast } from "@/components/ui/Toast";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 export default function DepositPage() {
-  const { address, signTransaction } = useWallet();
+  const { address, signTransaction, walletEventCount, networkMismatch } = useWallet();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
   const [sessionNotes, setSessionNotes] = useState<ShieldedNote[]>([]);
@@ -50,6 +53,37 @@ export default function DepositPage() {
     const t = getPoolTiers();
     return t.length > 0 ? t[0] : null;
   });
+  // Interruption state
+  const [interrupted, setInterrupted] = useState(false);
+  const [interruptionReason, setInterruptionReason] = useState<string>("");
+  const prevEventCount = useRef(walletEventCount);
+  const isLoadingRef = useRef(isLoading);
+  isLoadingRef.current = isLoading;
+
+  // Detect wallet disconnect/network-switch mid-flow
+  useEffect(() => {
+    if (walletEventCount !== prevEventCount.current) {
+      prevEventCount.current = walletEventCount;
+      if (isLoadingRef.current) {
+        setIsLoading(false);
+        setInterrupted(true);
+        if (!address) {
+          setInterruptionReason("Wallet disconnected mid-flow. Your draft notes are still saved.");
+        } else if (networkMismatch) {
+          setInterruptionReason("Network switched mid-flow. Your draft notes are still saved.");
+        }
+      }
+    }
+  }, [walletEventCount, address, networkMismatch]);
+
+  // Check for stranded draft notes on mount
+  const [draftNotes, setDraftNotes] = useState<ShieldedNote[]>([]);
+  useEffect(() => {
+    const drafts = getDraftNotes();
+    if (drafts.length > 0) {
+      setDraftNotes(drafts);
+    }
+  }, []);
 
   const noteCount = (() => {
     if (!customAmount || !selectedTier) return 1;
@@ -62,6 +96,36 @@ export default function DepositPage() {
   const totalNotes = customAmount ? noteCount : 1;
 
   /**
+   * Recover draft notes — promote them to the permanent store.
+   * Used when the user confirms their deposit went through despite a disconnect.
+   */
+  async function handleRecoverDraft() {
+    if (draftNotes.length === 0) return;
+    for (const note of draftNotes) {
+      await saveNote(note);
+      saveDeposit({
+        commitment: note.commitment,
+        leafIndex: note.leafIndex,
+        timestamp: Date.now(),
+        poolId: note.poolId || "",
+      });
+    }
+    setSessionNotes(draftNotes);
+    clearDraftNotes();
+    setDraftNotes([]);
+    toast(
+      `${draftNotes.length} note${draftNotes.length > 1 ? "s" : ""} recovered — save them below.`,
+      "success",
+    );
+  }
+
+  function handleClearDraft() {
+    clearDraftNotes();
+    setDraftNotes([]);
+    toast("Draft notes cleared.", "info");
+  }
+
+  /**
    * Build the transaction up to the point of signing, then store it for confirmation.
    * This function performs all pre‑sign checks, constructs the Stellar transaction,
    * extracts the fee, and presents a confirmation UI before the wallet is prompted.
@@ -71,6 +135,8 @@ export default function DepositPage() {
 
     setIsLoading(true);
     setSessionNotes([]);
+    setInterrupted(false);
+    setInterruptionReason("");
     const total = totalNotes;
 
     try {
@@ -116,6 +182,11 @@ export default function DepositPage() {
         });
       }
 
+      // Persist draft notes to localStorage BEFORE signing —
+      // this is the critical window where a wallet disconnect could otherwise
+      // lose the note material while the deposit may have been sent on-chain.
+      await saveDraftNotes(pending);
+
       const depositorScVal = StellarSdk.nativeToScVal(address, { type: "address" });
       const commitmentScVals = pending.map((note) =>
         StellarSdk.xdr.ScVal.scvBytes(Buffer.from(note.commitment, "hex")),
@@ -147,6 +218,7 @@ export default function DepositPage() {
       toast("Sending to the network…");
       await submitTransaction(signedXdr);
 
+      // Transaction confirmed on-chain — promote draft notes to permanent store
       for (const note of pending) {
         await saveNote(note);
         saveDeposit({
@@ -158,6 +230,8 @@ export default function DepositPage() {
         setSessionNotes((prev) => [...prev, note]);
       }
 
+      clearDraftNotes();
+
       const totalUsdc = (total * selectedTier.amount) / 10 ** TOKEN_DECIMALS;
       toast(
         total > 1
@@ -166,6 +240,8 @@ export default function DepositPage() {
         "success",
       );
     } catch (err) {
+      // After signing but before/at submit — the tx may have landed on-chain.
+      // Keep the draft notes so the user can recover them.
       console.error("Deposit error:", err);
       toast(friendlyError(err), "error");
     } finally {
@@ -198,10 +274,29 @@ export default function DepositPage() {
 
   if (!address) {
     return (
-      <ConnectGate
-        title="Deposit"
-        prompt="Connect your wallet to shield USDC and receive a private note."
-      />
+      <>
+        {interrupted && (
+          <div
+            role="alert"
+            className="rounded-xl border border-orange-600/40 bg-orange-950/20 p-3"
+          >
+            <p className="text-sm font-medium text-orange-300">
+              Flow interrupted
+            </p>
+            <p className="mt-1 text-sm text-orange-200/70">
+              {interruptionReason}
+            </p>
+            <p className="mt-1 text-xs text-orange-200/50">
+              If your deposit was submitted, recover your notes below. Otherwise,
+              reconnect and retry.
+            </p>
+          </div>
+        )}
+        <ConnectGate
+          title="Deposit"
+          prompt="Connect your wallet to shield USDC and receive a private note."
+        />
+      </>
     );
   }
 
@@ -211,6 +306,70 @@ export default function DepositPage() {
         title="Deposit"
         description="Move USDC into the shielded pool. You'll receive a private note — the only key to withdrawing your funds later. Nothing on-chain links the deposit to your identity or balance."
       />
+
+      {/* Network mismatch banner */}
+      {networkMismatch && !isLoading && !interrupted && (
+        <div
+          role="alert"
+          className="mt-4 rounded-xl border border-yellow-600/40 bg-yellow-950/20 p-3 text-sm text-yellow-300"
+        >
+          Wallet is on a different network. Switch to the correct network in your
+          wallet extension before depositing.
+        </div>
+      )}
+
+      {/* Interruption banner */}
+      {interrupted && (
+        <div
+          role="alert"
+          className="mt-4 rounded-xl border border-orange-600/40 bg-orange-950/20 p-3"
+        >
+          <p className="text-sm font-medium text-orange-300">
+            Flow interrupted
+          </p>
+          <p className="mt-1 text-sm text-orange-200/70">
+            {interruptionReason}
+          </p>
+          <p className="mt-1 text-xs text-orange-200/50">
+            If your deposit was submitted, recover your notes below. Otherwise,
+            reconnect and retry.
+          </p>
+        </div>
+      )}
+
+      {/* Stranded draft notes recovery banner */}
+      {draftNotes.length > 0 && !sessionNotes.length && (
+        <div
+          role="alert"
+          className="mt-4 rounded-xl border border-yellow-600/40 bg-yellow-950/20 p-3"
+        >
+          <p className="text-sm font-medium text-yellow-300">
+            {draftNotes.length} unsaved note{draftNotes.length > 1 ? "s" : ""}{" "}
+            found from a previous session
+          </p>
+          <p className="mt-1 text-xs text-yellow-200/70">
+            These notes were saved before a disconnect or interruption. If your
+            deposit was sent on-chain, click "Recover" to save them to your
+            wallet. Otherwise click "Clear" to discard.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <Button
+              size="sm"
+              onClick={handleRecoverDraft}
+            >
+              Recover ({draftNotes.length} note{draftNotes.length > 1 ? "s" : ""})
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleClearDraft}
+              className="text-xs text-zinc-500"
+            >
+              Clear
+            </Button>
+          </div>
+        </div>
+      )}
 
       <Card className="mt-8">
         <div className="mb-6">
@@ -295,16 +454,18 @@ export default function DepositPage() {
           size="lg"
           onClick={handleDeposit}
           disabled={
-            isLoading || !selectedTier || (!!customAmount && noteCount <= 0)
+            isLoading || !selectedTier || (!!customAmount && noteCount <= 0) || networkMismatch
           }
         >
           {isLoading
             ? "Processing..."
-            : selectedTier
-              ? customAmount && noteCount > 1
-                ? `Shield ${(noteCount * selectedTier.amount) / 10 ** TOKEN_DECIMALS} ${TOKEN_SYMBOL} (${noteCount} notes)`
-                : `Shield ${formatStroops(selectedTier.amount)}`
-              : "Select a denomination"}
+            : networkMismatch
+              ? "Network mismatch"
+              : selectedTier
+                ? customAmount && noteCount > 1
+                  ? `Shield ${(noteCount * selectedTier.amount) / 10 ** TOKEN_DECIMALS} ${TOKEN_SYMBOL} (${noteCount} notes)`
+                  : `Shield ${formatStroops(selectedTier.amount)}`
+                : "Select a denomination"}
         </Button>
 
         {sessionNotes.length > 0 && (

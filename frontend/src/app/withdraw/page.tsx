@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useReducer } from "react";
+import { useState, useEffect, useReducer, useRef } from "react";
 import { useWallet } from "@/components/WalletProvider";
 import {
   buildContractCall,
@@ -88,7 +88,7 @@ interface NoteResult {
 }
 
 export default function WithdrawPage() {
-  const { address, signTransaction } = useWallet();
+  const { address, signTransaction, walletEventCount, networkMismatch } = useWallet();
   const { toast } = useToast();
   const [step, setStep] = useState<WithdrawStep>("idle");
   const [proofStage, setProofStage] = useState<ProofStage | null>(null);
@@ -97,6 +97,30 @@ export default function WithdrawPage() {
   const [recipient, setRecipient] = useState("");
   const [batchResults, setBatchResults] = useState<NoteResult[] | null>(null);
   const [, refresh] = useReducer((x: number) => x + 1, 0);
+  // Interruption state
+  const [interrupted, setInterrupted] = useState(false);
+  const [interruptionReason, setInterruptionReason] = useState("");
+  const prevEventCount = useRef(walletEventCount);
+  const isLoadingRef = useRef(isLoading);
+  isLoadingRef.current = isLoading;
+  const interruptedRef = useRef(false);
+
+  // Detect wallet disconnect/network-switch mid-flow
+  useEffect(() => {
+    if (walletEventCount !== prevEventCount.current) {
+      prevEventCount.current = walletEventCount;
+      if (isLoadingRef.current) {
+        setIsLoading(false);
+        interruptedRef.current = true;
+        setInterrupted(true);
+        if (!address) {
+          setInterruptionReason("Wallet disconnected mid-flow. Your notes are safe — reconnect and retry.");
+        } else if (networkMismatch) {
+          setInterruptionReason("Network switched mid-flow. Switch back to the correct network in your wallet extension.");
+        }
+      }
+    }
+  }, [walletEventCount, address, networkMismatch]);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -244,6 +268,9 @@ export default function WithdrawPage() {
 
     setIsLoading(true);
     setStep("idle");
+    setInterrupted(false);
+    setInterruptionReason("");
+    interruptedRef.current = false;
 
     const results: NoteResult[] = selectedNotes.map((note) => ({
       note,
@@ -252,6 +279,9 @@ export default function WithdrawPage() {
     setBatchResults([...results]);
 
     for (let i = 0; i < results.length; i++) {
+      // Check for interruption (wallet disconnect/network switch)
+      if (interruptedRef.current) break;
+
       results[i] = { ...results[i], status: "processing" };
       setBatchResults([...results]);
 
@@ -313,10 +343,28 @@ export default function WithdrawPage() {
 
   if (!address) {
     return (
-      <ConnectGate
-        title="Withdraw"
-        prompt="Connect your wallet to redeem your shielded notes."
-      />
+      <>
+        {interrupted && (
+          <div
+            role="alert"
+            className="rounded-xl border border-orange-600/40 bg-orange-950/20 p-3"
+          >
+            <p className="text-sm font-medium text-orange-300">
+              Flow interrupted
+            </p>
+            <p className="mt-1 text-sm text-orange-200/70">
+              {interruptionReason}
+            </p>
+            <p className="mt-1 text-xs text-orange-200/50">
+              Your notes are safe. Reconnect and try again.
+            </p>
+          </div>
+        )}
+        <ConnectGate
+          title="Withdraw"
+          prompt="Connect your wallet to redeem your shielded notes."
+        />
+      </>
     );
   }
 
@@ -328,6 +376,46 @@ export default function WithdrawPage() {
         title="Withdraw"
         description="Choose the notes you want to redeem. DShield proves you own them without revealing which deposit was yours — nothing links the withdrawal back to you."
       />
+
+      {/* Network mismatch banner */}
+      {networkMismatch && !isLoading && !interrupted && (
+        <div
+          role="alert"
+          className="mt-4 rounded-xl border border-yellow-600/40 bg-yellow-950/20 p-3 text-sm text-yellow-300"
+        >
+          Wallet is on a different network. Switch to the correct network in your
+          wallet extension before withdrawing.
+        </div>
+      )}
+
+      {/* Interruption banner */}
+      {interrupted && (
+        <div
+          role="alert"
+          className="mt-4 rounded-xl border border-orange-600/40 bg-orange-950/20 p-3"
+        >
+          <p className="text-sm font-medium text-orange-300">
+            Flow interrupted
+          </p>
+          <p className="mt-1 text-sm text-orange-200/70">
+            {interruptionReason}
+          </p>
+          <p className="mt-1 text-xs text-orange-200/50">
+            Your notes are safe. Reconnect and try again.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-3"
+            onClick={() => {
+              setInterrupted(false);
+              setInterruptionReason("");
+            }}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
 
       <div className="mt-8 space-y-6">
         {/* Note selector */}
@@ -484,13 +572,15 @@ export default function WithdrawPage() {
               fullWidth
               size="lg"
               onClick={handleBatchWithdraw}
-              disabled={isLoading}
+              disabled={isLoading || networkMismatch}
             >
               {isLoading
                 ? "Processing…"
-                : selectedNotes.length === 1
-                  ? "Generate Proof & Withdraw"
-                  : `Generate Proofs & Withdraw ${selectedNotes.length} Notes`}
+                : networkMismatch
+                  ? "Network mismatch"
+                  : selectedNotes.length === 1
+                    ? "Generate Proof & Withdraw"
+                    : `Generate Proofs & Withdraw ${selectedNotes.length} Notes`}
             </Button>
 
             <p className="text-center text-xs text-zinc-600">

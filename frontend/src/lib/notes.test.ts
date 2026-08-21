@@ -10,6 +10,9 @@ import {
   parseNote,
   saveNoteIfNew,
   generateNoteLink,
+  saveDraftNotes,
+  getDraftNotes,
+  clearDraftNotes,
   type ShieldedNote,
 } from "./notes";
 
@@ -407,4 +410,41 @@ describe("Cross-tab synchronization", () => {
     // Clean up
     localStorage.removeItem("dshield_notes_lock");
   }, 10000); // 10 second timeout for this test
+});
+
+describe("draft notes (wallet-disconnect resilience)", () => {
+  it("saves and retrieves draft notes", async () => {
+    const note = makeNote({ commitment: "draft1" });
+    await saveDraftNotes([note]);
+    const drafts = getDraftNotes();
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].commitment).toBe("draft1");
+  });
+
+  it("clears draft notes", async () => {
+    await saveDraftNotes([makeNote({ commitment: "draft2" })]);
+    clearDraftNotes();
+    expect(getDraftNotes()).toHaveLength(0);
+  });
+
+  it("returns empty array when no drafts exist", () => {
+    expect(getDraftNotes()).toHaveLength(0);
+  });
+
+  it("overwrites previous drafts", async () => {
+    await saveDraftNotes([makeNote({ commitment: "old" })]);
+    await saveDraftNotes([makeNote({ commitment: "new" })]);
+    const drafts = getDraftNotes();
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].commitment).toBe("new");
+  });
+
+  it("does not interfere with permanent notes storage", async () => {
+    await saveNote(makeNote({ commitment: "perm" }));
+    await saveDraftNotes([makeNote({ commitment: "draft" })]);
+    expect(getNotes()).toHaveLength(1);
+    expect(getNotes()[0].commitment).toBe("perm");
+    expect(getDraftNotes()).toHaveLength(1);
+    expect(getDraftNotes()[0].commitment).toBe("draft");
+  });
 });

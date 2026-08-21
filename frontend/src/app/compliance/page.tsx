@@ -17,6 +17,7 @@ import {
 } from "@/lib/report";
 import { explorerTxUrl, explorerContractUrl } from "@/lib/explorer";
 import { truncateMiddle } from "@/lib/format";
+import { useWallet } from "@/components/WalletProvider";
 import { PageShell, PageHeader } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -37,6 +38,7 @@ interface ReportResult {
 }
 
 export default function CompliancePage() {
+  const { networkMismatch } = useWallet();
   const [mode, setMode] = useState<Mode>("generate");
   const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(
     new Set(),
@@ -184,6 +186,17 @@ export default function CompliancePage() {
         title="Compliance"
         description="Create verifiable reports about your shielded funds for auditors or regulators — proving exactly what you choose to, and nothing more. Anyone you share a note with can verify it here too."
       />
+
+      {/* Network mismatch banner */}
+      {networkMismatch && (
+        <div
+          role="alert"
+          className="mt-4 rounded-xl border border-yellow-600/40 bg-yellow-950/20 p-3 text-sm text-yellow-300"
+        >
+          Wallet is on a different network. Reports may show incorrect data.
+          Switch to the correct network in your wallet extension.
+        </div>
+      )}
 
       {/* Mode toggle */}
       <fieldset className="mt-8 grid grid-cols-2 gap-2">

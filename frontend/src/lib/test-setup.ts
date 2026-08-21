@@ -1,4 +1,13 @@
-import { beforeEach } from "vitest";
+import { beforeEach, afterEach } from "vitest";
+import "@testing-library/jest-dom/vitest";
+import { cleanup } from "@testing-library/react";
+
+// React 19: act must be explicitly enabled for the test environment
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+afterEach(() => {
+  cleanup();
+});
 
 const storage = new Map<string, string>();
 

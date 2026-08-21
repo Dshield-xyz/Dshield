@@ -362,6 +362,36 @@ export function generateNoteLink(note: ShieldedNote): string {
   return `${base}/withdraw#note=${encodeURIComponent(payload)}`;
 }
 
+// --- Draft notes for wallet-disconnect resilience ---
+// Draft notes are persisted to localStorage before the deposit transaction is
+// signed, so that a wallet disconnect mid-flow never silently loses the note
+// material. They are promoted to the permanent store only after a successful
+// submit, and cleared on failure/interruption.
+
+const DRAFT_STORAGE_KEY = "dshield_draft_notes";
+
+export async function saveDraftNotes(notes: ShieldedNote[]): Promise<void> {
+  return withLock(() => {
+    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(notes));
+  });
+}
+
+export function getDraftNotes(): ShieldedNote[] {
+  if (typeof window === "undefined") return [];
+  const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+export function clearDraftNotes(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(DRAFT_STORAGE_KEY);
+}
+
 export function generateRandomField(): string {
   const bytes = new Uint8Array(31);
   crypto.getRandomValues(bytes);
