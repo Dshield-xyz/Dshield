@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { checkRateLimit, clientKey } from "@/lib/rateLimit";
+import {
+  createLogger,
+  requestCorrelationId,
+  withCorrelationId,
+} from "@/lib/logger";
 
 // Server-side relayer: submits a withdrawal on the user's behalf, paying the
 // transaction fee from the relayer account. Because the pool contract binds the
@@ -29,18 +34,29 @@ const RATE_LIMIT = 20;
 const RATE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 export async function POST(req: NextRequest) {
+  const correlationId = requestCorrelationId(req.headers);
+  const log = createLogger("relay-withdraw", correlationId);
+
   if (!RELAYER_SECRET) {
-    return NextResponse.json(
-      { error: "Relayer is not configured (RELAYER_SECRET unset).", code: "no_relayer" },
-      { status: 503 },
+    log.warn("relayer secret not configured");
+    return withCorrelationId(
+      NextResponse.json(
+        { error: "Relayer is not configured (RELAYER_SECRET unset).", code: "no_relayer" },
+        { status: 503 },
+      ),
+      correlationId,
     );
   }
 
   const rl = checkRateLimit(`relay:${clientKey(req.headers)}`, RATE_LIMIT, RATE_WINDOW_MS);
   if (!rl.allowed) {
-    return NextResponse.json(
-      { error: "Too many relay requests. Try again later.", code: "rate_limited" },
-      { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } },
+    log.warn("rate limited", { retryAfterSeconds: rl.retryAfterSeconds });
+    return withCorrelationId(
+      NextResponse.json(
+        { error: "Too many relay requests. Try again later.", code: "rate_limited" },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } },
+      ),
+      correlationId,
     );
   }
 
@@ -55,21 +71,42 @@ export async function POST(req: NextRequest) {
     publicInputs = String(body.publicInputs || "");
     proof = String(body.proof || "");
   } catch {
-    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    log.warn("invalid request body");
+    return withCorrelationId(
+      NextResponse.json({ error: "Invalid request body." }, { status: 400 }),
+      correlationId,
+    );
   }
 
   if (!isStrKeyContract(poolId)) {
-    return NextResponse.json({ error: "Invalid pool id." }, { status: 400 });
-  }
-  if (!StellarSdk.StrKey.isValidEd25519PublicKey(recipient)) {
-    return NextResponse.json({ error: "Invalid recipient address." }, { status: 400 });
-  }
-  if (!/^[0-9a-fA-F]+$/.test(publicInputs) || !/^[0-9a-fA-F]+$/.test(proof)) {
-    return NextResponse.json(
-      { error: "publicInputs and proof must be hex strings." },
-      { status: 400 },
+    log.warn("invalid pool id", { poolId: poolId.slice(0, 8) });
+    return withCorrelationId(
+      NextResponse.json({ error: "Invalid pool id." }, { status: 400 }),
+      correlationId,
     );
   }
+  if (!StellarSdk.StrKey.isValidEd25519PublicKey(recipient)) {
+    log.warn("invalid recipient address", { recipient: recipient.slice(0, 8) });
+    return withCorrelationId(
+      NextResponse.json({ error: "Invalid recipient address." }, { status: 400 }),
+      correlationId,
+    );
+  }
+  if (!/^[0-9a-fA-F]+$/.test(publicInputs) || !/^[0-9a-fA-F]+$/.test(proof)) {
+    log.warn("invalid hex format", { publicInputsLen: publicInputs.length, proofLen: proof.length });
+    return withCorrelationId(
+      NextResponse.json(
+        { error: "publicInputs and proof must be hex strings." },
+        { status: 400 },
+      ),
+      correlationId,
+    );
+  }
+
+  log.info("relay-withdraw request started", {
+    poolId: poolId.slice(0, 8),
+    recipient: recipient.slice(0, 8),
+  });
 
   try {
     const server = new StellarSdk.rpc.Server(RPC_URL, {
@@ -96,9 +133,13 @@ export async function POST(req: NextRequest) {
 
     const sim = await server.simulateTransaction(tx);
     if (StellarSdk.rpc.Api.isSimulationError(sim)) {
-      return NextResponse.json(
-        { error: `Withdrawal simulation failed: ${sim.error}` },
-        { status: 400 },
+      log.warn("simulation failed", { error: sim.error });
+      return withCorrelationId(
+        NextResponse.json(
+          { error: `Withdrawal simulation failed: ${sim.error}` },
+          { status: 400 },
+        ),
+        correlationId,
       );
     }
 
@@ -107,9 +148,13 @@ export async function POST(req: NextRequest) {
 
     const sent = await server.sendTransaction(assembled);
     if (sent.status === "ERROR") {
-      return NextResponse.json(
-        { error: "Relayed withdrawal submission failed." },
-        { status: 500 },
+      log.error("transaction submission failed", { hash: sent.hash });
+      return withCorrelationId(
+        NextResponse.json(
+          { error: "Relayed withdrawal submission failed." },
+          { status: 500 },
+        ),
+        correlationId,
       );
     }
 
@@ -121,19 +166,30 @@ export async function POST(req: NextRequest) {
       tries++;
     }
     if (result.status !== "SUCCESS") {
-      return NextResponse.json(
-        { error: `Relayed withdrawal did not succeed (${result.status}).` },
-        { status: 500 },
+      log.error("transaction did not succeed", { status: result.status, tries });
+      return withCorrelationId(
+        NextResponse.json(
+          { error: `Relayed withdrawal did not succeed (${result.status}).` },
+          { status: 500 },
+        ),
+        correlationId,
       );
     }
 
-    return NextResponse.json({ hash: sent.hash, relayer: relayer.publicKey() });
+    log.info("relay-withdraw request succeeded", { hash: sent.hash });
+    return withCorrelationId(
+      NextResponse.json({ hash: sent.hash, relayer: relayer.publicKey() }),
+      correlationId,
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("Relay withdraw failed:", message);
-    return NextResponse.json(
-      { error: `Relayed withdrawal failed: ${message}` },
-      { status: 500 },
+    log.error("relay-withdraw failed", { message });
+    return withCorrelationId(
+      NextResponse.json(
+        { error: `Relayed withdrawal failed: ${message}` },
+        { status: 500 },
+      ),
+      correlationId,
     );
   }
 }

@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { checkRateLimit, clientKey } from "@/lib/rateLimit";
+import {
+  createLogger,
+  requestCorrelationId,
+  withCorrelationId,
+} from "@/lib/logger";
 
 // Server-only faucet: mints test USDC to a recipient using the issuer secret.
 // The secret lives ONLY in this server route (env var without a NEXT_PUBLIC_
@@ -23,18 +28,29 @@ const RATE_LIMIT = 5;
 const RATE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 
 export async function POST(req: NextRequest) {
+  const correlationId = requestCorrelationId(req.headers);
+  const log = createLogger("faucet", correlationId);
+
   if (!ISSUER_SECRET) {
-    return NextResponse.json(
-      { error: "Faucet is not configured (USDC_ISSUER_SECRET unset)." },
-      { status: 503 },
+    log.warn("issuer secret not configured");
+    return withCorrelationId(
+      NextResponse.json(
+        { error: "Faucet is not configured (USDC_ISSUER_SECRET unset)." },
+        { status: 503 },
+      ),
+      correlationId,
     );
   }
 
   const rl = checkRateLimit(`faucet:${clientKey(req.headers)}`, RATE_LIMIT, RATE_WINDOW_MS);
   if (!rl.allowed) {
-    return NextResponse.json(
-      { error: "Too many faucet requests. Try again later." },
-      { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } },
+    log.warn("rate limited", { retryAfterSeconds: rl.retryAfterSeconds });
+    return withCorrelationId(
+      NextResponse.json(
+        { error: "Too many faucet requests. Try again later." },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } },
+      ),
+      correlationId,
     );
   }
 
@@ -45,21 +61,36 @@ export async function POST(req: NextRequest) {
     address = String(body.address || "");
     amount = BigInt(body.amount ?? "0");
   } catch {
-    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    log.warn("invalid request body");
+    return withCorrelationId(
+      NextResponse.json({ error: "Invalid request body." }, { status: 400 }),
+      correlationId,
+    );
   }
 
   if (!StellarSdk.StrKey.isValidEd25519PublicKey(address)) {
-    return NextResponse.json(
-      { error: "Invalid recipient address." },
-      { status: 400 },
+    log.warn("invalid recipient address", { address: address.slice(0, 8) });
+    return withCorrelationId(
+      NextResponse.json(
+        { error: "Invalid recipient address." },
+        { status: 400 },
+      ),
+      correlationId,
     );
   }
   if (amount <= BigInt(0)) {
-    return NextResponse.json({ error: "Amount must be positive." }, { status: 400 });
+    log.warn("non-positive amount", { amount: amount.toString() });
+    return withCorrelationId(
+      NextResponse.json({ error: "Amount must be positive." }, { status: 400 }),
+      correlationId,
+    );
   }
   if (amount > MAX_AMOUNT) {
+    log.info("amount clamped to max", { original: amount.toString(), clamped: MAX_AMOUNT.toString() });
     amount = MAX_AMOUNT;
   }
+
+  log.info("faucet request started", { address: address.slice(0, 8), amount: amount.toString() });
 
   try {
     const server = new StellarSdk.rpc.Server(RPC_URL, {
@@ -88,10 +119,13 @@ export async function POST(req: NextRequest) {
 
     const sim = await server.simulateTransaction(tx);
     if (StellarSdk.rpc.Api.isSimulationError(sim)) {
-      // Most commonly the recipient has no USDC trustline yet.
-      return NextResponse.json(
-        { error: `Faucet simulation failed: ${sim.error}` },
-        { status: 400 },
+      log.warn("simulation failed", { error: sim.error });
+      return withCorrelationId(
+        NextResponse.json(
+          { error: `Faucet simulation failed: ${sim.error}` },
+          { status: 400 },
+        ),
+        correlationId,
       );
     }
 
@@ -100,9 +134,13 @@ export async function POST(req: NextRequest) {
 
     const sent = await server.sendTransaction(assembled);
     if (sent.status === "ERROR") {
-      return NextResponse.json(
-        { error: "Faucet transaction submission failed." },
-        { status: 500 },
+      log.error("transaction submission failed", { hash: sent.hash });
+      return withCorrelationId(
+        NextResponse.json(
+          { error: "Faucet transaction submission failed." },
+          { status: 500 },
+        ),
+        correlationId,
       );
     }
 
@@ -114,19 +152,30 @@ export async function POST(req: NextRequest) {
       tries++;
     }
     if (result.status !== "SUCCESS") {
-      return NextResponse.json(
-        { error: `Faucet transaction did not succeed (${result.status}).` },
-        { status: 500 },
+      log.error("transaction did not succeed", { status: result.status, tries });
+      return withCorrelationId(
+        NextResponse.json(
+          { error: `Faucet transaction did not succeed (${result.status}).` },
+          { status: 500 },
+        ),
+        correlationId,
       );
     }
 
-    return NextResponse.json({ hash: sent.hash, amount: amount.toString() });
+    log.info("faucet request succeeded", { hash: sent.hash, amount: amount.toString() });
+    return withCorrelationId(
+      NextResponse.json({ hash: sent.hash, amount: amount.toString() }),
+      correlationId,
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("Faucet failed:", message);
-    return NextResponse.json(
-      { error: `Faucet failed: ${message}` },
-      { status: 500 },
+    log.error("faucet failed", { message });
+    return withCorrelationId(
+      NextResponse.json(
+        { error: `Faucet failed: ${message}` },
+        { status: 500 },
+      ),
+      correlationId,
     );
   }
 }
