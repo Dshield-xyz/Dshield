@@ -136,6 +136,47 @@ export function getActiveNotes(): ShieldedNote[] {
   return getNotes().filter((n) => !n.spent);
 }
 
+// ---------------------------------------------------------------------------
+// Pending notes — notes created *before* their deposit transaction has been
+// confirmed. We persist them to localStorage up-front (before asking the
+// wallet to sign) so that a wallet disconnect / network switch / tab close
+// mid-flow can never silently lose the note material. If the deposit ends up
+// on-chain the note is still valid; if it doesn't, the user can discard it.
+// ---------------------------------------------------------------------------
+
+const PENDING_STORAGE_KEY = "dshield_pending_notes";
+
+/** Persist notes that are mid-deposit (created but not yet confirmed). */
+export function savePendingNotes(notes: ShieldedNote[]): void {
+  if (notes.length === 0) return;
+  const pending = getPendingNotes();
+  const byCommitment = new Map<string, ShieldedNote>();
+  for (const n of pending) byCommitment.set(n.commitment, n);
+  for (const n of notes) byCommitment.set(n.commitment, n);
+  localStorage.setItem(
+    PENDING_STORAGE_KEY,
+    JSON.stringify(Array.from(byCommitment.values())),
+  );
+}
+
+/** All notes that were persisted mid-deposit and not yet cleared. */
+export function getPendingNotes(): ShieldedNote[] {
+  if (typeof window === "undefined") return [];
+  const raw = localStorage.getItem(PENDING_STORAGE_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw) as ShieldedNote[];
+  } catch {
+    return [];
+  }
+}
+
+/** Remove persisted pending notes (after a successful deposit or explicit discard). */
+export function clearPendingNotes(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(PENDING_STORAGE_KEY);
+}
+
 const NOTE_PREFIX = "dshield";
 const NOTE_VERSION = "v1";
 

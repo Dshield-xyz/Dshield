@@ -19,18 +19,29 @@ import { AlbedoModule } from "@creit.tech/stellar-wallets-kit/modules/albedo";
 
 interface WalletContextType {
   address: string | null;
+  network: string;
   connect: () => Promise<void>;
   disconnect: () => void;
   signTransaction: (xdr: string) => Promise<string>;
   isConnecting: boolean;
+  /** Incremented on every connect or disconnect so pages can detect wallet
+   *  state changes mid-flow (e.g., to pause a running operation). */
+  connectionVersion: number;
+  /** Timestamp of the most recent disconnect, or null if never disconnected
+   *  since mount. Pages check this alongside address to distinguish a
+   *  mid-flow disconnect from initial mount. */
+  lastDisconnectAt: number | null;
 }
 
 const WalletContext = createContext<WalletContextType>({
   address: null,
+  network: "",
   connect: async () => {},
   disconnect: () => {},
   signTransaction: async () => "",
   isConnecting: false,
+  connectionVersion: 0,
+  lastDisconnectAt: null,
 });
 
 export function useWallet() {
@@ -41,6 +52,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const initialized = useRef(false);
   const [address, setAddress] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [connectionVersion, setConnectionVersion] = useState(0);
+  const [lastDisconnectAt, setLastDisconnectAt] = useState<number | null>(null);
+  const network = getNetworkPassphrase();
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useLayoutEffect(() => {
@@ -87,6 +101,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         setAddress(addr);
         localStorage.setItem("dshield_wallet", addr);
       }
+      setConnectionVersion((v) => v + 1);
     } catch {
       // user closed modal
     } finally {
@@ -101,6 +116,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       // ignore
     }
     setAddress(null);
+    setConnectionVersion((v) => v + 1);
+    setLastDisconnectAt(Date.now());
     localStorage.removeItem("dshield_wallet");
   }, []);
 
@@ -119,7 +136,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   return (
     <WalletContext.Provider
-      value={{ address, connect, disconnect, signTransaction, isConnecting }}
+      value={{ address, network, connect, disconnect, signTransaction, isConnecting, connectionVersion, lastDisconnectAt }}
     >
       {children}
     </WalletContext.Provider>

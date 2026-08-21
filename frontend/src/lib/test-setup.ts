@@ -1,4 +1,5 @@
-import { beforeEach } from "vitest";
+import { beforeEach, afterEach } from "vitest";
+import { cleanup } from "@testing-library/react";
 
 const storage = new Map<string, string>();
 
@@ -27,4 +28,8 @@ if (typeof (globalThis.window as { location?: unknown }).location === "undefined
 
 beforeEach(() => {
   storage.clear();
+});
+
+afterEach(() => {
+  cleanup();
 });

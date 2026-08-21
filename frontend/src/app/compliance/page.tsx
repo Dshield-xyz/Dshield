@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/Button";
 import { SelectButton } from "@/components/ui/SelectButton";
 import { useToast } from "@/components/ui/Toast";
 import { NoteImport } from "@/components/ui/NoteImport";
+import { useWalletFlowGuard } from "@/components/useWalletFlowGuard";
 
 type Mode = "generate" | "verify";
 
@@ -36,6 +37,33 @@ interface ReportResult {
   error?: string;
 }
 
+const COMPLIANCE_DRAFT_KEY = "dshield_compliance_draft";
+
+interface ComplianceDraft {
+  selectedCommitments: string[];
+  mode: Mode;
+}
+
+function loadComplianceDraft(): ComplianceDraft | null {
+  if (typeof window === "undefined") return null;
+  const raw = localStorage.getItem(COMPLIANCE_DRAFT_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as ComplianceDraft;
+  } catch {
+    return null;
+  }
+}
+
+function saveComplianceDraft(draft: ComplianceDraft | null): void {
+  if (typeof window === "undefined") return;
+  if (!draft || draft.selectedCommitments.length === 0) {
+    localStorage.removeItem(COMPLIANCE_DRAFT_KEY);
+    return;
+  }
+  localStorage.setItem(COMPLIANCE_DRAFT_KEY, JSON.stringify(draft));
+}
+
 export default function CompliancePage() {
   const [mode, setMode] = useState<Mode>("generate");
   const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(
@@ -46,8 +74,40 @@ export default function CompliancePage() {
     null,
   );
   const [isLoading, setIsLoading] = useState(false);
+  const [hasRecoveredDraft, setHasRecoveredDraft] = useState(false);
   const { toast } = useToast();
   const [, refresh] = useReducer((x: number) => x + 1, 0);
+
+  const { interrupted, reset } = useWalletFlowGuard(isLoading);
+
+  // Restore a draft persisted when a previous session was interrupted.
+  useEffect(() => {
+    const draft = loadComplianceDraft();
+    if (draft && draft.selectedCommitments.length > 0) {
+      setSelectedCommitments(new Set(draft.selectedCommitments));
+      setMode(draft.mode);
+      setHasRecoveredDraft(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Mid-flow disconnect: persist the current selection as a draft.
+  useEffect(() => {
+    if (interrupted) {
+      saveComplianceDraft({
+        selectedCommitments: Array.from(selectedCommitments),
+        mode,
+      });
+      setIsLoading(false);
+      toast(
+        "Wallet disconnected mid-flow — your selection was saved. Reconnect and continue.",
+        "error",
+      );
+      reset();
+      setHasRecoveredDraft(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interrupted]);
 
   useEffect(() => {
     syncSpentNotes().then((n) => {
@@ -100,6 +160,13 @@ export default function CompliancePage() {
     setIsLoading(true);
     setExpandedCommitment(null);
 
+    // Persist the selection up-front so a mid-flow wallet disconnect can
+    // never lose it (see #108).
+    saveComplianceDraft({
+      selectedCommitments: Array.from(selectedCommitments),
+      mode,
+    });
+
     // Seed all results as loading upfront so the accordion renders immediately.
     const initial: ReportResult[] = selectedNotes.map((note) => ({
       note,
@@ -134,6 +201,9 @@ export default function CompliancePage() {
     );
 
     setIsLoading(false);
+    // Clear the draft; any interrupted-flow state is now resolved.
+    saveComplianceDraft(null);
+    setHasRecoveredDraft(false);
   }
 
   function downloadOneTxt(report: ComplianceReport) {
@@ -184,6 +254,31 @@ export default function CompliancePage() {
         title="Compliance"
         description="Create verifiable reports about your shielded funds for auditors or regulators — proving exactly what you choose to, and nothing more. Anyone you share a note with can verify it here too."
       />
+
+      {/* Recovered draft banner — from a previous interrupted flow */}
+      {hasRecoveredDraft && (
+        <div className="mt-6 rounded-xl border border-yellow-600/40 bg-yellow-950/20 p-4">
+          <p className="text-sm font-semibold text-yellow-300">
+            Previous selection recovered
+          </p>
+          <p className="mt-1 text-xs text-yellow-200/70">
+            Your note selection from a previous interrupted session was
+            restored. Review and start the report generation again when ready.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              saveComplianceDraft(null);
+              setHasRecoveredDraft(false);
+              setSelectedCommitments(new Set());
+              setResults([]);
+            }}
+            className="mt-2 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+          >
+            Dismiss selection
+          </button>
+        </div>
+      )}
 
       {/* Mode toggle */}
       <fieldset className="mt-8 grid grid-cols-2 gap-2">

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useReducer } from "react";
 import { useWallet } from "@/components/WalletProvider";
+import { useWalletFlowGuard } from "@/components/useWalletFlowGuard";
 import {
   buildContractCall,
   submitTransaction,
@@ -87,6 +88,33 @@ interface NoteResult {
   error?: string;
 }
 
+const WITHDRAW_DRAFT_KEY = "dshield_withdraw_draft";
+
+interface WithdrawDraft {
+  selectedCommitments: string[];
+  recipient: string;
+}
+
+function loadWithdrawDraft(): WithdrawDraft | null {
+  if (typeof window === "undefined") return null;
+  const raw = localStorage.getItem(WITHDRAW_DRAFT_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as WithdrawDraft;
+  } catch {
+    return null;
+  }
+}
+
+function saveWithdrawDraft(draft: WithdrawDraft | null): void {
+  if (typeof window === "undefined") return;
+  if (!draft || draft.selectedCommitments.length === 0) {
+    localStorage.removeItem(WITHDRAW_DRAFT_KEY);
+    return;
+  }
+  localStorage.setItem(WITHDRAW_DRAFT_KEY, JSON.stringify(draft));
+}
+
 export default function WithdrawPage() {
   const { address, signTransaction } = useWallet();
   const { toast } = useToast();
@@ -96,7 +124,43 @@ export default function WithdrawPage() {
   const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(new Set());
   const [recipient, setRecipient] = useState("");
   const [batchResults, setBatchResults] = useState<NoteResult[] | null>(null);
+  const [hasRecoveredDraft, setHasRecoveredDraft] = useState(false);
   const [, refresh] = useReducer((x: number) => x + 1, 0);
+
+  const { interrupted, reset } = useWalletFlowGuard(isLoading);
+
+  // Restore a draft persisted when a previous flow was paused by a wallet
+  // disconnect / network switch, so the user's selection is never lost.
+  useEffect(() => {
+    const draft = loadWithdrawDraft();
+    if (draft && draft.selectedCommitments.length > 0) {
+      setSelectedCommitments(new Set(draft.selectedCommitments));
+      setRecipient(draft.recipient);
+      setHasRecoveredDraft(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Mid-flow disconnect: persist the current selection as a draft so it can be
+  // recovered after reconnection, then pause the flow.
+  useEffect(() => {
+    if (interrupted) {
+      saveWithdrawDraft({
+        selectedCommitments: Array.from(selectedCommitments),
+        recipient,
+      });
+      setIsLoading(false);
+      setStep("idle");
+      setBatchResults(null);
+      toast(
+        "Wallet disconnected mid-flow — your selection was saved. Reconnect and continue.",
+        "error",
+      );
+      reset();
+      setHasRecoveredDraft(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interrupted]);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -242,6 +306,13 @@ export default function WithdrawPage() {
     if (!address || selectedNotes.length === 0) return;
     const recipientAddr = recipient.trim() || address;
 
+    // Persist the selection up-front so a mid-flow wallet disconnect can
+    // never lose it (see #108).
+    saveWithdrawDraft({
+      selectedCommitments: Array.from(selectedCommitments),
+      recipient: recipientAddr,
+    });
+
     setIsLoading(true);
     setStep("idle");
 
@@ -282,6 +353,9 @@ export default function WithdrawPage() {
     const done = results.filter((r) => r.status === "done").length;
     const failed = results.filter((r) => r.status === "error").length;
     if (done > 0) {
+      // Withdrawal completed — the draft is no longer recoverable state.
+      saveWithdrawDraft(null);
+      setHasRecoveredDraft(false);
       toast(
         failed > 0
           ? `${done} note${done > 1 ? "s" : ""} withdrawn, ${failed} failed.`
@@ -328,6 +402,31 @@ export default function WithdrawPage() {
         title="Withdraw"
         description="Choose the notes you want to redeem. DShield proves you own them without revealing which deposit was yours — nothing links the withdrawal back to you."
       />
+
+      {/* Recovered draft banner — from a previous interrupted flow */}
+      {hasRecoveredDraft && (
+        <div className="mt-6 rounded-xl border border-yellow-600/40 bg-yellow-950/20 p-4">
+          <p className="text-sm font-semibold text-yellow-300">
+            Previous selection recovered
+          </p>
+          <p className="mt-1 text-xs text-yellow-200/70">
+            Your note selection from a previous interrupted withdrawal was
+            restored. Review and start the withdrawal again when ready.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              saveWithdrawDraft(null);
+              setHasRecoveredDraft(false);
+              setSelectedCommitments(new Set());
+              setRecipient("");
+            }}
+            className="mt-2 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+          >
+            Dismiss selection
+          </button>
+        </div>
+      )}
 
       <div className="mt-8 space-y-6">
         {/* Note selector */}

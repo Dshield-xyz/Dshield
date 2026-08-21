@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import {
   saveNote,
   getNotes,
@@ -10,6 +10,9 @@ import {
   parseNote,
   saveNoteIfNew,
   generateNoteLink,
+  savePendingNotes,
+  getPendingNotes,
+  clearPendingNotes,
   type ShieldedNote,
 } from "./notes";
 
@@ -407,4 +410,58 @@ describe("Cross-tab synchronization", () => {
     // Clean up
     localStorage.removeItem("dshield_notes_lock");
   }, 10000); // 10 second timeout for this test
+});
+
+describe("pending notes (mid-deposit persistence)", () => {
+  beforeEach(() => {
+    clearPendingNotes();
+  });
+
+  it("returns an empty list when nothing was persisted", () => {
+    expect(getPendingNotes()).toEqual([]);
+  });
+
+  it("persists and reads back notes written before signing", () => {
+    const notes = [
+      makeNote({ commitment: "pending1", leafIndex: 0 }),
+      makeNote({ commitment: "pending2", leafIndex: 1 }),
+    ];
+    savePendingNotes(notes);
+    const pending = getPendingNotes();
+    expect(pending).toHaveLength(2);
+    expect(pending.map((n) => n.commitment)).toEqual(["pending1", "pending2"]);
+  });
+
+  it("does not duplicate notes with the same commitment", () => {
+    savePendingNotes([makeNote({ commitment: "dup" })]);
+    savePendingNotes([makeNote({ commitment: "dup" })]);
+    expect(getPendingNotes()).toHaveLength(1);
+  });
+
+  it("merges new notes with previously persisted ones", () => {
+    savePendingNotes([makeNote({ commitment: "a" })]);
+    savePendingNotes([makeNote({ commitment: "b" })]);
+    expect(getPendingNotes()).toHaveLength(2);
+  });
+
+  it("ignores empty saves and keeps existing pending notes", () => {
+    savePendingNotes([makeNote({ commitment: "keep" })]);
+    savePendingNotes([]);
+    expect(getPendingNotes()).toHaveLength(1);
+  });
+
+  it("clears all pending notes", () => {
+    savePendingNotes([makeNote({ commitment: "gone" })]);
+    clearPendingNotes();
+    expect(getPendingNotes()).toEqual([]);
+  });
+
+  it("is independent of the confirmed note store", async () => {
+    savePendingNotes([makeNote({ commitment: "pending-only" })]);
+    expect(getNotes()).toHaveLength(0);
+    expect(getActiveNotes()).toHaveLength(0);
+    await saveNote(makeNote({ commitment: "confirmed" }));
+    expect(getPendingNotes()).toHaveLength(1);
+    expect(getNotes()).toHaveLength(1);
+  });
 });

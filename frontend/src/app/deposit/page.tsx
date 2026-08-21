@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useWallet } from "@/components/WalletProvider";
+import { useWalletFlowGuard } from "@/components/useWalletFlowGuard";
 import {
   buildContractCall,
   submitTransaction,
@@ -14,6 +15,9 @@ import {
 } from "@/lib/stellar";
 import {
   saveNote,
+  savePendingNotes,
+  getPendingNotes,
+  clearPendingNotes,
   serializeNote,
   generateNoteLink,
   generateRandomField,
@@ -42,6 +46,7 @@ export default function DepositPage() {
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
   const [sessionNotes, setSessionNotes] = useState<ShieldedNote[]>([]);
+  const [recoveredPending, setRecoveredPending] = useState<ShieldedNote[]>([]);
   const [copiedKey, setCopiedKey] = useState<string>("");
   const [shareOpenKey, setShareOpenKey] = useState<string>("");
   const [customAmount, setCustomAmount] = useState<string>("");
@@ -50,6 +55,28 @@ export default function DepositPage() {
     const t = getPoolTiers();
     return t.length > 0 ? t[0] : null;
   });
+
+  const { interrupted, reset } = useWalletFlowGuard(isLoading);
+
+  // On mount, surface any notes persisted before a previous flow was
+  // interrupted (wallet disconnect / network switch / tab close mid-deposit).
+  useEffect(() => {
+    setRecoveredPending(getPendingNotes());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // If the wallet disconnect happened mid-flow, the pending notes were already
+  // persisted before signing — surface them so nothing is silently lost.
+  useEffect(() => {
+    if (interrupted) {
+      setRecoveredPending(getPendingNotes());
+      toast(
+        "Wallet disconnected mid-flow — your in-progress notes are safe. Reconnect and retry.",
+        "error",
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interrupted]);
 
   const noteCount = (() => {
     if (!customAmount || !selectedTier) return 1;
@@ -142,6 +169,9 @@ export default function DepositPage() {
           ? `Shielding ${total} notes — please sign once in your wallet…`
           : "Please sign the transaction in your wallet…",
       );
+      // Persist notes *before* signing so a wallet disconnect mid-flow
+      // never silently loses the note material (see #108).
+      savePendingNotes(pending);
       const signedXdr = await signTransaction(tx.toXDR());
 
       toast("Sending to the network…");
@@ -157,6 +187,8 @@ export default function DepositPage() {
         });
         setSessionNotes((prev) => [...prev, note]);
       }
+      clearPendingNotes();
+      setRecoveredPending([]);
 
       const totalUsdc = (total * selectedTier.amount) / 10 ** TOKEN_DECIMALS;
       toast(
@@ -211,6 +243,50 @@ export default function DepositPage() {
         title="Deposit"
         description="Move USDC into the shielded pool. You'll receive a private note — the only key to withdrawing your funds later. Nothing on-chain links the deposit to your identity or balance."
       />
+
+      {/* Recovered pending notes — surfaced from a previous interrupted flow */}
+      {recoveredPending.length > 0 && (
+        <div className="mb-4 rounded-xl border border-yellow-600/40 bg-yellow-950/20 p-4">
+          <p className="text-sm font-semibold text-yellow-300">
+            {recoveredPending.length} pending note{recoveredPending.length > 1 ? "s" : ""} recovered
+          </p>
+          <p className="mt-1 text-xs text-yellow-200/70">
+            These notes were created during a previous deposit that was interrupted
+            (wallet disconnect, network switch, or tab close) before the transaction
+            could be confirmed. If the deposit went through on-chain, copy them now
+            — they are the only way to withdraw. If the deposit never reached the
+            network, you can discard them below.
+          </p>
+          <div className="mt-2 space-y-2">
+            {recoveredPending.map((note, i) => (
+              <div key={note.commitment} className="rounded-lg bg-zinc-800/60 p-3">
+                <p className="break-all font-mono text-[11px] text-zinc-300">
+                  {serializeNote(note)}
+                </p>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => copyText(serializeNote(note), note.commitment)}
+                    className="text-xs font-medium text-brand-400 hover:text-brand-300"
+                  >
+                    {copiedKey === note.commitment ? "Copied!" : "Copy"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              clearPendingNotes();
+              setRecoveredPending([]);
+            }}
+            className="mt-2 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+          >
+            Discard all
+          </button>
+        </div>
+      )}
 
       <Card className="mt-8">
         <div className="mb-6">

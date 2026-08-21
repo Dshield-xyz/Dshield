@@ -12,7 +12,10 @@ expect.extend(toHaveNoViolations);
 vi.mock("@/components/WalletProvider", () => ({
   useWallet: () => ({
     address: null,
+    network: "Standalone Network ; February 2017",
     signTransaction: vi.fn(),
+    connectionVersion: 0,
+    lastDisconnectAt: null,
   }),
   WalletProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
