@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useWallet } from "@/components/WalletProvider";
 import {
   buildContractCall,

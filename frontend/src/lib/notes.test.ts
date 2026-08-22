@@ -281,19 +281,19 @@ describe("getActiveNotes", () => {
 });
 
 describe("pending change notes", () => {
-  it("hides a note with no resolved leaf index from the spendable set", () => {
+  it("hides a note with no resolved leaf index from the spendable set", async () => {
     // A change note is saved before its withdrawal confirms, so its leaf slot
     // isn't known yet. Offering it for withdrawal would build a Merkle proof
     // against the wrong index and fail after a minute of proving.
-    saveNote(makeNote({ commitment: "aaa" }));
-    saveNote(makeNote({ commitment: "bbb", leafIndex: PENDING_LEAF_INDEX }));
+    await saveNote(makeNote({ commitment: "aaa" }));
+    await saveNote(makeNote({ commitment: "bbb", leafIndex: PENDING_LEAF_INDEX }));
 
     expect(getActiveNotes().map((n) => n.commitment)).toEqual(["aaa"]);
     expect(getPendingNotes().map((n) => n.commitment)).toEqual(["bbb"]);
   });
 
-  it("makes a note spendable once its index is recorded", () => {
-    saveNote(makeNote({ commitment: "bbb", leafIndex: PENDING_LEAF_INDEX }));
+  it("makes a note spendable once its index is recorded", async () => {
+    await saveNote(makeNote({ commitment: "bbb", leafIndex: PENDING_LEAF_INDEX }));
     setNoteLeafIndex("bbb", 7);
 
     expect(getPendingNotes()).toHaveLength(0);
@@ -302,8 +302,8 @@ describe("pending change notes", () => {
     expect(active[0].leafIndex).toBe(7);
   });
 
-  it("leaves a spent note out of the pending set", () => {
-    saveNote(makeNote({ commitment: "bbb", leafIndex: PENDING_LEAF_INDEX }));
+  it("leaves a spent note out of the pending set", async () => {
+    await saveNote(makeNote({ commitment: "bbb", leafIndex: PENDING_LEAF_INDEX }));
     markNoteSpent("bbb");
     expect(getPendingNotes()).toHaveLength(0);
   });
@@ -332,12 +332,12 @@ describe("pending change notes", () => {
 });
 
 describe("zero-value notes", () => {
-  it("keeps the empty note a full withdrawal leaves behind out of the way", () => {
+  it("keeps the empty note a full withdrawal leaves behind out of the way", async () => {
     // Every spend appends a change note so that full and partial withdrawals
     // look identical on-chain. When the spend took everything, that note is
     // worth nothing and there is nothing to offer the user.
-    saveNote(makeNote({ commitment: "aaa", amount: "0" }));
-    saveNote(makeNote({ commitment: "bbb", amount: "1" }));
+    await saveNote(makeNote({ commitment: "aaa", amount: "0" }));
+    await saveNote(makeNote({ commitment: "bbb", amount: "1" }));
 
     expect(getActiveNotes().map((n) => n.commitment)).toEqual(["bbb"]);
   });
