@@ -209,31 +209,31 @@ describe("saveNote / getNotes", () => {
     expect(getNotes()).toEqual([]);
   });
 
-  it("saves and retrieves a note", () => {
+  it("saves and retrieves a note", async () => {
     const note = makeNote();
-    saveNote(note);
+    await saveNote(note);
     const notes = getNotes();
     expect(notes).toHaveLength(1);
     expect(notes[0].commitment).toBe("abcd1234");
     expect(notes[0].amount).toBe("1000000");
   });
 
-  it("appends multiple notes", () => {
-    saveNote(makeNote({ commitment: "aaa" }));
-    saveNote(makeNote({ commitment: "bbb" }));
+  it("appends multiple notes", async () => {
+    await saveNote(makeNote({ commitment: "aaa" }));
+    await saveNote(makeNote({ commitment: "bbb" }));
     expect(getNotes()).toHaveLength(2);
   });
 });
 
 describe("saveNoteIfNew", () => {
-  it("adds a note that isn't already stored", () => {
-    expect(saveNoteIfNew(makeNote({ commitment: "aaa" }))).toBe(true);
+  it("adds a note that isn't already stored", async () => {
+    expect(await saveNoteIfNew(makeNote({ commitment: "aaa" }))).toBe(true);
     expect(getNotes()).toHaveLength(1);
   });
 
-  it("does not duplicate a note with an existing commitment", () => {
-    saveNote(makeNote({ commitment: "aaa" }));
-    expect(saveNoteIfNew(makeNote({ commitment: "aaa", secret: "00ff" }))).toBe(
+  it("does not duplicate a note with an existing commitment", async () => {
+    await saveNote(makeNote({ commitment: "aaa" }));
+    expect(await saveNoteIfNew(makeNote({ commitment: "aaa", secret: "00ff" }))).toBe(
       false,
     );
     expect(getNotes()).toHaveLength(1);
@@ -241,41 +241,41 @@ describe("saveNoteIfNew", () => {
 });
 
 describe("markNoteSpent", () => {
-  it("marks the correct note as spent", () => {
-    saveNote(makeNote({ commitment: "aaa" }));
-    saveNote(makeNote({ commitment: "bbb" }));
-    markNoteSpent("aaa");
+  it("marks the correct note as spent", async () => {
+    await saveNote(makeNote({ commitment: "aaa" }));
+    await saveNote(makeNote({ commitment: "bbb" }));
+    await markNoteSpent("aaa");
     const notes = getNotes();
     expect(notes[0].spent).toBe(true);
     expect(notes[1].spent).toBe(false);
   });
 
-  it("does not modify notes with different commitment", () => {
-    saveNote(makeNote({ commitment: "aaa" }));
-    markNoteSpent("zzz");
+  it("does not modify notes with different commitment", async () => {
+    await saveNote(makeNote({ commitment: "aaa" }));
+    await markNoteSpent("zzz");
     expect(getNotes()[0].spent).toBe(false);
   });
 });
 
 describe("getActiveNotes", () => {
-  it("filters out spent notes", () => {
-    saveNote(makeNote({ commitment: "aaa" }));
-    saveNote(makeNote({ commitment: "bbb" }));
-    markNoteSpent("aaa");
+  it("filters out spent notes", async () => {
+    await saveNote(makeNote({ commitment: "aaa" }));
+    await saveNote(makeNote({ commitment: "bbb" }));
+    await markNoteSpent("aaa");
     const active = getActiveNotes();
     expect(active).toHaveLength(1);
     expect(active[0].commitment).toBe("bbb");
   });
 
-  it("returns all notes when none are spent", () => {
-    saveNote(makeNote({ commitment: "aaa" }));
-    saveNote(makeNote({ commitment: "bbb" }));
+  it("returns all notes when none are spent", async () => {
+    await saveNote(makeNote({ commitment: "aaa" }));
+    await saveNote(makeNote({ commitment: "bbb" }));
     expect(getActiveNotes()).toHaveLength(2);
   });
 
-  it("returns empty array when all are spent", () => {
-    saveNote(makeNote({ commitment: "aaa" }));
-    markNoteSpent("aaa");
+  it("returns empty array when all are spent", async () => {
+    await saveNote(makeNote({ commitment: "aaa" }));
+    await markNoteSpent("aaa");
     expect(getActiveNotes()).toHaveLength(0);
   });
 });
@@ -406,4 +406,71 @@ describe("generateNoteLink without a Buffer global", () => {
     const restored = parseNote(payload);
     expect(restored!.poolId).toBe(withPool.poolId);
   });
+});
+
+
+describe("Cross-tab synchronization", () => {
+  it("concurrent saves do not clobber each other", async () => {
+    // Simulate two tabs saving notes concurrently
+    const note1 = makeNote({ commitment: "concurrent1" });
+    const note2 = makeNote({ commitment: "concurrent2" });
+    
+    // Fire both saves simultaneously
+    await Promise.all([
+      saveNote(note1),
+      saveNote(note2),
+    ]);
+    
+    const notes = getNotes();
+    expect(notes).toHaveLength(2);
+    expect(notes.some((n) => n.commitment === "concurrent1")).toBe(true);
+    expect(notes.some((n) => n.commitment === "concurrent2")).toBe(true);
+  });
+
+  it("concurrent markNoteSpent operations serialize correctly", async () => {
+    await saveNote(makeNote({ commitment: "mark1" }));
+    await saveNote(makeNote({ commitment: "mark2" }));
+    
+    // Mark both as spent concurrently
+    await Promise.all([
+      markNoteSpent("mark1"),
+      markNoteSpent("mark2"),
+    ]);
+    
+    const notes = getNotes();
+    expect(notes[0].spent).toBe(true);
+    expect(notes[1].spent).toBe(true);
+  });
+
+  it("concurrent save and markNoteSpent do not lose updates", async () => {
+    await saveNote(makeNote({ commitment: "existing" }));
+    
+    // One tab saves a new note while another marks existing note as spent
+    await Promise.all([
+      saveNote(makeNote({ commitment: "new" })),
+      markNoteSpent("existing"),
+    ]);
+    
+    const notes = getNotes();
+    expect(notes).toHaveLength(2);
+    expect(notes.find((n) => n.commitment === "existing")?.spent).toBe(true);
+    expect(notes.find((n) => n.commitment === "new")).toBeDefined();
+  });
+
+  it("lock timeout throws error if lock cannot be acquired", async () => {
+    // Manually set a lock with a recent timestamp that won't be considered stale
+    const stubbornLock = JSON.stringify({ 
+      id: "stuck-lock", 
+      timestamp: Date.now() // Fresh timestamp, won't be cleared as stale
+    });
+    localStorage.setItem("dshield_notes_lock", stubbornLock);
+    
+    // Attempt to save should timeout and throw
+    await expect(
+      saveNote(makeNote({ commitment: "timeout-test" }))
+    ).rejects.toThrow("Failed to acquire storage lock after timeout");
+    
+    // Clean up
+    localStorage.removeItem("dshield_notes_lock");
+  }, 10000); // 10 second timeout for this test
 });

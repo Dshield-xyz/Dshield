@@ -150,7 +150,7 @@ export default function WithdrawPage() {
     if (!hash.startsWith("#note=")) return;
     const note = parseNote(decodeURIComponent(hash.slice("#note=".length)));
     if (!note) return;
-    saveNoteIfNew(note);
+    void saveNoteIfNew(note);
     setSelectedCommitments(new Set([note.commitment]));
     history.replaceState(null, "", window.location.pathname + window.location.search);
   }, []);

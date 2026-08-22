@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useWallet } from "@/components/WalletProvider";
 import {
   buildContractCall,
@@ -383,11 +383,11 @@ export default function DepositPage() {
                 {sessionNotes.length > 1 ? "s" : ""}
               </p>
               <p className="mt-1 text-xs leading-relaxed text-yellow-200/70">
-                This note is the <span className="font-medium">only</span> way
-                to withdraw these funds. It&apos;s saved in this browser, but if
-                you clear site data or switch devices it&apos;s gone for good.
-                Copy it or download the backup and keep it somewhere safe and
-                private — anyone with the note can spend it.
+                This note is the <span className="font-medium">only</span> way to
+                withdraw these funds. It&apos;s saved in this browser, but if you
+                clear site data or switch devices it&apos;s gone for good. Copy it
+                or download the backup and keep it somewhere safe and private —
+                anyone with the note can spend it.
               </p>
             </div>
 
@@ -396,8 +396,7 @@ export default function DepositPage() {
               const shareLink = generateNoteLink(note);
               const shareOpen = shareOpenKey === note.commitment;
               const xText = encodeURIComponent(
-                "Claim your DShield payment — open this link to withdraw:\n" +
-                  shareLink,
+                "Claim your DShield payment — open this link to withdraw:\n" + shareLink,
               );
               const tgUrl =
                 "https://t.me/share/url?url=" +
@@ -423,9 +422,7 @@ export default function DepositPage() {
                         onClick={() => copyText(serialized, note.commitment)}
                         className="text-xs font-medium text-brand-400 hover:text-brand-300"
                       >
-                        {copiedKey === note.commitment
-                          ? "Copied!"
-                          : "Copy note"}
+                        {copiedKey === note.commitment ? "Copied!" : "Copy note"}
                       </button>
                       <button
                         type="button"
@@ -453,9 +450,9 @@ export default function DepositPage() {
                         Share to claim
                       </p>
                       <p className="mt-1 text-[11px] text-yellow-400/80">
-                        Warning: this link contains your private note. Anyone
-                        who opens it can withdraw the funds — share only with
-                        the intended recipient via a private channel.
+                        Warning: this link contains your private note. Anyone who
+                        opens it can withdraw the funds — share only with the
+                        intended recipient via a private channel.
                       </p>
                       <p className="mt-2 break-all font-mono text-[11px] text-zinc-500">
                         {shareLink}

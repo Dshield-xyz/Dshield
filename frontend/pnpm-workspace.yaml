@@ -14,7 +14,7 @@ overrides:
   # to pin to. Re-check periodically; `pnpm audit --prod` will surface it
   # again once a fix ships.
   protobufjs: "^7.6.5"
-  postcss: "^8.5.10"
+  postcss: "^8.5.18"
   uuid: "^11.1.1"
   ws: "^8.21.0"
   axios: "^1.18.1"
@@ -25,6 +25,10 @@ overrides:
   # range to the patched line; Next only exercises a small resize/format
   # subset of sharp's API for image optimization, low regression surface.
   sharp: "^0.35.3"
+  acorn: "8.17.0"
+  minimatch: "10.0.1"
+  electron-to-chromium: "1.5.396"
+
 allowBuilds:
   '@reown/appkit': true
   '@stellar/stellar-sdk': true
@@ -38,6 +42,7 @@ allowBuilds:
   unrs-resolver: true
   usb: true
   utf-8-validate: true
+
 ignoredBuiltDependencies:
   - sharp
   - unrs-resolver
