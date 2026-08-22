@@ -17,12 +17,16 @@ import {
   getNotes,
   markNoteSpent,
   parseNote,
+  saveNote,
   saveNoteIfNew,
   serializeNotes,
+  generateRandomField,
+  PENDING_LEAF_INDEX,
   type ShieldedNote,
 } from "@/lib/notes";
 import { getAllCommitments, clearDeposits } from "@/lib/deposits";
 import {
+  computeCommitment,
   computeNullifierHash,
   computeRecipientHash,
   buildMerkleTree,
@@ -33,8 +37,13 @@ import {
 } from "@/lib/indexer";
 import { proveWithdrawal, type ProofStage } from "@/lib/prover";
 import { friendlyError } from "@/lib/errors";
-import { syncSpentNotes } from "@/lib/sync";
-import { truncateMiddle } from "@/lib/format";
+import { resolvePendingLeafIndexes, syncSpentNotes } from "@/lib/sync";
+import {
+  formatAmount,
+  formatAmountBare,
+  truncateMiddle,
+  usdcToStroops,
+} from "@/lib/format";
 import Link from "next/link";
 import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
@@ -80,6 +89,38 @@ const PROGRESS_STEPS = [
   "submitting",
 ] as const;
 
+/**
+ * Mints the change note for a spend: a fresh note worth whatever the payout
+ * left behind.
+ *
+ * Its secrets are never derived from the note being spent -- the change note
+ * outlives this withdrawal, and reusing the nullifier would make it unspendable
+ * the moment this spend is recorded. Its leaf index isn't knowable yet: the
+ * withdrawal itself creates the leaf, and another transaction may take the next
+ * slot first, so it is resolved from the chain once the spend confirms.
+ *
+ * At module scope rather than in the component: it draws randomness and reads
+ * the clock, which the react-hooks/purity rule rightly keeps out of render.
+ */
+async function buildChangeNote(
+  poolId: string,
+  changeValue: string,
+): Promise<ShieldedNote> {
+  const nullifier = generateRandomField();
+  const secret = generateRandomField();
+  const commitment = await computeCommitment(nullifier, secret, changeValue);
+  return {
+    nullifier,
+    secret,
+    commitment: commitment.replace(/^0x/, ""),
+    leafIndex: PENDING_LEAF_INDEX,
+    amount: changeValue,
+    spent: false,
+    createdAt: Date.now(),
+    poolId,
+  };
+}
+
 interface NoteResult {
   note: ShieldedNote;
   status: "pending" | "processing" | "done" | "error";
@@ -95,6 +136,11 @@ export default function WithdrawPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(new Set());
   const [recipient, setRecipient] = useState("");
+  // Only meaningful when exactly one note is selected: how much of it to pay
+  // out. Empty means the whole note. Spending several notes at once always
+  // spends each in full — there is no sensible way to split one figure across
+  // notes of different sizes.
+  const [partialAmount, setPartialAmount] = useState("");
   const [batchResults, setBatchResults] = useState<NoteResult[] | null>(null);
   const [, refresh] = useReducer((x: number) => x + 1, 0);
 
@@ -111,18 +157,34 @@ export default function WithdrawPage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
-    syncSpentNotes().then((n) => {
-      if (n > 0) refresh();
-    });
+    // Settle any change note left pending by an earlier withdrawal (a closed
+    // tab, a slow confirmation) before checking what is still spendable.
+    resolvePendingLeafIndexes()
+      .then((resolved) => syncSpentNotes().then((spent) => resolved + spent))
+      .then((n) => {
+        if (n > 0) refresh();
+      });
   }, []);
 
   const activeNotes = typeof window !== "undefined" ? getActiveNotes() : [];
   const allNotes = typeof window !== "undefined" ? getNotes() : [];
 
-  function toggleNote(note: ShieldedNote) {
+  /**
+   * Every selection change goes through here so the typed partial amount is
+   * always dropped with it. That figure was entered against one specific note;
+   * carrying it over to a different selection would withdraw the wrong amount,
+   * and it is worth nothing to keep.
+   */
+  function changeSelection(
+    update: (current: Set<string>) => Set<string>,
+  ): void {
     if (isLoading) return;
-    setSelectedCommitments((prev) => {
-      const next = new Set(prev);
+    setPartialAmount("");
+    setSelectedCommitments((prev) => update(new Set(prev)));
+  }
+
+  function toggleNote(note: ShieldedNote) {
+    changeSelection((next) => {
       if (next.has(note.commitment)) {
         next.delete(note.commitment);
       } else {
@@ -136,6 +198,33 @@ export default function WithdrawPage() {
     selectedCommitments.has(n.commitment),
   );
 
+  const selectedTotal = selectedNotes.reduce(
+    (sum, n) => sum + BigInt(n.amount),
+    BigInt(0),
+  );
+  // Partial withdrawal applies to a single selected note; with several
+  // selected, each is spent in full.
+  const partialNote = selectedNotes.length === 1 ? selectedNotes[0] : null;
+  const partialStroops = partialAmount.trim()
+    ? usdcToStroops(partialAmount)
+    : partialNote?.amount ?? "0";
+  const partialExceedsNote =
+    !!partialNote && BigInt(partialStroops) > BigInt(partialNote.amount);
+  const partialIsZero =
+    !!partialNote && !!partialAmount.trim() && BigInt(partialStroops) <= BigInt(0);
+  const partialInvalid = partialExceedsNote || partialIsZero;
+  const changeAfterPartial = partialNote
+    ? (BigInt(partialNote.amount) - BigInt(partialStroops)).toString()
+    : "0";
+
+  /** How much of `note` this run should pay out. */
+  function payoutFor(note: ShieldedNote): string {
+    if (partialNote && note.commitment === partialNote.commitment) {
+      return partialStroops;
+    }
+    return note.amount;
+  }
+
   function downloadAllNotes() {
     if (allNotes.length === 0) return;
     const blob = new Blob([serializeNotes(allNotes)], { type: "text/plain" });
@@ -147,13 +236,35 @@ export default function WithdrawPage() {
     URL.revokeObjectURL(url);
   }
 
+  /**
+   * Spends one note: pays `withdrawStroops` to `recipientAddr` and re-shields
+   * the remainder as a fresh note.
+   *
+   * The change note is created and stored *before* the transaction is
+   * submitted. The proof commits to its commitment, so the on-chain leaf is
+   * fixed the moment the proof exists; if the tab closed between submitting and
+   * saving, the remainder would be sitting in the pool with nobody holding its
+   * secrets. Its leaf index isn't knowable yet (the withdrawal itself creates
+   * the leaf, and another transaction may take the next slot first), so it is
+   * stored pending and resolved from the chain afterwards.
+   */
   async function withdrawNote(
     note: ShieldedNote,
     recipientAddr: string,
+    withdrawStroops: string,
     onStep: (s: WithdrawStep) => void,
   ): Promise<string> {
     const poolId = note.poolId || POOL_CONTRACT_ID;
     if (!poolId) throw new Error("Pool address missing — refresh and try again.");
+
+    const noteValue = BigInt(note.amount);
+    const payout = BigInt(withdrawStroops);
+    if (payout < BigInt(0) || payout > noteValue) {
+      throw new Error(
+        `This note is worth ${formatAmount(note.amount)} — you can't withdraw more than that.`,
+      );
+    }
+    const changeValue = (noteValue - payout).toString();
 
     onStep("checking_nullifier");
     const nullifierHash = await computeNullifierHash(note.nullifier);
@@ -188,7 +299,7 @@ export default function WithdrawPage() {
       throw new Error("Your local data is out of sync with the network. Use “Re-sync from network” below and try again.");
     }
 
-    if (getUsdcSacId()) {
+    if (getUsdcSacId() && payout > BigInt(0)) {
       if (recipientAddr === address) {
         await ensureUsdcTrustline(address!, signTransaction);
       } else if (!(await hasUsdcTrustline(recipientAddr))) {
@@ -199,10 +310,18 @@ export default function WithdrawPage() {
     onStep("generating_proof");
     setProofStage(null);
     const recipientHash = await computeRecipientHash(recipientAddr);
+
+    const changeNote = await buildChangeNote(poolId, changeValue);
+
     const { proof, publicInputs } = await proveWithdrawal(
       {
         nullifier: note.nullifier,
         secret: note.secret,
+        amount: note.amount,
+        withdrawAmount: withdrawStroops,
+        changeNullifier: changeNote.nullifier,
+        changeSecret: changeNote.secret,
+        changeCommitment: changeNote.commitment,
         root: onChainRoot,
         nullifierHash,
         recipientHash,
@@ -213,10 +332,19 @@ export default function WithdrawPage() {
     );
     setProofStage(null);
 
+    // Saved before submission: past this point the remainder exists on-chain as
+    // soon as the transaction lands, and these are the only keys to it.
+    saveNote(changeNote);
+
+    async function settle(): Promise<void> {
+      markNoteSpent(note.commitment);
+      await resolvePendingLeafIndexes();
+    }
+
     onStep("submitting");
     const relayed = await relayWithdrawal({ poolId, recipient: recipientAddr, publicInputs, proof });
     if (relayed) {
-      markNoteSpent(note.commitment);
+      await settle();
       return relayed.hash;
     }
 
@@ -234,13 +362,14 @@ export default function WithdrawPage() {
     const signedXdr = await signTransaction(tx.toXDR());
     onStep("submitting");
     const txHash = await submitTransaction(signedXdr);
-    markNoteSpent(note.commitment);
+    await settle();
     return txHash;
   }
 
   async function handleBatchWithdraw() {
-    if (!address || selectedNotes.length === 0) return;
+    if (!address || selectedNotes.length === 0 || partialInvalid) return;
     const recipientAddr = recipient.trim() || address;
+    const wasPartial = !!partialNote && BigInt(changeAfterPartial) > BigInt(0);
 
     setIsLoading(true);
     setStep("idle");
@@ -259,6 +388,7 @@ export default function WithdrawPage() {
         const txHash = await withdrawNote(
           results[i].note,
           recipientAddr,
+          payoutFor(results[i].note),
           setStep,
         );
         results[i] = { ...results[i], status: "done", txHash };
@@ -282,13 +412,21 @@ export default function WithdrawPage() {
     const done = results.filter((r) => r.status === "done").length;
     const failed = results.filter((r) => r.status === "error").length;
     if (done > 0) {
-      toast(
-        failed > 0
-          ? `${done} note${done > 1 ? "s" : ""} withdrawn, ${failed} failed.`
-          : `${done} note${done > 1 ? "s" : ""} withdrawn successfully!`,
-        failed > 0 ? "error" : "success",
-      );
+      if (failed === 0 && wasPartial) {
+        toast(
+          `Withdrew ${formatAmount(partialStroops)} — ${formatAmount(changeAfterPartial)} re-shielded into a new note.`,
+          "success",
+        );
+      } else {
+        toast(
+          failed > 0
+            ? `${done} note${done > 1 ? "s" : ""} withdrawn, ${failed} failed.`
+            : `${done} note${done > 1 ? "s" : ""} withdrawn successfully!`,
+          failed > 0 ? "error" : "success",
+        );
+      }
     }
+    setPartialAmount("");
     refresh();
   }
 
@@ -326,7 +464,7 @@ export default function WithdrawPage() {
     <PageShell>
       <PageHeader
         title="Withdraw"
-        description="Choose the notes you want to redeem. DShield proves you own them without revealing which deposit was yours — nothing links the withdrawal back to you."
+        description="Choose a note to redeem. Take all of it, or take part and the rest is re-shielded into a fresh note you can spend from again. DShield proves you own the note without revealing which deposit was yours — nothing links the withdrawal back to you."
       />
 
       <div className="mt-8 space-y-6">
@@ -350,9 +488,11 @@ export default function WithdrawPage() {
                 <button
                   disabled={isLoading}
                   onClick={() =>
-                    selectedCommitments.size === activeNotes.length
-                      ? setSelectedCommitments(new Set())
-                      : setSelectedCommitments(new Set(activeNotes.map((n) => n.commitment)))
+                    changeSelection(() =>
+                      selectedCommitments.size === activeNotes.length
+                        ? new Set()
+                        : new Set(activeNotes.map((n) => n.commitment)),
+                    )
                   }
                   className="text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
                 >
@@ -409,9 +549,14 @@ export default function WithdrawPage() {
                             </svg>
                           )}
                         </div>
-                        <span className="font-mono text-xs text-zinc-300">
-                          {truncateMiddle(note.commitment, 14, 14)}
-                        </span>
+                        <div>
+                          <span className="text-sm font-medium text-zinc-200">
+                            {formatAmount(note.amount)}
+                          </span>
+                          <span className="ml-2 font-mono text-xs text-zinc-500">
+                            {truncateMiddle(note.commitment, 10, 10)}
+                          </span>
+                        </div>
                       </div>
 
                       {/* Per-note result badge */}
@@ -455,19 +600,82 @@ export default function WithdrawPage() {
         <NoteImport
           disabled={isLoading}
           onImport={(notes) => {
-            const newSel = new Set(selectedCommitments);
-            for (const note of notes) {
-              saveNoteIfNew(note);
-              newSel.add(note.commitment); // always select, even if note already existed in storage
-            }
-            setSelectedCommitments(newSel);
+            for (const note of notes) saveNoteIfNew(note);
+            changeSelection((next) => {
+              // Always select, even if the note already existed in storage.
+              for (const note of notes) next.add(note.commitment);
+              return next;
+            });
             refresh();
           }}
         />
 
-        {/* Recipient + actions */}
+        {/* Amount + recipient + actions */}
         {selectedNotes.length > 0 && (
           <>
+            {partialNote ? (
+              <Card>
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-sm font-medium text-zinc-400">
+                    Amount to withdraw
+                  </h3>
+                  <button
+                    type="button"
+                    disabled={isLoading}
+                    onClick={() =>
+                      setPartialAmount(formatAmountBare(partialNote.amount))
+                    }
+                    className="focus-ring rounded text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
+                  >
+                    Max ({formatAmount(partialNote.amount)})
+                  </button>
+                </div>
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  mono
+                  value={partialAmount}
+                  onChange={(e) => setPartialAmount(e.target.value)}
+                  placeholder={formatAmountBare(partialNote.amount)}
+                  disabled={isLoading}
+                  hint={(() => {
+                    if (partialExceedsNote) {
+                      return `This note only holds ${formatAmount(partialNote.amount)}.`;
+                    }
+                    if (partialIsZero) {
+                      return "Enter an amount greater than zero.";
+                    }
+                    if (BigInt(changeAfterPartial) > BigInt(0)) {
+                      return (
+                        <>
+                          <span className="text-zinc-400">
+                            {formatAmount(changeAfterPartial)}
+                          </span>{" "}
+                          stays shielded as a new note, saved to this device.
+                          You can withdraw from it later, as many times as you
+                          like.
+                        </>
+                      );
+                    }
+                    return `Withdraws the whole note. Leave empty for the same thing.`;
+                  })()}
+                />
+              </Card>
+            ) : (
+              <Card>
+                <p className="text-sm text-zinc-400">
+                  Withdrawing{" "}
+                  <span className="font-medium text-zinc-200">
+                    {formatAmount(selectedTotal.toString())}
+                  </span>{" "}
+                  across {selectedNotes.length} notes, each in full.
+                </p>
+                <p className="mt-1 text-xs text-zinc-600">
+                  Select a single note to withdraw only part of it.
+                </p>
+              </Card>
+            )}
+
             <Card>
               <h3 className="mb-3 text-sm font-medium text-zinc-400">Recipient Address</h3>
               <Input
@@ -484,12 +692,12 @@ export default function WithdrawPage() {
               fullWidth
               size="lg"
               onClick={handleBatchWithdraw}
-              disabled={isLoading}
+              disabled={isLoading || partialInvalid}
             >
               {isLoading
                 ? "Processing…"
-                : selectedNotes.length === 1
-                  ? "Generate Proof & Withdraw"
+                : partialNote
+                  ? `Generate Proof & Withdraw ${formatAmount(partialStroops)}`
                   : `Generate Proofs & Withdraw ${selectedNotes.length} Notes`}
             </Button>
 

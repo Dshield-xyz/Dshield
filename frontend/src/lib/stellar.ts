@@ -87,27 +87,14 @@ export async function faucetUsdc(
   }
 }
 
-export interface PoolTier {
-  id: string;
-  label: string;
-  amount: number;
-}
-
-export function getPoolTiers(): PoolTier[] {
-  const tiers: PoolTier[] = [];
-  const raw = process.env.NEXT_PUBLIC_POOL_TIERS || "";
-  if (raw) {
-    for (const entry of raw.split(",")) {
-      const [label, id, amt] = entry.split(":");
-      if (label && id && amt) {
-        tiers.push({ id, label, amount: Number(amt) });
-      }
-    }
-  }
-  if (tiers.length === 0 && POOL_CONTRACT_ID) {
-    tiers.push({ id: POOL_CONTRACT_ID, label: "10 USDC", amount: 100000000 });
-  }
-  return tiers;
+/**
+ * The shielded pool. There is exactly one: notes carry their own value, so a
+ * single pool serves every amount. Splitting deposits across fixed-denomination
+ * tiers would only fragment the anonymity set — every user is better hidden in
+ * one crowd than in three.
+ */
+export function getPoolId(): string {
+  return POOL_CONTRACT_ID;
 }
 
 export function getRpcServer() {

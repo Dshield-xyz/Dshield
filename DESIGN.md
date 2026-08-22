@@ -421,33 +421,62 @@ pub fn main(
 
 ### DShield Extensions to Base Circuit
 
-The base tornado circuit handles fixed-denomination deposits. DShield extends it for variable amounts:
+The base tornado circuit handles fixed-denomination deposits, where the amount
+is a property of the pool and never enters the leaf. DShield binds the value
+into the commitment instead, which is what lets a single pool hold notes of any
+size and lets a spend pay out only part of one. See
+`circuits/shielded_pool/src/main.nr` for the implementation.
 
 ```noir
 pub fn main(
     // Public inputs
     root: pub Field,
     nullifier_hash: pub Field,
-    recipient: pub Field,          // recipient address hash
+    recipient: pub Field,           // recipient address hash
+    withdraw_amount: pub Field,     // paid out to `recipient`
+    change_commitment: pub Field,   // the re-shielded remainder, a new leaf
     // Private inputs
-    value: Field,                  // amount
     nullifier: Field,
     secret: Field,
+    amount: Field,                  // what the spent note is worth
+    change_nullifier: Field,
+    change_secret: Field,
     path_siblings: [Field; 20],
     path_bits: [Field; 20],
 ) {
-    // commitment = H(value, secret, nullifier)
-    let leaf = Poseidon2::hash([value, secret, nullifier], 3);
+    // Value conservation. Both sides are pinned to 64 bits FIRST: a bare
+    // `as u64` truncates without constraining, so an unconstrained `amount`
+    // near the field modulus would wrap to a small u64 and mint value.
+    let amount_u64 = constrain_u64(amount);
+    let withdraw_u64 = constrain_u64(withdraw_amount);
+    assert(withdraw_u64 <= amount_u64);
+    let change = amount - withdraw_amount;
 
-    // nullifier_hash = H(nullifier, 0)
-    let nf = hash2(nullifier, 0);
-    assert(nf == nullifier_hash);
+    // commitment = H(H(H(LEAF_DOMAIN, nullifier), secret), amount)
+    //
+    // A chain of two-input hashes rather than one wide hash, because the two
+    // other implementations that must agree with this bit for bit can only
+    // compute the two-input primitive: the frontend (which ships just the
+    // `hasher` circuit) and the pool contract (`poseidon2_hash2`).
+    let leaf = hash_leaf(nullifier, secret, amount);
+
+    // nullifier_hash = H(H(NULLIFIER_DOMAIN, nullifier), 0)
+    assert(hash_nullifier(nullifier) == nullifier_hash);
 
     // Merkle inclusion proof
-    let computed_root = compute_root(leaf, path_siblings, path_bits);
-    assert(computed_root == root);
+    assert(compute_root(leaf, path_siblings, path_bits) == root);
+
+    // The remainder is a well-formed note the spender can open later. Built on
+    // EVERY spend, including a full withdrawal where `change` is zero, so that
+    // "took part" and "took the lot" are the same shape on-chain.
+    assert(hash_leaf(change_nullifier, change_secret, change) == change_commitment);
 }
 ```
+
+The contract completes the other half: it pays out `withdraw_amount`, appends
+`change_commitment` as a new leaf through the same insertion path a deposit
+uses, and emits the same event — so a re-shielded remainder is indistinguishable
+from someone shielding fresh funds.
 
 ### Compliance Proof Circuit (Identity Pattern)
 
@@ -700,7 +729,25 @@ On-chain Merkle tree management has storage costs. The frontier-based approach m
 
 ### Commitment Scheme: Fixed vs Variable Denomination
 
-The tornado reference uses fixed denominations. DShield needs variable amounts, which requires a more complex commitment scheme (`H(value, secret, nullifier)` instead of `H(nullifier, secret)`) and balance preservation constraints. This adds circuit complexity.
+The tornado reference uses fixed denominations; DShield uses variable amounts.
+The cost is circuit complexity — the leaf commits to the value, and the spend
+has to carry balance-preservation constraints and range checks. The trade is
+worth making twice over:
+
+- **One anonymity set.** Tiered pools split users into three smaller crowds and
+  force every amount to be rounded to a tier. A single pool puts everyone in the
+  same crowd.
+- **Sound compliance proofs.** With no amount in the leaf, the compliance and
+  disclosure circuits could not prove anything about a note's value — the
+  `amount` witness was unconstrained, so the contract had to recover the figure
+  out-of-band from the pool's denomination. Binding the value into the leaf makes
+  those proofs real statements and removes that workaround entirely.
+
+The countervailing risk is that a variable amount is itself an identifier: a
+deposit of 137.42 followed by a withdrawal of 137.42 links itself regardless of
+the cryptography. Partial withdrawals are the mitigation — the payout need not
+match any deposit — which is why the change-note path exists rather than being a
+convenience.
 
 ---
 

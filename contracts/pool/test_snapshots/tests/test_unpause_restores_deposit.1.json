@@ -93,6 +93,9 @@
                 },
                 {
                   "bytes": "0100000000000000000000000000000000000000000000000000000000000000"
+                },
+                {
+                  "i128": "10000000"
                 }
               ]
             }
@@ -273,7 +276,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 0
               }
             }
           },
@@ -329,14 +332,6 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "amt"
-                      },
-                      "val": {
-                        "i128": "10000000"
                       }
                     },
                     {

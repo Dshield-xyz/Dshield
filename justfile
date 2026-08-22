@@ -156,36 +156,24 @@ deploy network="local": build
         -- mint --to "$ALICE_ADDR" --amount 10000000000000 > /dev/null 2>&1
     echo "Deployer funded with 1,000,000 USDC"
 
-    echo "Deploying pool tiers (10, 100, 1000 USDC)..."
-    POOL_10=$(stellar contract deploy \
+    echo "Deploying shielded pool..."
+    # One pool, no denomination. Notes carry their own value, so every amount
+    # shares a single anonymity set instead of being split across tiers.
+    POOL_ID=$(stellar contract deploy \
         --wasm target/wasm32v1-none/release/dshield_pool.wasm \
         --source alice --network "$NETWORK" \
-        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount 100000000 --admin "$ALICE_ADDR")
-    echo "Pool 10 USDC: $POOL_10"
+        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --admin "$ALICE_ADDR")
+    echo "Pool: $POOL_ID"
 
-    POOL_100=$(stellar contract deploy \
-        --wasm target/wasm32v1-none/release/dshield_pool.wasm \
-        --source alice --network "$NETWORK" \
-        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount 1000000000 --admin "$ALICE_ADDR")
-    echo "Pool 100 USDC: $POOL_100"
-
-    POOL_1000=$(stellar contract deploy \
-        --wasm target/wasm32v1-none/release/dshield_pool.wasm \
-        --source alice --network "$NETWORK" \
-        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --deposit_amount 10000000000 --admin "$ALICE_ADDR")
-    echo "Pool 1000 USDC: $POOL_1000"
-
-    echo "$POOL_10" > .pool_id
-    echo "POOL_TIERS=10 USDC:$POOL_10:100000000,100 USDC:$POOL_100:1000000000,1000 USDC:$POOL_1000:10000000000"
+    echo "$POOL_ID" > .pool_id
 
     ADMIN_ADDR=$ALICE_ADDR
 
     echo "Deploying compliance contract..."
-    # pools: the tier pool addresses the compliance contract cross-references
-    # to validate that a proof's merkle_root and disclosed_amount/threshold
-    # actually correspond to a real pool's fixed deposit_amount (see
-    # amount_for_root in contracts/compliance/src/lib.rs) — otherwise a
-    # prover could self-assert any amount.
+    # pools: the pool addresses the compliance contract cross-references to
+    # confirm a proof's merkle_root is a state one of our pools actually
+    # reached. The amount itself is bound inside the note's leaf and proved by
+    # the circuit, so nothing here has to reconstruct it.
     COMPLIANCE_ID=$(stellar contract deploy \
         --wasm target/wasm32v1-none/release/dshield_compliance.wasm \
         --source alice \
@@ -193,7 +181,7 @@ deploy network="local": build
         -- \
         --vk_bytes-file-path circuits/compliance/target/vk \
         --admin "$ADMIN_ADDR" \
-        --pools "[\"$POOL_10\",\"$POOL_100\",\"$POOL_1000\"]")
+        --pools "[\"$POOL_ID\"]")
     echo "Compliance deployed: $COMPLIANCE_ID"
     echo "$COMPLIANCE_ID" > .compliance_id
 
@@ -231,8 +219,7 @@ deploy network="local": build
     RELAYER_SECRET=$RELAYER_SECRET
     COMPLIANCE_ADMIN_SECRET=$ADMIN_SECRET
     KYC_ADMIN_API_KEY=$KYC_ADMIN_API_KEY
-    NEXT_PUBLIC_POOL_CONTRACT_ID=$POOL_10
-    NEXT_PUBLIC_POOL_TIERS=10 USDC:$POOL_10:100000000,100 USDC:$POOL_100:1000000000,1000 USDC:$POOL_1000:10000000000
+    NEXT_PUBLIC_POOL_CONTRACT_ID=$POOL_ID
     NEXT_PUBLIC_COMPLIANCE_CONTRACT_ID=$COMPLIANCE_ID
     EOF
     # Strip the leading indentation the recipe block adds.

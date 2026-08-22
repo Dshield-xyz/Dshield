@@ -18,7 +18,7 @@ function downloadAllNotes() {
   a.click();
   URL.revokeObjectURL(url);
 }
-import { formatStroopsOrDash } from "@/lib/format";
+import { formatAmount } from "@/lib/format";
 import {
   formatActivityCsv,
   formatActivityJson,
@@ -289,7 +289,7 @@ export default function HistoryPage() {
                       </Badge>
                       {item.type !== "compliance" && (
                         <span className="text-sm font-semibold text-white">
-                          {formatStroopsOrDash(item.amount)}
+                          {formatAmount(item.amount)}
                         </span>
                       )}
                     </div>

@@ -299,11 +299,11 @@ mod tests {
         let client = VerifierContractClient::new(&env, &contract_id);
 
         let proof = proof_bytes(&env);
-        let valid_inputs = public_inputs_bytes(&env);
-        let mut tampered = [0u8; 96];
-        valid_inputs.copy_into_slice(&mut tampered);
-        tampered[0] ^= 0x01;
-        let tampered_inputs = Bytes::from_slice(&env, &tampered);
+        // Flip a bit in the first public input, without assuming how many
+        // there are: this verifier is generic over circuits, and the shielded
+        // pool's public-input count has changed before.
+        let mut tampered_inputs = public_inputs_bytes(&env);
+        tampered_inputs.set(0, tampered_inputs.get(0).unwrap() ^ 0x01);
 
         let result = client.try_verify_proof(&tampered_inputs, &proof);
         assert_eq!(
@@ -367,7 +367,7 @@ mod tests {
         let client = VerifierContractClient::new(&env, &contract_id);
 
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
-        let public_inputs = Bytes::from_slice(&env, &[0u8; 96]);
+        let public_inputs = public_inputs_bytes(&env);
         let result = client.try_verify_proof(&public_inputs, &proof);
         assert!(result.is_err());
     }

@@ -70,10 +70,30 @@ async function generateProof(
   });
 }
 
+/**
+ * Proves a spend of one note: `withdrawAmount` of its `amount` is paid out and
+ * the remainder is re-shielded into a new note under `changeNullifier` /
+ * `changeSecret`.
+ *
+ * A change note is always produced, even for a full withdrawal where the
+ * remainder is zero, so that a full and a partial spend are indistinguishable
+ * on-chain. The caller must therefore always store the change note — see the
+ * withdraw page, which saves it before submitting.
+ *
+ * Amounts are decimal strings of token base units. They must not be hex: Noir
+ * would read a `0x`-prefixed amount as a different number than the contract's
+ * big-endian byte decoding does, and the payout would silently disagree with
+ * what the note is worth.
+ */
 export async function proveWithdrawal(
   inputs: {
     nullifier: string;
     secret: string;
+    amount: string;
+    withdrawAmount: string;
+    changeNullifier: string;
+    changeSecret: string;
+    changeCommitment: string;
     root: string;
     nullifierHash: string;
     recipientHash: string;
@@ -87,9 +107,14 @@ export async function proveWithdrawal(
     {
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
+      amount: decimal(inputs.amount),
+      change_nullifier: ensureHex(inputs.changeNullifier),
+      change_secret: ensureHex(inputs.changeSecret),
       root: ensureHex(inputs.root),
       nullifier_hash: ensureHex(inputs.nullifierHash),
       recipient: ensureHex(inputs.recipientHash),
+      withdraw_amount: decimal(inputs.withdrawAmount),
+      change_commitment: ensureHex(inputs.changeCommitment),
       path_bits: inputs.pathBits.map(String),
       path_siblings: inputs.pathSiblings.map(ensureHex),
     },
@@ -118,11 +143,11 @@ export async function proveCompliance(
       kyc_preimage: ensureHex(inputs.kycPreimage),
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
-      amount: inputs.amount,
+      amount: decimal(inputs.amount),
       auditor_key: ensureHex(inputs.auditorKey),
       merkle_root: ensureHex(inputs.merkleRoot),
       kyc_hash: ensureHex(inputs.kycHash),
-      disclosed_amount: inputs.disclosedAmount,
+      disclosed_amount: decimal(inputs.disclosedAmount),
       path_bits: inputs.pathBits.map(String),
       path_siblings: inputs.pathSiblings.map(ensureHex),
     },
@@ -151,11 +176,11 @@ export async function proveDisclosure(
       kyc_preimage: ensureHex(inputs.kycPreimage),
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
-      amount: inputs.amount,
+      amount: decimal(inputs.amount),
       auditor_key: ensureHex(inputs.auditorKey),
       merkle_root: ensureHex(inputs.merkleRoot),
       kyc_hash: ensureHex(inputs.kycHash),
-      threshold: inputs.threshold,
+      threshold: decimal(inputs.threshold),
       path_bits: inputs.pathBits.map(String),
       path_siblings: inputs.pathSiblings.map(ensureHex),
     },
@@ -166,4 +191,9 @@ export async function proveDisclosure(
 function ensureHex(v: string): string {
   if (v.startsWith("0x")) return v;
   return "0x" + v;
+}
+
+/** Normalizes an amount to the plain decimal form Noir reads as a number. */
+function decimal(v: string): string {
+  return BigInt(v).toString(10);
 }

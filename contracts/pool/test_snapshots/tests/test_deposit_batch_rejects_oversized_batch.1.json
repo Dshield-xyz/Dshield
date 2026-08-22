@@ -141,10 +141,10 @@
                   "storage": [
                     {
                       "key": {
-                        "symbol": "amt"
+                        "symbol": "admin"
                       },
                       "val": {
-                        "i128": "10000000"
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                       }
                     },
                     {

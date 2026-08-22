@@ -23,12 +23,6 @@ pub enum ComplianceError {
     DisclosureVkNotSet = 9,
     /// merkle_root in the public inputs doesn't belong to any configured pool.
     UnknownMerkleRoot = 10,
-    /// disclosed_amount doesn't equal the actual fixed deposit_amount of the
-    /// pool the merkle_root belongs to.
-    AmountMismatch = 11,
-    /// threshold exceeds the actual fixed deposit_amount of the pool the
-    /// merkle_root belongs to.
-    ThresholdNotMet = 12,
     /// accept_admin called with no admin rotation in progress.
     NoPendingAdmin = 13,
 }
@@ -46,38 +40,27 @@ fn pool_has_root(env: &Env, pool: &Address, root: &BytesN<32>) -> bool {
         .unwrap_or(false)
 }
 
-/// Cross-contract call into a pool's `get_deposit_amount() -> Result<i128,_>`.
-fn pool_deposit_amount(env: &Env, pool: &Address) -> Option<i128> {
-    let args: SorobanVec<Val> = SorobanVec::new(env);
-    env.try_invoke_contract::<i128, InvokeError>(pool, &Symbol::new(env, "get_deposit_amount"), args)
-        .ok()
-        .and_then(|r| r.ok())
-}
-
-/// Finds the configured pool that `root` belongs to and returns its fixed
-/// per-note deposit amount. This is the authoritative source of "amount" for
-/// any note — the circuit's `amount` witness is never constrained to the
-/// note itself (see main.nr), so it cannot be trusted; the pool the root
-/// came from is what actually fixes the amount (DShield pools are
-/// fixed-denomination: every note in a given pool has the same amount).
-fn amount_for_root(env: &Env, pools: &SorobanVec<Address>, root: &BytesN<32>) -> Option<i128> {
+/// Confirms `root` is a state one of the configured pools actually reached,
+/// which is what makes a proof against it meaningful rather than a proof about
+/// a tree the prover made up.
+///
+/// This is the whole of the on-chain binding now. The amount a note carries is
+/// committed inside its leaf (see circuits/*/src/main.nr `hash_leaf`), so the
+/// circuit itself proves `disclosed_amount` is the note's value and that the
+/// note clears a `threshold`. The contract previously had to recover the figure
+/// out-of-band from the pool's fixed denomination, because the leaf committed
+/// to no amount and the circuit's `amount` witness was unconstrained; notes
+/// carry their own value now, so that workaround retired along with the
+/// denominations.
+fn root_belongs_to_pool(env: &Env, pools: &SorobanVec<Address>, root: &BytesN<32>) -> bool {
     for pool in pools.iter() {
         if pool_has_root(env, &pool, root) {
-            return pool_deposit_amount(env, &pool);
+            return true;
         }
     }
-    None
+    false
 }
 
-/// Encodes a non-negative i128 as the 32-byte big-endian field element the
-/// Noir circuit and frontend would produce for that plain integer value
-/// (top 16 bytes zero, value right-aligned in the low 16 bytes) — the same
-/// convention as the pool contract's own Poseidon2 input encoding.
-fn amount_to_field_bytes(amount: i128) -> [u8; 32] {
-    let mut buf = [0u8; 32];
-    buf[16..32].copy_from_slice(&(amount as u128).to_be_bytes());
-    buf
-}
 
 /// Decodes a 32-byte public-input field element back to u128, rejecting any
 /// value that doesn't fit (top 16 bytes must be zero) rather than silently
@@ -314,20 +297,16 @@ impl ComplianceContract {
             return Err(ComplianceError::KycNotRegistered);
         }
 
-        // Authoritative amount binding: `disclosed_amount` is only trustworthy
-        // if it matches the fixed deposit_amount of whichever configured pool
-        // the merkle_root actually belongs to (see amount_for_root doc comment).
+        // The circuit proves `disclosed_amount` is the note's committed value;
+        // all this has to establish is that the tree the note was proved against
+        // is really one of ours.
         let pools: SorobanVec<Address> = env
             .storage()
             .instance()
             .get(&Self::key_pools())
             .unwrap_or(SorobanVec::new(&env));
-        let pool_amount =
-            amount_for_root(&env, &pools, &merkle_root).ok_or(ComplianceError::UnknownMerkleRoot)?;
-        let mut disclosed_arr = [0u8; 32];
-        disclosed_arr.copy_from_slice(&buf[64..96]);
-        if disclosed_arr != amount_to_field_bytes(pool_amount) {
-            return Err(ComplianceError::AmountMismatch);
+        if !root_belongs_to_pool(&env, &pools, &merkle_root) {
+            return Err(ComplianceError::UnknownMerkleRoot);
         }
 
         let mut auditor_arr = [0u8; 32];
@@ -420,22 +399,21 @@ impl ComplianceContract {
             .get(&Self::key_disclosure_vk())
             .ok_or(ComplianceError::DisclosureVkNotSet)?;
 
-        // Authoritative threshold binding: the note's real amount is the
-        // deposit_amount of whichever configured pool merkle_root belongs to
-        // (see amount_for_root); the claimed threshold must not exceed it.
+        // The circuit proves the note's committed value is at least
+        // `threshold`; all this has to establish is that the tree the note was
+        // proved against is really one of ours.
         let pools: SorobanVec<Address> = env
             .storage()
             .instance()
             .get(&Self::key_pools())
             .unwrap_or(SorobanVec::new(&env));
-        let pool_amount =
-            amount_for_root(&env, &pools, &merkle_root).ok_or(ComplianceError::UnknownMerkleRoot)?;
+        if !root_belongs_to_pool(&env, &pools, &merkle_root) {
+            return Err(ComplianceError::UnknownMerkleRoot);
+        }
         let mut threshold_arr = [0u8; 32];
         threshold_arr.copy_from_slice(&buf[64..96]);
-        let threshold_val =
-            field_bytes_to_u128(&threshold_arr).ok_or(ComplianceError::InvalidPublicInputs)?;
-        if threshold_val > pool_amount as u128 {
-            return Err(ComplianceError::ThresholdNotMet);
+        if field_bytes_to_u128(&threshold_arr).is_none() {
+            return Err(ComplianceError::InvalidPublicInputs);
         }
         let threshold = BytesN::from_array(&env, &threshold_arr);
 
@@ -1073,17 +1051,20 @@ mod tests {
         sac.mint(&depositor, &1_000_000_000);
 
         let verifier_id = <Address as TestAddress>::generate(env);
-        let deposit_amount: i128 = 100_000_000; // 10 USDC tier, matches justfile
+        // Just the value this fixture's note happens to hold. Pools have no
+        // denomination any more, so nothing downstream depends on the figure.
+        let note_amount: i128 = 100_000_000;
         let pool_admin = <Address as TestAddress>::generate(env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), deposit_amount, pool_admin),
+            (verifier_id, token_id.address(), pool_admin),
         );
         let mut arr = [0u8; 32];
         arr[0] = 7;
         let commitment = BytesN::from_array(env, &arr);
-        dshield_pool::PoolContractClient::new(env, &pool_id).deposit(&depositor, &commitment);
-        (pool_id, deposit_amount)
+        dshield_pool::PoolContractClient::new(env, &pool_id)
+            .deposit(&depositor, &commitment, &note_amount);
+        (pool_id, note_amount)
     }
 
     fn setup_with_pool(env: &Env) -> (Address, Address, Address, i128) {
@@ -1134,10 +1115,16 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_compliance_amount_mismatch_rejected() {
+    fn test_verify_compliance_leaves_the_amount_to_the_circuit() {
+        // The contract no longer second-guesses `disclosed_amount`: the note's
+        // value is committed inside its leaf, so the circuit proves the figure
+        // and a false one simply produces a proof that doesn't verify. What the
+        // contract still owns is the root check, so an arbitrary amount against
+        // a known root must fall through to VerificationFailed -- proof that the
+        // amount gate is gone rather than silently accepting.
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin, pool_id, deposit_amount) = setup_with_pool(&env);
+        let (contract_id, _admin, pool_id, note_amount) = setup_with_pool(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 1);
@@ -1146,15 +1133,14 @@ mod tests {
         let mut pi = [0u8; 128];
         pi[0..32].copy_from_slice(&root_of(&env, &pool_id).to_array());
         pi[32..64].copy_from_slice(&kyc_hash.to_array());
-        // Wrong disclosed amount: claims double the real pool tier.
-        pi[64..96].copy_from_slice(&amount_field_bytes(deposit_amount * 2));
+        pi[64..96].copy_from_slice(&amount_field_bytes(note_amount * 2));
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let result = client.try_verify_compliance(&public_inputs, &proof);
         assert_eq!(
             result.err().unwrap().unwrap(),
-            ComplianceError::AmountMismatch
+            ComplianceError::VerificationFailed
         );
     }
 
@@ -1210,10 +1196,14 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_disclosure_threshold_exceeds_amount_rejected() {
+    fn test_verify_disclosure_leaves_the_threshold_to_the_circuit() {
+        // Counterpart to the compliance case: `threshold` is now checked
+        // against the note's committed value inside the circuit, so the
+        // contract only has to establish that the root is one of ours and let
+        // proof verification decide the rest.
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin, pool_id, deposit_amount) = setup_with_pool(&env);
+        let (contract_id, _admin, pool_id, note_amount) = setup_with_pool(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
         client.set_disclosure_vk(&disclosure_vk_bytes(&env));
 
@@ -1223,15 +1213,14 @@ mod tests {
         let mut pi = [0u8; 128];
         pi[0..32].copy_from_slice(&root_of(&env, &pool_id).to_array());
         pi[32..64].copy_from_slice(&kyc_hash.to_array());
-        // Claims a threshold higher than the pool's real fixed amount.
-        pi[64..96].copy_from_slice(&amount_field_bytes(deposit_amount + 1));
+        pi[64..96].copy_from_slice(&amount_field_bytes(note_amount + 1));
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let result = client.try_verify_disclosure(&public_inputs, &proof);
         assert_eq!(
             result.err().unwrap().unwrap(),
-            ComplianceError::ThresholdNotMet
+            ComplianceError::VerificationFailed
         );
     }
 

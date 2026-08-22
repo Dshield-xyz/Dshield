@@ -182,14 +182,6 @@
                     },
                     {
                       "key": {
-                        "symbol": "amt"
-                      },
-                      "val": {
-                        "i128": "10000000"
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "paused"
                       },
                       "val": {

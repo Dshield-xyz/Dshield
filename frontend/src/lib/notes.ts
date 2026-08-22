@@ -4,12 +4,24 @@ export interface ShieldedNote {
   nullifier: string;
   secret: string;
   commitment: string;
+  /**
+   * Leaf index in the pool's Merkle tree, or {@link PENDING_LEAF_INDEX} for a
+   * change note whose slot isn't known yet. A change note is minted by the
+   * withdrawal itself, so its index depends on where the transaction lands and
+   * cannot be predicted; it is saved before submission (losing it would lose
+   * the funds) and resolved afterwards by
+   * {@link import("./sync").resolvePendingLeafIndexes}.
+   */
   leafIndex: number;
+  /** Note value in token base units (stroops), as a decimal string. */
   amount: string;
   spent: boolean;
   createdAt: number;
   poolId?: string;
 }
+
+/** Sentinel for a note whose leaf index has not been resolved yet. */
+export const PENDING_LEAF_INDEX = -1;
 
 const STORAGE_KEY = "dshield_notes";
 
@@ -39,6 +51,24 @@ export function getNotes(): ShieldedNote[] {
   return JSON.parse(raw);
 }
 
+/**
+ * Records the leaf index a note actually landed on. Used to settle a change
+ * note once its withdrawal has confirmed; until then the note is unspendable,
+ * because a Merkle proof needs the real index.
+ */
+export function setNoteLeafIndex(commitment: string, leafIndex: number): void {
+  const notes = getNotes();
+  const updated = notes.map((n) =>
+    n.commitment === commitment ? { ...n, leafIndex } : n,
+  );
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+}
+
+/** Notes saved but not yet tied to a leaf index — see {@link PENDING_LEAF_INDEX}. */
+export function getPendingNotes(): ShieldedNote[] {
+  return getNotes().filter((n) => !n.spent && n.leafIndex < 0);
+}
+
 export function markNoteSpent(commitment: string): void {
   const notes = getNotes();
   const updated = notes.map((n) =>
@@ -47,12 +77,22 @@ export function markNoteSpent(commitment: string): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 }
 
+/**
+ * Notes that can be spent right now: unspent, worth something, and with a
+ * known leaf index. A zero-value change note (what a full withdrawal leaves
+ * behind) is deliberately excluded — it exists only so that full and partial
+ * withdrawals look identical on-chain, and has nothing left to withdraw.
+ */
 export function getActiveNotes(): ShieldedNote[] {
-  return getNotes().filter((n) => !n.spent);
+  return getNotes().filter(
+    (n) => !n.spent && n.leafIndex >= 0 && BigInt(n.amount || "0") > BigInt(0),
+  );
 }
 
 const NOTE_PREFIX = "dshield";
 const NOTE_VERSION = "v1";
+/** Stands in for {@link PENDING_LEAF_INDEX} in the dash-joined backup format. */
+const PENDING_LEAF_INDEX_TOKEN = "p";
 
 /**
  * Serialize a note into a single self-contained backup string. This is the
@@ -66,7 +106,9 @@ export function serializeNote(note: ShieldedNote): string {
     NOTE_PREFIX,
     NOTE_VERSION,
     note.poolId ?? "",
-    note.leafIndex,
+    // "p" rather than -1: the format is dash-joined, and a minus sign would
+    // add a ninth field and break the round trip.
+    note.leafIndex < 0 ? PENDING_LEAF_INDEX_TOKEN : note.leafIndex,
     note.amount,
     note.commitment,
     note.nullifier,
@@ -91,7 +133,10 @@ function parseNoteV1(serialized: string): ShieldedNote | null {
     nullifier,
     secret,
     commitment,
-    leafIndex: Number(leafIndex),
+    leafIndex:
+      leafIndex === PENDING_LEAF_INDEX_TOKEN
+        ? PENDING_LEAF_INDEX
+        : Number(leafIndex),
     amount,
     spent: false,
     createdAt: Date.now(),
@@ -123,6 +168,9 @@ const COMPACT_VERSION = 2;
 // nullifier(32) + secret(32)
 const COMPACT_LENGTH = 1 + 32 + 4 + 8 + 32 + 32 + 32;
 const ZERO_POOL_ID = new Uint8Array(32);
+// leafIndex is an unsigned field, so the top value is reserved to mean
+// "pending". Trees cap at 2^20 leaves, so it can never be a real index.
+const COMPACT_PENDING_LEAF_INDEX = 0xffffffff;
 
 function hexToBytes32(hex: string): Uint8Array | null {
   const clean = hex.replace(/^0x/, "");
@@ -171,9 +219,11 @@ function base64UrlDecode(payload: string): Uint8Array | null {
  * so a future edge case degrades to a longer link instead of breaking.
  */
 function encodeNoteCompact(note: ShieldedNote): string | null {
-  if (!Number.isInteger(note.leafIndex) || note.leafIndex < 0 || note.leafIndex > 0xffffffff) {
+  if (!Number.isInteger(note.leafIndex) || note.leafIndex >= COMPACT_PENDING_LEAF_INDEX) {
     return null;
   }
+  const encodedLeafIndex =
+    note.leafIndex < 0 ? COMPACT_PENDING_LEAF_INDEX : note.leafIndex;
   let amountBig: bigint;
   try {
     amountBig = BigInt(note.amount);
@@ -205,7 +255,7 @@ function encodeNoteCompact(note: ShieldedNote): string | null {
   offset += 1;
   bytes.set(poolIdBytes, offset);
   offset += 32;
-  view.setUint32(offset, note.leafIndex, false);
+  view.setUint32(offset, encodedLeafIndex, false);
   offset += 4;
   view.setBigUint64(offset, amountBig, false);
   offset += 8;
@@ -227,7 +277,9 @@ function decodeNoteCompact(payload: string): ShieldedNote | null {
   let offset = 1;
   const poolIdBytes = bytes.subarray(offset, offset + 32);
   offset += 32;
-  const leafIndex = view.getUint32(offset, false);
+  const rawLeafIndex = view.getUint32(offset, false);
+  const leafIndex =
+    rawLeafIndex === COMPACT_PENDING_LEAF_INDEX ? PENDING_LEAF_INDEX : rawLeafIndex;
   offset += 4;
   const amount = view.getBigUint64(offset, false).toString();
   offset += 8;

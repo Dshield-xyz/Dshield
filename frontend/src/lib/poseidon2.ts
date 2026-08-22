@@ -37,45 +37,51 @@ export async function poseidon2Hash(a: string, b: string): Promise<string> {
   return normalizeField(result.returnValue as string);
 }
 
+/**
+ * Note commitment: `H(H(H(LEAF_DOMAIN, nullifier), secret), amount)`.
+ *
+ * The chain of two-input hashes is not an approximation of a wider hash — it
+ * is the definition, matched exactly by the Noir circuits' `hash_leaf` and by
+ * the pool contract's `poseidon2_hash2`. All three must agree byte for byte or
+ * a note becomes unspendable, so the shape is deliberately the lowest common
+ * denominator: the only Poseidon2 primitive all three can compute is the
+ * two-input one.
+ *
+ * `amount` is the note's value in token base units (stroops), as a decimal
+ * string. Binding it here is what lets one pool hold notes of any size and lets
+ * a spend pay out part of a note.
+ */
 export async function computeCommitment(
   nullifier: string,
   secret: string,
+  amount: string | bigint,
 ): Promise<string> {
-  // Hash with domain separation: hash3(LEAF_DOMAIN, nullifier, secret)
-  const noir = await getHasher();
-  const result = await noir.execute({
-    a: LEAF_DOMAIN,
-    b: toField(nullifier)
-  });
-  const leafHashAndSecret = result.returnValue as string;
-
-  // Now hash with secret: hash2(hash3(LEAF_DOMAIN, nullifier, secret), secret)
-  // This simulates hash3 by doing hash2(hash2(domain, nullifier), secret)
-  const finalResult = await noir.execute({
-    a: normalizeField(leafHashAndSecret),
-    b: toField(secret)
-  });
-  return normalizeField(finalResult.returnValue as string);
+  const domainAndNullifier = await poseidon2Hash(LEAF_DOMAIN, toField(nullifier));
+  const withSecret = await poseidon2Hash(domainAndNullifier, toField(secret));
+  return poseidon2Hash(withSecret, toAmountField(amount));
 }
 
 export async function computeNullifierHash(
   nullifier: string,
 ): Promise<string> {
-  // Hash with domain separation: hash3(NULLIFIER_DOMAIN, nullifier, 0)
-  const noir = await getHasher();
-  const result = await noir.execute({
-    a: NULLIFIER_DOMAIN,
-    b: toField(nullifier)
-  });
-  const domainAndNullifier = result.returnValue as string;
+  // H(H(NULLIFIER_DOMAIN, nullifier), 0)
+  const domainAndNullifier = await poseidon2Hash(NULLIFIER_DOMAIN, toField(nullifier));
+  return poseidon2Hash(domainAndNullifier, "0x00");
+}
 
-  // Now hash with 0: hash2(hash2(domain, nullifier), 0)
-  // This simulates hash3 by doing hash2(hash2(domain, nullifier), 0)
-  const finalResult = await noir.execute({
-    a: normalizeField(domainAndNullifier),
-    b: "0"
-  });
-  return normalizeField(finalResult.returnValue as string);
+/** KYC commitment: `H(H(KYC_DOMAIN, preimage), 0)` — matches `hash_kyc`. */
+export async function computeKycHash(preimage: string): Promise<string> {
+  const domainAndPreimage = await poseidon2Hash(KYC_DOMAIN, toField(preimage));
+  return poseidon2Hash(domainAndPreimage, "0x00");
+}
+
+/**
+ * Encodes a token amount as a field element. Noir reads an unprefixed decimal
+ * string as a number, so amounts are passed through as decimals rather than
+ * hex — a hex-looking amount would be silently reinterpreted.
+ */
+export function toAmountField(amount: string | bigint): string {
+  return BigInt(amount).toString(10);
 }
 
 function toField(hex: string): string {

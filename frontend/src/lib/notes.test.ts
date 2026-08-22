@@ -10,6 +10,9 @@ import {
   parseNote,
   saveNoteIfNew,
   generateNoteLink,
+  getPendingNotes,
+  setNoteLeafIndex,
+  PENDING_LEAF_INDEX,
   type ShieldedNote,
 } from "./notes";
 
@@ -274,6 +277,69 @@ describe("getActiveNotes", () => {
     saveNote(makeNote({ commitment: "aaa" }));
     markNoteSpent("aaa");
     expect(getActiveNotes()).toHaveLength(0);
+  });
+});
+
+describe("pending change notes", () => {
+  it("hides a note with no resolved leaf index from the spendable set", () => {
+    // A change note is saved before its withdrawal confirms, so its leaf slot
+    // isn't known yet. Offering it for withdrawal would build a Merkle proof
+    // against the wrong index and fail after a minute of proving.
+    saveNote(makeNote({ commitment: "aaa" }));
+    saveNote(makeNote({ commitment: "bbb", leafIndex: PENDING_LEAF_INDEX }));
+
+    expect(getActiveNotes().map((n) => n.commitment)).toEqual(["aaa"]);
+    expect(getPendingNotes().map((n) => n.commitment)).toEqual(["bbb"]);
+  });
+
+  it("makes a note spendable once its index is recorded", () => {
+    saveNote(makeNote({ commitment: "bbb", leafIndex: PENDING_LEAF_INDEX }));
+    setNoteLeafIndex("bbb", 7);
+
+    expect(getPendingNotes()).toHaveLength(0);
+    const active = getActiveNotes();
+    expect(active).toHaveLength(1);
+    expect(active[0].leafIndex).toBe(7);
+  });
+
+  it("leaves a spent note out of the pending set", () => {
+    saveNote(makeNote({ commitment: "bbb", leafIndex: PENDING_LEAF_INDEX }));
+    markNoteSpent("bbb");
+    expect(getPendingNotes()).toHaveLength(0);
+  });
+
+  it("round-trips a pending note through the backup format", () => {
+    // The dash-joined format would gain a ninth field if -1 were written out
+    // literally, so the sentinel has to survive as something dash-free.
+    const note = makeNote({ leafIndex: PENDING_LEAF_INDEX });
+    const parsed = parseNote(serializeNote(note));
+    expect(parsed?.leafIndex).toBe(PENDING_LEAF_INDEX);
+    expect(parsed?.amount).toBe(note.amount);
+  });
+
+  it("round-trips a pending note through the compact link format", () => {
+    const note = makeNote({
+      leafIndex: PENDING_LEAF_INDEX,
+      commitment: "ab".repeat(32),
+      nullifier: "cd".repeat(32),
+      secret: "ef".repeat(32),
+    });
+    const link = generateNoteLink(note);
+    const payload = decodeURIComponent(link.split("#note=")[1]);
+    expect(payload.startsWith("dS2.")).toBe(true);
+    expect(parseNote(payload)?.leafIndex).toBe(PENDING_LEAF_INDEX);
+  });
+});
+
+describe("zero-value notes", () => {
+  it("keeps the empty note a full withdrawal leaves behind out of the way", () => {
+    // Every spend appends a change note so that full and partial withdrawals
+    // look identical on-chain. When the spend took everything, that note is
+    // worth nothing and there is nothing to offer the user.
+    saveNote(makeNote({ commitment: "aaa", amount: "0" }));
+    saveNote(makeNote({ commitment: "bbb", amount: "1" }));
+
+    expect(getActiveNotes().map((n) => n.commitment)).toEqual(["bbb"]);
   });
 });
 

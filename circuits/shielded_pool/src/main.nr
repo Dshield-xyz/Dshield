@@ -10,16 +10,35 @@ fn hash2(a: Field, b: Field) -> Field {
     Poseidon2::hash([a, b], 2)
 }
 
-fn hash3(a: Field, b: Field, c: Field) -> Field {
-    Poseidon2::hash([a, b, c], 3)
-}
-
-fn hash_leaf(nullifier: Field, secret: Field) -> Field {
-    hash3(LEAF_DOMAIN, nullifier, secret)
+/// Note commitment. Built as a chain of two-input Poseidon2 hashes rather than
+/// a single wide hash so that the exact same value can be recomputed by the
+/// two other implementations that must agree with this circuit bit for bit:
+/// the frontend (which only ships the two-input `hasher` circuit) and the pool
+/// contract (whose `poseidon2_hash2` helper is two-input). A wide `hash3`/
+/// `hash4` here would silently disagree with both.
+///
+/// `amount` is part of the commitment: notes carry their own value, so the
+/// pool no longer needs a fixed per-pool denomination and a spend can pay out
+/// part of a note and re-shield the rest.
+fn hash_leaf(nullifier: Field, secret: Field, amount: Field) -> Field {
+    hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount)
 }
 
 fn hash_nullifier(nullifier: Field) -> Field {
-    hash3(NULLIFIER_DOMAIN, nullifier, 0)
+    hash2(hash2(NULLIFIER_DOMAIN, nullifier), 0)
+}
+
+/// Range-constrains `v` to 64 bits and returns it as a `u64`.
+///
+/// A bare `v as u64` in Noir truncates without constraining, so comparing two
+/// truncated values would let a prover pass `amount = p - 1` (which wraps to a
+/// small u64) and mint value out of nothing. Asserting the round trip back to
+/// `Field` is what actually pins `v < 2^64`, which in turn makes the
+/// `withdraw + change = amount` arithmetic below safe from field wraparound.
+fn constrain_u64(v: Field) -> u64 {
+    let narrowed = v as u64;
+    assert(narrowed as Field == v);
+    narrowed
 }
 
 fn constrain_bit(bit: Field) {
@@ -42,22 +61,49 @@ fn compute_root(leaf: Field, path_siblings: [Field; TREE_DEPTH], path_bits: [Fie
     cur
 }
 
+/// Spends one note of arbitrary value: pays `withdraw_amount` out to
+/// `recipient` and re-shields the remainder as a brand-new note that the pool
+/// contract inserts as a fresh leaf.
+///
+/// A change note is produced on *every* spend, including a full withdrawal
+/// where the remainder is zero. That is deliberate: the on-chain footprint of
+/// "withdrew everything" and "withdrew part" is then identical (one nullifier
+/// spent, one leaf inserted), so an observer cannot tell from the transaction
+/// shape whether the user still holds shielded value.
 pub fn main(
     root: pub Field,
     nullifier_hash: pub Field,
     recipient: pub Field,
+    withdraw_amount: pub Field,
+    change_commitment: pub Field,
     nullifier: Field,
     secret: Field,
+    amount: Field,
+    change_nullifier: Field,
+    change_secret: Field,
     path_siblings: [Field; TREE_DEPTH],
     path_bits: [Field; TREE_DEPTH],
 ) {
-    let leaf = hash_leaf(nullifier, secret);
+    // Value conservation. Both sides are pinned to 64 bits first so the
+    // subtraction below cannot wrap around the field modulus.
+    let amount_u64 = constrain_u64(amount);
+    let withdraw_u64 = constrain_u64(withdraw_amount);
+    assert(withdraw_u64 <= amount_u64);
+    let change = amount - withdraw_amount;
+
+    // The spent note exists in the tree and carries exactly `amount`.
+    let leaf = hash_leaf(nullifier, secret, amount);
 
     let nf = hash_nullifier(nullifier);
     assert(nf == nullifier_hash);
 
     let computed_root = compute_root(leaf, path_siblings, path_bits);
     assert(computed_root == root);
+
+    // The re-shielded remainder is a well-formed note the spender can later
+    // open, worth exactly what was not paid out.
+    let expected_change = hash_leaf(change_nullifier, change_secret, change);
+    assert(expected_change == change_commitment);
 
     // `recipient` is a committed public input. The front-running protection is
     // enforced on-chain: the pool contract recomputes the recipient hash from

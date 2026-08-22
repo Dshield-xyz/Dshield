@@ -10,16 +10,25 @@ fn hash2(a: Field, b: Field) -> Field {
     Poseidon2::hash([a, b], 2)
 }
 
-fn hash3(a: Field, b: Field, c: Field) -> Field {
-    Poseidon2::hash([a, b, c], 3)
-}
-
-fn hash_leaf(nullifier: Field, secret: Field) -> Field {
-    hash3(LEAF_DOMAIN, nullifier, secret)
+/// Note commitment -- must stay byte-for-byte identical to the shielded_pool
+/// circuit's `hash_leaf` (and to the frontend / pool contract), which is why it
+/// is a chain of two-input Poseidon2 hashes rather than one wide hash.
+/// `amount` is bound into the commitment, so a note's value is now something
+/// this circuit can actually prove rather than an unconstrained witness.
+fn hash_leaf(nullifier: Field, secret: Field, amount: Field) -> Field {
+    hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount)
 }
 
 fn hash_kyc(kyc_preimage: Field) -> Field {
-    hash3(KYC_DOMAIN, kyc_preimage, 0)
+    hash2(hash2(KYC_DOMAIN, kyc_preimage), 0)
+}
+
+/// Range-constrains `v` to 64 bits. A bare `as u64` truncates without
+/// constraining, so the round trip back to `Field` is what pins `v < 2^64`.
+fn constrain_u64(v: Field) -> u64 {
+    let narrowed = v as u64;
+    assert(narrowed as Field == v);
+    narrowed
 }
 
 fn constrain_bit(bit: Field) {
@@ -60,31 +69,24 @@ pub fn main(
     let computed_kyc = hash_kyc(kyc_preimage);
     assert(computed_kyc == kyc_hash);
 
-    // 2. Wallet authorization: user owns a note in the shielded pool
-    let leaf = hash_leaf(nullifier, secret);
+    // 2. Wallet authorization: user owns a note in the shielded pool, and that
+    //    note is worth exactly `amount` -- the value is bound into the leaf.
+    let leaf = hash_leaf(nullifier, secret, amount);
     let computed_root = compute_root(leaf, path_siblings, path_bits);
     assert(computed_root == merkle_root);
 
-    // 3. Selective disclosure: `amount`/`disclosed_amount` are NOT bound to the
-    //    note above (the leaf is hash3(LEAF_DOMAIN, nullifier, secret) -- amount plays no
-    //    part in it), so this assert alone proves nothing about the real note;
-    //    a prover could pick any two equal values here. `disclosure_commitment`
-    //    and `expected` are computed but deliberately unused for the same
-    //    reason: hashing an unconstrained `amount` with anything doesn't
-    //    constrain it either.
-    //
-    //    The real amount binding happens on-chain: DShield pools are
-    //    fixed-denomination (every note in a given pool has the same
-    //    deposit_amount), so the compliance contract's `amount_for_root`
-    //    looks up which configured pool `merkle_root` belongs to (via
-    //    cross-contract `is_known_root`) and rejects the proof unless
-    //    `disclosed_amount` equals that pool's actual `get_deposit_amount()`.
-    //    See contracts/compliance/src/lib.rs `verify_compliance`. This
-    //    mirrors how the shielded_pool circuit's `recipient` binding is a
-    //    no-op in-circuit and enforced by the pool contract instead.
-    let disclosure_commitment = hash3(amount, auditor_key, nullifier);
-    let expected = hash2(disclosed_amount, auditor_key);
-    assert(amount == disclosed_amount);
-    let _ = disclosure_commitment;
-    let _ = expected;
+    // 3. Selective disclosure: because step 2 pins `amount` to the real note,
+    //    this equality now genuinely proves the disclosed figure is the note's
+    //    value. (It used to prove nothing: the leaf did not commit to an
+    //    amount, so a prover could pick any two equal values here, and the
+    //    compliance contract had to recover the figure out-of-band from the
+    //    pool's fixed denomination. Notes carry their own value now, so that
+    //    workaround is gone along with the denominations.)
+    let disclosed_u64 = constrain_u64(disclosed_amount);
+    let amount_u64 = constrain_u64(amount);
+    assert(amount_u64 == disclosed_u64);
+
+    // Auditor-scoped binding, so a disclosure produced for one auditor cannot
+    // be replayed as though it were addressed to another.
+    let _disclosure_commitment = Poseidon2::hash([amount, auditor_key, nullifier], 3);
 }

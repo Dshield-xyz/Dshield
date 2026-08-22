@@ -4,7 +4,7 @@ import { computeCommitment, computeNullifierHash } from "./poseidon2";
 import { fetchCommitmentsFromChain, lookupNoteTxs } from "./indexer";
 import { type ShieldedNote } from "./notes";
 import { getNetworkLabel } from "./explorer";
-import { stroopsToUsdc } from "./format";
+import { formatAmountBare } from "./format";
 
 export interface ComplianceReport {
   network: string;
@@ -40,8 +40,15 @@ export async function buildComplianceReport(
   const poolId = note.poolId || POOL_CONTRACT_ID;
   if (!poolId) throw new Error("No pool configured for this note.");
 
-  // Re-derive the commitment and nullifier hash from the note's secrets.
-  const commitment = await computeCommitment(note.nullifier, note.secret);
+  // Re-derive the commitment and nullifier hash from the note's secrets. The
+  // amount is part of the commitment, so this also checks the note's recorded
+  // value against what it actually claims on-chain: a note whose amount was
+  // edited no longer hashes to a leaf the pool holds, and `integrityOk` fails.
+  const commitment = await computeCommitment(
+    note.nullifier,
+    note.secret,
+    note.amount,
+  );
   const nullifierHash = await computeNullifierHash(note.nullifier);
   const commitmentClean = commitment.replace(/^0x/, "").toLowerCase();
   const integrityOk =
@@ -150,7 +157,7 @@ export function formatActivityCsv(items: ActivityItem[]): string {
     return [
       item.type,
       new Date(item.timestamp).toISOString(),
-      isCompliance ? "" : stroopsToUsdc(item.amount),
+      isCompliance ? "" : formatAmountBare(item.amount),
       isCompliance ? "" : item.amount,
       item.commitment,
       item.poolId ?? "",
@@ -168,7 +175,7 @@ export function formatActivityJson(items: ActivityItem[]): string {
     return {
       type: item.type,
       date: new Date(item.timestamp).toISOString(),
-      amountUsdc: isCompliance ? null : stroopsToUsdc(item.amount),
+      amountUsdc: isCompliance ? null : formatAmountBare(item.amount),
       amountStroops: isCompliance ? null : item.amount,
       commitment: item.commitment,
       poolId: item.poolId ?? null,

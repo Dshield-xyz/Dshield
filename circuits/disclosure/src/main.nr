@@ -10,16 +10,25 @@ fn hash2(a: Field, b: Field) -> Field {
     Poseidon2::hash([a, b], 2)
 }
 
-fn hash3(a: Field, b: Field, c: Field) -> Field {
-    Poseidon2::hash([a, b, c], 3)
-}
-
-fn hash_leaf(nullifier: Field, secret: Field) -> Field {
-    hash3(LEAF_DOMAIN, nullifier, secret)
+/// Note commitment -- must stay byte-for-byte identical to the shielded_pool
+/// circuit's `hash_leaf` (and to the frontend / pool contract), which is why it
+/// is a chain of two-input Poseidon2 hashes rather than one wide hash.
+/// `amount` is bound into the commitment, so a note's value is now something
+/// this circuit can actually prove rather than an unconstrained witness.
+fn hash_leaf(nullifier: Field, secret: Field, amount: Field) -> Field {
+    hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount)
 }
 
 fn hash_kyc(kyc_preimage: Field) -> Field {
-    hash3(KYC_DOMAIN, kyc_preimage, 0)
+    hash2(hash2(KYC_DOMAIN, kyc_preimage), 0)
+}
+
+/// Range-constrains `v` to 64 bits. A bare `as u64` truncates without
+/// constraining, so the round trip back to `Field` is what pins `v < 2^64`.
+fn constrain_u64(v: Field) -> u64 {
+    let narrowed = v as u64;
+    assert(narrowed as Field == v);
+    narrowed
 }
 
 fn constrain_bit(bit: Field) {
@@ -60,28 +69,23 @@ pub fn main(
     let computed_kyc = hash_kyc(kyc_preimage);
     assert(computed_kyc == kyc_hash);
 
-    // 2. Wallet authorization: user owns a note in the shielded pool
-    let leaf = hash_leaf(nullifier, secret);
+    // 2. Wallet authorization: user owns a note in the shielded pool, and that
+    //    note is worth exactly `amount` -- the value is bound into the leaf.
+    let leaf = hash_leaf(nullifier, secret, amount);
     let computed_root = compute_root(leaf, path_siblings, path_bits);
     assert(computed_root == merkle_root);
 
-    // 3. Threshold proof: balance >= threshold without revealing exact amount.
-    //    Like compliance/main.nr, `amount` is NOT bound to the note above (the
-    //    leaf is hash3(LEAF_DOMAIN, nullifier, secret)), so this assert alone doesn't prove
-    //    the prover's real balance meets `threshold` -- it only proves the
-    //    prover's own self-chosen `amount` does. The `_binding` hash below is
-    //    likewise unconstrained (never asserted against anything) and proves
-    //    nothing on its own.
-    //
-    //    The real binding happens on-chain: DShield pools are
-    //    fixed-denomination, so the compliance contract's `amount_for_root`
-    //    resolves which configured pool `merkle_root` belongs to and rejects
-    //    the proof unless `threshold` does not exceed that pool's actual
-    //    `get_deposit_amount()`. See contracts/compliance/src/lib.rs
-    //    `verify_disclosure`.
-    let amount_u64 = amount as u64;
-    let threshold_u64 = threshold as u64;
+    // 3. Threshold proof: the note's balance meets `threshold` without
+    //    revealing it. Because step 2 pins `amount` to the real note, this is
+    //    now a real statement about the prover's holdings. (It used to prove
+    //    only that a self-chosen witness cleared the bar, with the compliance
+    //    contract compensating via the pool's fixed denomination -- both that
+    //    workaround and the denominations are gone.)
+    let amount_u64 = constrain_u64(amount);
+    let threshold_u64 = constrain_u64(threshold);
     assert(amount_u64 >= threshold_u64);
 
+    // Auditor-scoped binding, so a disclosure produced for one auditor cannot
+    // be replayed as though it were addressed to another.
     let _binding = Poseidon2::hash([amount, auditor_key, nullifier], 3);
 }

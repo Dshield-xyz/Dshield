@@ -108,6 +108,55 @@
                       "bytes": "0e00000000000000000000000000000000000000000000000000000000000000"
                     }
                   ]
+                },
+                {
+                  "vec": [
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    },
+                    {
+                      "i128": "10000000"
+                    }
+                  ]
                 }
               ]
             }
@@ -249,7 +298,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 0
               }
             }
           },
@@ -276,7 +325,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 1
               }
             }
           },
@@ -303,7 +352,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 2
               }
             }
           },
@@ -330,7 +379,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 3
               }
             }
           },
@@ -357,7 +406,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 4
               }
             }
           },
@@ -384,7 +433,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 5
               }
             }
           },
@@ -411,7 +460,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 6
               }
             }
           },
@@ -438,7 +487,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 7
               }
             }
           },
@@ -465,7 +514,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 8
               }
             }
           },
@@ -492,7 +541,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 9
               }
             }
           },
@@ -519,7 +568,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 10
               }
             }
           },
@@ -546,7 +595,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 11
               }
             }
           },
@@ -573,7 +622,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 12
               }
             }
           },
@@ -600,7 +649,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 13
               }
             }
           },
@@ -627,7 +676,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 14
               }
             }
           },
@@ -1057,10 +1106,10 @@
                   "storage": [
                     {
                       "key": {
-                        "symbol": "amt"
+                        "symbol": "admin"
                       },
                       "val": {
-                        "i128": "10000000"
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                       }
                     },
                     {

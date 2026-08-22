@@ -158,14 +158,27 @@ What is **built and verified on-chain today** (testnet), versus the broader visi
 | Client-side ZK proof (Noir + UltraHonk, keccak transform) | ✅                                                                                                                                                                                                                       |
 | On-chain proof verification (Soroban + BN254/Poseidon2)   | ✅                                                                                                                                                                                                                       |
 | Shielded withdrawal to any recipient                      | ✅                                                                                                                                                                                                                       |
+| Any-amount deposits (no denominations)                    | ✅ One pool holds notes of any size                                                                                                                                                                                      |
+| Partial withdrawal with automatic re-shielding            | ✅ Take part of a note; the remainder becomes a fresh note you can spend again                                                                                                                                           |
 | Double-spend prevention (nullifiers)                      | ✅                                                                                                                                                                                                                       |
 | Recipient binding (anti front-running)                    | ✅                                                                                                                                                                                                                       |
 | **Relayer** — withdrawer's account never appears on-chain | ✅                                                                                                                                                                                                                       |
-| Compliance: KYC registry + compliance proof verification  | ✅ Verified on testnet via CLI (`just demo-compliance`); not yet wired into the web app UI. `disclosed_amount` is cross-checked against the real pool's fixed `deposit_amount` on-chain, not self-asserted by the prover |
-| Selective disclosure: threshold proofs (balance ≥ X)      | ✅ Circuit + contract implemented and CLI-verified; no web UI yet. `threshold` is likewise checked against the pool's real `deposit_amount` on-chain                                                                     |
-| Arbitrary-amount private _transfers_ between users        | 🚧 Future (today: fixed-denomination pools)                                                                                                                                                                              |
+| Compliance: KYC registry + compliance proof verification  | ✅ Verified on testnet via CLI (`just demo-compliance`); not yet wired into the web app UI. `disclosed_amount` is proved against the note's committed value in-circuit                                                    |
+| Selective disclosure: threshold proofs (balance ≥ X)      | ✅ Circuit + contract implemented and CLI-verified; no web UI yet. `threshold` is likewise proved against the note's committed value                                                                                      |
+| Arbitrary-amount private _transfers_ between users        | 🚧 Future                                                                                                                                                                                                                |
 
-DShield is currently a **fixed-denomination shielded pool** (Tornado-style: deposit a tier amount, withdraw it to any address). Privacy comes from breaking the on-chain link between depositor and recipient — not from hiding the tier amount. Relayed withdrawals mean the withdrawer never signs or pays a fee from their own account.
+DShield is a **variable-amount shielded pool**. A note carries its own value, hashed into its commitment, so one pool holds every amount and there are no denominations to round to. A withdrawal spends a note by paying out part or all of it and re-shielding the remainder as a new note, which can be spent the same way — repeatedly, until the balance is gone.
+
+Every spend has the same on-chain shape: one nullifier retired, one leaf appended. A change note is created even when the payout empties the note, so nothing in the transaction reveals whether the spender still holds shielded value.
+
+### What is and isn't hidden
+
+Privacy here comes from breaking the link between a deposit and a later withdrawal, not from hiding that money moved:
+
+- **Hidden**: which deposit a withdrawal came from, how much a note holds, how much shielded value an address controls, and — via the relayer — who submitted the withdrawal.
+- **Visible on-chain**: that an address deposited into the pool and how much; that some recipient was paid and how much. These are ordinary token transfers, and no privacy pool on a transparent ledger can hide them.
+
+The link is what an observer cannot reconstruct. Two things widen the gap, and both are worth using: withdraw to an address that isn't the one you deposited from, and don't withdraw a figure that matches a deposit — partial withdrawals exist partly for that reason. Depositing an unusual amount and immediately withdrawing all of it to the same address is trivially linkable no matter what the cryptography does.
 
 ---
 
@@ -173,12 +186,19 @@ DShield is currently a **fixed-denomination shielded pool** (Tornado-style: depo
 
 Deployed to Stellar **testnet** (`Test SDF Network ; September 2015`). View on [Stellar Expert](https://stellar.expert/explorer/testnet):
 
-| Contract                     | ID                                                         |
-| ---------------------------- | ---------------------------------------------------------- |
-| Shielded pool (10 USDC tier) | `CBQ3EPNIMGLS53U4HHLT4V3HAGJJCLONVXAN2QEREGQZMFQOLK7VF6C7` |
-| UltraHonk verifier           | `CA64EBZWHEXVBJRQ3U76MRDVZUMIOL6TYTGG6427URU3OV5D3ZLXNKCM` |
-| Compliance                   | `CDU7ARSZFXBGXHLUFO6AF3MDPVJNWBBOEGDI57FP3E2OR4I4M6DCVPDR` |
-| Test USDC (SAC)              | `CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG` |
+| Contract           | ID                                                         |
+| ------------------ | ---------------------------------------------------------- |
+| Shielded pool      | `CDIKKUB6XN2LLS4QMOZAVWSENCQTK546OGP3IJZ5IOR6K6G3G6EDVLNF` |
+| UltraHonk verifier | `CD4QVQIPJRLLNHEVWMYBT3ZRFTQCYKV3DQU37CKYHVMBLYU6GKFRO4M4` |
+| Compliance         | `CDRHRU5SMGRBD2H44LQBMGOA33JILM7PR3YF3GK57LXBXAYLAT5ADCIB` |
+| Test USDC (SAC)    | `CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG` |
+
+> **These are fresh deployments for variable-amount notes.** The note
+> commitment now binds the amount (`H(H(H(LEAF_DOMAIN, nullifier), secret),
+> amount)`) and the withdrawal circuit exposes five public inputs instead of
+> three, so the verification key, the verifier, and the pool all changed. Notes
+> from the earlier fixed-denomination pools are not portable to these. Run
+> `just deploy testnet` to provision your own set.
 
 A full **deposit → relayed withdraw** loop has been executed on testnet: the pool paid the recipient, the nullifier was consumed, and re-submitting the same proof failed with `NullifierUsed`.
 
@@ -189,7 +209,7 @@ A full **deposit → relayed withdraw** loop has been executed on testnet: the p
 **Prerequisites:** Rust + `wasm32v1-none`, [`stellar` CLI](https://developers.stellar.org/docs/tools/cli), [Noir (`nargo`)](https://noir-lang.org/docs) + Barretenberg (`bb`), Node + `pnpm`, [`just`](https://github.com/casey/just). Run `just setup` to check.
 
 ```bash
-# Run all tests (Rust contracts + frontend) — 85 contract + 50 frontend tests
+# Run all tests (Rust contracts + frontend) — 145 contract + 134 frontend tests
 just test
 
 # Local: start a quickstart network, fund accounts, deploy everything,
@@ -206,18 +226,18 @@ cp frontend/.env.local.example frontend/.env.local
 cd frontend && pnpm install && pnpm dev   # http://localhost:3000
 ```
 
-`just deploy` provisions the verifier, three pool tiers (10/100/1000 USDC), a test-USDC asset, a compliance contract, plus a **faucet issuer** and a **relayer** account, and writes the matching `frontend/.env.local`.
+`just deploy` provisions the verifier, the shielded pool, a test-USDC asset, a compliance contract, plus a **faucet issuer** and a **relayer** account, and writes the matching `frontend/.env.local`.
 
 ---
 
 ## One-Command Demo
 
 ```bash
-just demo             # privacy loop: deposit -> ZK proof -> relayed withdraw
+just demo             # privacy loop: deposit -> partial spend -> spend the remainder
 just demo-compliance  # compliant disclosure: register KYC -> ZK proof -> verify
 ```
 
-`just demo` runs the whole privacy loop on-chain and prints each step: it deposits into the pool, generates a real ZK proof bound to the recipient, submits the withdrawal **through the relayer** (so your account never appears on-chain), and verifies the recipient was paid and the nullifier consumed.
+`just demo` runs the whole privacy loop on-chain and prints each step. It shields 10 USDC, then spends the note **twice**: first taking 4 USDC and re-shielding 6, then spending that change note for the remaining 6. Each spend generates a real ZK proof bound to the recipient and goes out **through the relayer**, so your account never appears on-chain. It finishes by checking both nullifiers were consumed and that the pool holds three leaves — the deposit plus one change note per spend, including the final spend that emptied the balance.
 
 `just demo-compliance` runs the compliant-disclosure loop: an admin registers a KYC hash, a real compliance proof (KYC ownership + note ownership + selective amount disclosure, bound to an auditor key) is generated, and the contract verifies it on-chain — plus a negative check proving an unregistered KYC hash is rejected. Both demos take the network as an argument (e.g. `just demo-compliance testnet`).
 
@@ -230,7 +250,8 @@ Three properties hold the system together (each enforced on-chain and covered by
 1. **Hash consistency** — the contract's Poseidon2 (`soroban_poseidon`) produces byte-identical output to the Noir circuit and the frontend, so the on-chain Merkle root always matches the root the proof is generated against. Locked by `test_recipient_hash_matches_frontend`, `test_single_leaf_root_matches_circuit`.
 2. **Recipient binding** — the withdrawal proof commits to a recipient hash, and the contract recomputes that hash from the actual payout address (`recipient_hash_from_address`) and rejects a mismatch. Without this, anyone could front-run a pending withdrawal and redirect the funds. This is also what makes the relayer trustless: it can submit or refuse, but never steal. Locked by `test_withdraw_to_different_recipient_than_proof_rejected` (a proof bound to recipient A submitted with payout address B is rejected with `RecipientMismatch`) and `test_withdraw_recipient_mismatch_rejected`; `test_withdraw_correct_recipient_passes_binding` confirms a correctly-bound recipient is not rejected by this check.
 3. **Double-spend prevention** — each withdrawal consumes a nullifier stored in persistent storage; replaying a proof fails with `NullifierUsed`. Locked by `test_replaying_consumed_nullifier_returns_nullifier_used`, which replays a proof whose nullifier has already been consumed and asserts `NullifierUsed`.
-4. **Trustless tree reconstruction** — clients rebuild the withdrawal Merkle tree from the pool contract's own commitment storage, not by scanning deposit events (which depend on RPC event retention and can go missing). `get_commitments_page(start, limit)` returns leaves in order for a bounded range (capped on-chain at `MAX_PAGE_SIZE = 100` leaves per call regardless of the requested `limit`), and the frontend (`fetchCommitmentsFromChain`) pages through it until a short page signals the end. The older `get_commitments()` (no pagination) still exists for small/local pools, but reads every leaf in one call and will hit Soroban's per-transaction CPU/footprint limits well before a pool nears `MAX_LEAVES = 2^20` — prefer the paginated view for anything beyond a demo pool.
+4. **Value conservation** — a note's value is committed inside its leaf, and the circuit range-constrains both the note value and the payout to 64 bits before asserting `payout <= amount` and deriving `change = amount - payout`. The range check is what makes the subtraction safe: a bare `as u64` in Noir truncates without constraining, so an unconstrained `amount` near the field modulus would wrap to a small number and mint value from nothing. The contract re-checks the range when decoding the payout from the public inputs (`amount_from_field`), so a hand-crafted field element is rejected rather than truncated. Locked by `test_amount_from_field_rejects_out_of_range` and the circuit's own `constrain_u64`.
+5. **Trustless tree reconstruction** — clients rebuild the withdrawal Merkle tree from the pool contract's own commitment storage, not by scanning deposit events (which depend on RPC event retention and can go missing). `get_commitments_page(start, limit)` returns leaves in order for a bounded range (capped on-chain at `MAX_PAGE_SIZE = 100` leaves per call regardless of the requested `limit`), and the frontend (`fetchCommitmentsFromChain`) pages through it until a short page signals the end. The older `get_commitments()` (no pagination) still exists for small/local pools, but reads every leaf in one call and will hit Soroban's per-transaction CPU/footprint limits well before a pool nears `MAX_LEAVES = 2^20` — prefer the paginated view for anything beyond a demo pool.
 
 Unbounded data (commitments, nullifiers) lives in **persistent storage** with TTL extension, so the size-capped instance entry doesn't grow with usage.
 

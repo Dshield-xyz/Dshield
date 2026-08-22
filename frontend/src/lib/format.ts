@@ -8,32 +8,52 @@ export const TOKEN_SYMBOL = "USDC";
 const SCALE = 10 ** TOKEN_DECIMALS;
 
 /**
- * Convert a stroop string to a human USDC string. Returns "0" for zero/invalid
- * input. No fixed precision — trailing zeros are dropped (Number.toString).
+ * Convert a human USDC string to a stroop string. Returns "0" for invalid input.
+ *
+ * Parsed as a decimal string rather than via `parseFloat` because the result is
+ * now a note's exact committed value: the amount goes into the commitment hash
+ * and into the on-chain transfer, and those two must agree to the stroop. A
+ * float round-trip of something like "1234567.8912345" lands a unit or two off
+ * and the note becomes unspendable. Anything finer than {@link TOKEN_DECIMALS}
+ * is truncated, not rounded, so a deposit never asks for more than typed.
  */
-export function stroopsToUsdc(stroops: string): string {
-  const n = Number(stroops);
-  if (!n) return "0";
-  return (n / SCALE).toString();
-}
-
-/** Convert a human USDC string to a stroop string. Returns "0" for invalid input. */
 export function usdcToStroops(usdc: string): string {
-  const n = parseFloat(usdc);
-  if (isNaN(n)) return "0";
-  return Math.round(n * SCALE).toString();
+  const trimmed = usdc.trim();
+  if (!/^\d*(\.\d*)?$/.test(trimmed) || trimmed === "" || trimmed === ".") {
+    return "0";
+  }
+  const [whole, fraction = ""] = trimmed.split(".");
+  const padded = (fraction + "0".repeat(TOKEN_DECIMALS)).slice(0, TOKEN_DECIMALS);
+  const stroops = BigInt(whole || "0") * BigInt(SCALE) + BigInt(padded || "0");
+  return stroops.toString();
 }
 
-/** Format a stroop amount (number) as a whole-number USDC label, e.g. "100 USDC". */
-export function formatStroops(stroops: number): string {
-  return `${(stroops / SCALE).toFixed(0)} ${TOKEN_SYMBOL}`;
+/**
+ * Format a stroop amount as USDC with as many decimals as it actually needs,
+ * e.g. "137.42 USDC", "0.5 USDC", "100 USDC". Never rounds the value away: a
+ * note can hold any amount, and a balance displayed as "0 USDC" when it is
+ * really 0.4 would be actively misleading.
+ */
+export function formatAmount(stroops: string | number | bigint): string {
+  return `${formatAmountBare(stroops)} ${TOKEN_SYMBOL}`;
 }
 
-/** Like {@link formatStroops} but takes a string and renders "—" for zero. */
-export function formatStroopsOrDash(stroops: string): string {
-  const n = Number(stroops);
-  if (!n) return "—";
-  return `${(n / SCALE).toFixed(0)} ${TOKEN_SYMBOL}`;
+/** {@link formatAmount} without the token symbol. */
+export function formatAmountBare(stroops: string | number | bigint): string {
+  let value: bigint;
+  try {
+    value = BigInt(stroops);
+  } catch {
+    return "0";
+  }
+  const negative = value < BigInt(0);
+  if (negative) value = -value;
+  const whole = value / BigInt(SCALE);
+  const fraction = (value % BigInt(SCALE))
+    .toString()
+    .padStart(TOKEN_DECIMALS, "0")
+    .replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${fraction ? "." + fraction : ""}`;
 }
 
 /**

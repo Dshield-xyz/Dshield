@@ -6,28 +6,34 @@ import {
   buildContractCall,
   submitTransaction,
   queryContract,
-  getPoolTiers,
+  getPoolId,
   ensureUsdcTrustline,
   faucetUsdc,
   getUsdcSacId,
-  type PoolTier,
 } from "@/lib/stellar";
 import {
   saveNote,
   serializeNote,
   generateNoteLink,
   generateRandomField,
+  setNoteLeafIndex,
+  PENDING_LEAF_INDEX,
   type ShieldedNote,
 } from "@/lib/notes";
 import { saveDeposit } from "@/lib/deposits";
+import { fetchLeafIndex } from "@/lib/sync";
 import { computeCommitment } from "@/lib/poseidon2";
-import { TOKEN_DECIMALS, TOKEN_SYMBOL, formatStroops } from "@/lib/format";
+import {
+  TOKEN_SYMBOL,
+  formatAmount,
+  formatAmountBare,
+  usdcToStroops,
+} from "@/lib/format";
 import { friendlyError } from "@/lib/errors";
 import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { SelectButton } from "@/components/ui/SelectButton";
 import {
   CopyIcon,
   TelegramIcon,
@@ -37,23 +43,66 @@ import {
 import { useToast } from "@/components/ui/Toast";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
+// Largest value a single note may carry, matching the pool contract's
+// MAX_NOTE_AMOUNT (u64::MAX stroops). Anything above it would be rejected
+// on-chain, so it is caught here instead with an explanation.
+const MAX_NOTE_STROOPS = (BigInt(2) ** BigInt(64) - BigInt(1)).toString();
+
+/**
+ * Mints a fresh note worth `amountStroops`.
+ *
+ * The leaf index is left pending: which slot the deposit lands on isn't
+ * decided until it confirms, and any other deposit or withdrawal that gets
+ * there first takes it. Reading `get_next_index` beforehand only predicts it.
+ * The real index is read back from the pool afterwards, and a note carrying the
+ * wrong one is unspendable — its Merkle proof would be built against someone
+ * else's leaf.
+ *
+ * Lives at module scope, alongside the other non-render logic: it draws
+ * randomness and reads the clock, neither of which belongs in a component body.
+ */
+async function buildNote(
+  poolId: string,
+  amountStroops: string,
+): Promise<ShieldedNote> {
+  const nullifier = generateRandomField();
+  const secret = generateRandomField();
+  const commitment = await computeCommitment(nullifier, secret, amountStroops);
+  return {
+    nullifier,
+    secret,
+    commitment: commitment.replace(/^0x/, ""),
+    leafIndex: PENDING_LEAF_INDEX,
+    amount: amountStroops,
+    spent: false,
+    createdAt: Date.now(),
+    poolId,
+  };
+}
+
+/** Records a confirmed deposit in the local commitment cache. */
+function recordDeposit(note: ShieldedNote, leafIndex: number): void {
+  saveDeposit({
+    commitment: note.commitment,
+    leafIndex,
+    timestamp: Date.now(),
+    poolId: note.poolId!,
+  });
+}
+
 /**
  * Deposit confirmation modal. Defined at module scope rather than inside
  * DepositPage so its component type is stable across renders — a component
  * created during render is remounted on every parent update.
  */
 function ConfirmDeposit({
-  tierLabel,
-  noteCount,
-  tierAmount,
+  amountStroops,
   estimatedFee,
   isLoading,
   onCancel,
   onConfirm,
 }: {
-  tierLabel?: string;
-  noteCount: number;
-  tierAmount: number;
+  amountStroops: string;
   estimatedFee: string;
   isLoading: boolean;
   onCancel: () => void;
@@ -66,19 +115,15 @@ function ConfirmDeposit({
           Confirm Deposit
         </h2>
         <p className="text-sm text-zinc-400 mb-2">
-          Tier: <span className="font-medium text-zinc-200">{tierLabel}</span>
-        </p>
-        <p className="text-sm text-zinc-400 mb-2">
-          Total {TOKEN_SYMBOL}:{" "}
+          Shielding:{" "}
           <span className="font-medium text-zinc-200">
-            {(noteCount * tierAmount) / 10 ** TOKEN_DECIMALS} {TOKEN_SYMBOL}
-            {noteCount > 1 && ` (${noteCount} notes)`}
+            {formatAmount(amountStroops)}
           </span>
         </p>
         <p className="text-sm text-zinc-400 mb-4">
           Estimated fee:{" "}
           <span className="font-medium text-zinc-200">
-            {formatStroops(Number(estimatedFee))} XLM
+            {formatAmountBare(estimatedFee)} XLM
           </span>
         </p>
         <div className="flex gap-4 justify-end">
@@ -101,167 +146,114 @@ export default function DepositPage() {
   const [sessionNotes, setSessionNotes] = useState<ShieldedNote[]>([]);
   const [copiedKey, setCopiedKey] = useState<string>("");
   const [shareOpenKey, setShareOpenKey] = useState<string>("");
-  const [customAmount, setCustomAmount] = useState<string>("");
-  const [tiers] = useState<PoolTier[]>(() => getPoolTiers());
-  const [selectedTier, setSelectedTier] = useState<PoolTier | null>(() => {
-    const t = getPoolTiers();
-    return t.length > 0 ? t[0] : null;
-  });
+  const [amount, setAmount] = useState<string>("");
+  const poolId = getPoolId();
   // New UI state for confirmation step
   const [showConfirm, setShowConfirm] = useState(false);
   const [estimatedFee, setEstimatedFee] = useState<string>("");
   const [pendingTx, setPendingTx] = useState<StellarSdk.Transaction | null>(
     null,
   );
-  // Notes built during the deposit call, held until the user confirms and signs.
-  const pendingNotesRef = useRef<ShieldedNote[]>([]);
-  // Note count as of the moment the transaction was built. `totalNotes` is
-  // derived from `customAmount`, which handleDeposit clears before the user
-  // confirms, so the modal can't read it without showing the wrong total.
-  const [confirmNoteCount, setConfirmNoteCount] = useState(0);
+  // Note built during the deposit call, held until the user confirms and signs.
+  const pendingNoteRef = useRef<ShieldedNote | null>(null);
+  // Amount as of the moment the transaction was built. `amount` is cleared
+  // before the user confirms, so the modal can't read it directly.
+  const [confirmStroops, setConfirmStroops] = useState<string>("0");
 
-  const noteCount = (() => {
-    if (!customAmount || !selectedTier) return 1;
-    const usdc = parseFloat(customAmount);
-    if (isNaN(usdc) || usdc <= 0) return 0;
-    const tierUsdc = selectedTier.amount / 10 ** TOKEN_DECIMALS;
-    return Math.floor(usdc / tierUsdc);
-  })();
-
-  const totalNotes = customAmount ? noteCount : 1;
+  const amountStroops = usdcToStroops(amount);
+  const amountTooLarge = BigInt(amountStroops) > BigInt(MAX_NOTE_STROOPS);
+  const amountValid =
+    amount.trim() !== "" && BigInt(amountStroops) > BigInt(0) && !amountTooLarge;
 
   /**
-   * Build the transaction up to the point of signing, then store it for confirmation.
-   * This function performs all pre‑sign checks, constructs the Stellar transaction,
-   * extracts the fee, and presents a confirmation UI before the wallet is prompted.
+   * Build the transaction up to the point of signing, then store it for
+   * confirmation. This performs all pre-sign checks, constructs the Stellar
+   * transaction, extracts the fee, and presents a confirmation UI before the
+   * wallet is prompted.
    */
   async function handleDeposit() {
-    if (!address || !selectedTier || totalNotes <= 0) return;
+    if (!address || !poolId || !amountValid) return;
 
     setIsLoading(true);
     setSessionNotes([]);
-    const total = totalNotes;
+    const stroops = amountStroops;
 
     try {
-      // --- Pre‑sign setup (trustline, faucet) ---
+      // --- Pre-sign setup (trustline, faucet) ---
       const sac = getUsdcSacId();
       if (sac) {
         toast("Checking your USDC setup…");
         await ensureUsdcTrustline(address, signTransaction);
-        const needed = selectedTier.amount * total;
         const balVal = await queryContract(sac, "balance", [
           StellarSdk.nativeToScVal(address, { type: "address" }),
         ]);
         const balance = balVal
           ? BigInt(StellarSdk.scValToNative(balVal) as string | number)
           : BigInt(0);
-        if (balance < BigInt(needed)) {
+        if (balance < BigInt(stroops)) {
           toast("Topping up your wallet with test USDC…");
-          await faucetUsdc(address, BigInt(needed) * BigInt(2) - balance);
+          await faucetUsdc(address, BigInt(stroops) * BigInt(2) - balance);
         }
       }
 
-      // --- Prepare notes and commitments ---
-      // Generate every note's secrets and commitment up front. The leaf index
-      // each note will land on is read once from the chain (the next free slot)
-      // and assigned sequentially — exactly how the contract inserts them — so a
-      // single batched deposit yields the same indices as repeated deposits.
-      const nextIndexVal = await queryContract(
-        selectedTier.id,
-        "get_next_index",
-      );
-      const firstIndex = nextIndexVal
-        ? Number(StellarSdk.scValToNative(nextIndexVal))
-        : 0;
-
-      const pending: ShieldedNote[] = [];
-      for (let n = 0; n < total; n++) {
-        const nullifier = generateRandomField();
-        const secret = generateRandomField();
-        const commitment = await computeCommitment(nullifier, secret);
-        const commitmentClean = commitment.replace(/^0x/, "");
-        pending.push({
-          nullifier,
-          secret,
-          commitment: commitmentClean,
-          leafIndex: firstIndex + n,
-          amount: String(selectedTier.amount),
-          spent: false,
-          createdAt: Date.now(),
-          poolId: selectedTier.id,
-        });
-      }
-
-      const depositorScVal = StellarSdk.nativeToScVal(address, { type: "address" });
-      const commitmentScVals = pending.map((note) =>
-        StellarSdk.xdr.ScVal.scvBytes(Buffer.from(note.commitment, "hex")),
-      );
+      // --- Prepare the note ---
+      // The note's value is hashed into its commitment, so the amount passed to
+      // the contract and the amount inside the commitment have to be the same
+      // string. Both come from `stroops` for exactly that reason.
+      const note = await buildNote(poolId, stroops);
 
       // Build the transaction (no signing yet)
-      const tx =
-        total === 1
-          ? await buildContractCall(
-              selectedTier.id,
-              "deposit",
-              [depositorScVal, commitmentScVals[0]],
-              address,
-            )
-          : await buildContractCall(
-              selectedTier.id,
-              "deposit_batch",
-              [depositorScVal, StellarSdk.xdr.ScVal.scvVec(commitmentScVals)],
-              address,
-            );
+      const tx = await buildContractCall(
+        poolId,
+        "deposit",
+        [
+          StellarSdk.nativeToScVal(address, { type: "address" }),
+          StellarSdk.xdr.ScVal.scvBytes(Buffer.from(note.commitment, "hex")),
+          StellarSdk.nativeToScVal(BigInt(stroops), { type: "i128" }),
+        ],
+        address,
+      );
 
-      // Store fee and transaction for confirmation UI
       setEstimatedFee(tx.fee.toString());
       setPendingTx(tx);
-      // Keep pending notes for later processing after confirmation
-      pendingNotesRef.current = pending;
-
-      setConfirmNoteCount(total);
+      pendingNoteRef.current = note;
+      setConfirmStroops(stroops);
       setShowConfirm(true);
     } catch (err) {
       console.error("Deposit error:", err);
       toast(friendlyError(err), "error");
     } finally {
       setIsLoading(false);
-      setCustomAmount("");
+      setAmount("");
     }
   }
 
   /**
    * Called after the user confirms the deposit. Signs the stored transaction,
-   * submits it, and performs the existing post‑sign logic.
+   * submits it, and performs the existing post-sign logic.
    */
   async function signAndSubmit() {
-    if (!pendingTx || !address) return;
+    const note = pendingNoteRef.current;
+    if (!pendingTx || !address || !note) return;
     setIsLoading(true);
     try {
       const signedXdr = await signTransaction(pendingTx.toXDR());
       toast("Sending to the network…");
       await submitTransaction(signedXdr);
 
-      const pending: ShieldedNote[] = pendingNotesRef.current;
-      const created: ShieldedNote[] = [];
-      for (const note of pending) {
-        saveNote(note);
-        created.push(note);
-        saveDeposit({
-          commitment: note.commitment,
-          leafIndex: note.leafIndex,
-          timestamp: Date.now(),
-          poolId: selectedTier!.id,
-        });
+      // Store first, then settle the leaf index from the chain: the note is
+      // the only key to the funds, so it must exist locally before anything
+      // that can fail.
+      saveNote(note);
+      const leafIndex = await fetchLeafIndex(note);
+      if (leafIndex !== null) {
+        setNoteLeafIndex(note.commitment, leafIndex);
+        recordDeposit(note, leafIndex);
       }
-      setSessionNotes(created);
+      setSessionNotes([{ ...note, leafIndex: leafIndex ?? PENDING_LEAF_INDEX }]);
 
-      const total = pending.length;
-      const totalUsdc = (total * selectedTier!.amount) / 10 ** TOKEN_DECIMALS;
       toast(
-        total > 1
-          ? `${totalUsdc} ${TOKEN_SYMBOL} shielded across ${total} notes — save your notes below!`
-          : `${totalUsdc} ${TOKEN_SYMBOL} is now shielded — save your note below!`,
+        `${formatAmount(note.amount)} is now shielded — save your note below!`,
         "success",
       );
     } catch (err) {
@@ -271,7 +263,7 @@ export default function DepositPage() {
       setIsLoading(false);
       setShowConfirm(false);
       setPendingTx(null);
-      pendingNotesRef.current = [];
+      pendingNoteRef.current = null;
     }
   }
 
@@ -310,7 +302,7 @@ export default function DepositPage() {
     <PageShell>
       <PageHeader
         title="Deposit"
-        description="Move USDC into the shielded pool. You'll receive a private note — the only key to withdrawing your funds later. Nothing on-chain links the deposit to your identity or balance."
+        description="Move any amount of USDC into the shielded pool. You'll receive a private note — the only key to withdrawing those funds later. Nothing on-chain links the deposit to a later withdrawal."
       />
 
       <Card className="mt-8">
@@ -318,8 +310,8 @@ export default function DepositPage() {
           <h3 className="text-sm font-medium text-zinc-400">How it works</h3>
           <ol className="mt-3 space-y-2 text-sm text-zinc-500">
             <li>
-              1. Choose an amount — deposits use fixed sizes so they blend in
-              with everyone else&apos;s
+              1. Enter any amount — the pool holds notes of every size, so
+              there&apos;s nothing to round to
             </li>
             <li>
               2. Your {TOKEN_SYMBOL} moves into the shielded pool in one signed
@@ -329,93 +321,58 @@ export default function DepositPage() {
               3. You receive a private note, saved on this device — back it up
               right away
             </li>
+            <li>
+              4. Withdraw the whole note, or part of it — the remainder is
+              re-shielded into a fresh note you can spend from again
+            </li>
           </ol>
         </div>
 
-        {tiers.length > 1 && (
-          <div className="mb-4">
-            <legend className="mb-2 block text-xs text-zinc-500">
-              Select Denomination
-            </legend>
-            <fieldset className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-              {tiers.map((tier) => (
-                <SelectButton
-                  key={tier.id}
-                  selected={selectedTier?.id === tier.id}
-                  onClick={() => setSelectedTier(tier)}
-                  disabled={isLoading}
-                  className="text-center font-medium"
-                  aria-label={`${tier.label} denomination`}
-                >
-                  {tier.label}
-                </SelectButton>
-              ))}
-            </fieldset>
-          </div>
-        )}
-
-        {selectedTier && (
-          <div className="mb-4">
-            <Input
-              type="number"
-              label={`Amount (${TOKEN_SYMBOL})`}
-              mono
-              value={customAmount}
-              onChange={(e) => setCustomAmount(e.target.value)}
-              placeholder={String(selectedTier.amount / 10 ** TOKEN_DECIMALS)}
-              min={selectedTier.amount / 10 ** TOKEN_DECIMALS}
-              step={selectedTier.amount / 10 ** TOKEN_DECIMALS}
-              hint={(() => {
-                if (!customAmount) {
-                  return `Leave empty for a single ${formatStroops(selectedTier.amount)} deposit. Enter a larger amount to create multiple notes.`;
-                }
-                const usdc = parseFloat(customAmount);
-                const tierUsdc = selectedTier.amount / 10 ** TOKEN_DECIMALS;
-                if (isNaN(usdc) || usdc < tierUsdc) {
-                  return `Minimum: ${tierUsdc} ${TOKEN_SYMBOL}`;
-                }
-                const shielded = noteCount * tierUsdc;
-                const remainder = usdc - shielded;
-                return (
-                  <>
-                    Creates{" "}
-                    <span className="text-zinc-400">
-                      {noteCount} note{noteCount > 1 ? "s" : ""}
-                    </span>{" "}
-                    of {formatStroops(selectedTier.amount)} each
-                    {" = "}
-                    <span className="text-zinc-400">
-                      {shielded} {TOKEN_SYMBOL}
-                    </span>{" "}
-                    shielded
-                    {remainder > 0 && (
-                      <span className="text-yellow-500">
-                        {" "}
-                        ({remainder} {TOKEN_SYMBOL} remainder not shielded)
-                      </span>
-                    )}
-                  </>
-                );
-              })()}
-            />
-          </div>
-        )}
+        <div className="mb-4">
+          <Input
+            type="text"
+            inputMode="decimal"
+            label={`Amount (${TOKEN_SYMBOL})`}
+            mono
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder="0.00"
+            hint={(() => {
+              if (amount.trim() === "") {
+                return "Any amount. You can withdraw it in as many pieces as you like.";
+              }
+              if (amountTooLarge) {
+                return `Too large — a single note holds at most ${formatAmount(MAX_NOTE_STROOPS)}.`;
+              }
+              if (BigInt(amountStroops) <= BigInt(0)) {
+                return "Enter an amount greater than zero.";
+              }
+              return (
+                <>
+                  Shields{" "}
+                  <span className="text-zinc-400">
+                    {formatAmount(amountStroops)}
+                  </span>{" "}
+                  into one note.
+                </>
+              );
+            })()}
+          />
+        </div>
 
         <Button
           fullWidth
           size="lg"
           onClick={handleDeposit}
-          disabled={
-            isLoading || !selectedTier || (!!customAmount && noteCount <= 0)
-          }
+          disabled={isLoading || !poolId || !amountValid}
         >
           {isLoading
             ? "Processing..."
-            : selectedTier
-              ? customAmount && noteCount > 1
-                ? `Shield ${(noteCount * selectedTier.amount) / 10 ** TOKEN_DECIMALS} ${TOKEN_SYMBOL} (${noteCount} notes)`
-                : `Shield ${formatStroops(selectedTier.amount)}`
-              : "Select a denomination"}
+            : !poolId
+              ? "Pool not configured"
+              : amountValid
+                ? `Shield ${formatAmount(amountStroops)}`
+                : `Enter an amount`}
         </Button>
 
         {sessionNotes.length > 0 && (
@@ -458,7 +415,7 @@ export default function DepositPage() {
                       {sessionNotes.length > 1
                         ? ` ${i + 1}/${sessionNotes.length}`
                         : ""}{" "}
-                      · {formatStroops(Number(note.amount))}
+                      · {formatAmount(note.amount)}
                     </p>
                     <div className="flex items-center gap-3 shrink-0">
                       <button
@@ -578,17 +535,15 @@ export default function DepositPage() {
 
       {showConfirm && (
         <ConfirmDeposit
-          tierLabel={selectedTier?.label}
-          noteCount={confirmNoteCount}
-          tierAmount={selectedTier?.amount ?? 0}
+          amountStroops={confirmStroops}
           estimatedFee={estimatedFee}
           isLoading={isLoading}
           onCancel={() => {
-            // Discard the staged transaction and notes: nothing was signed or
+            // Discard the staged transaction and note: nothing was signed or
             // submitted, so these must not leak into a later confirmation.
             setShowConfirm(false);
             setPendingTx(null);
-            pendingNotesRef.current = [];
+            pendingNoteRef.current = null;
           }}
           onConfirm={signAndSubmit}
         />
