@@ -247,6 +247,9 @@ just demo-compliance  # compliant disclosure: register KYC -> ZK proof -> verify
 
 ## Security Model
 
+For a consolidated circuit-versus-contract analysis, trust-boundary diagram,
+and residual assumptions, see **[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)**.
+
 Three properties hold the system together (each enforced on-chain and covered by tests):
 
 1. **Hash consistency** — the contract's Poseidon2 (`soroban_poseidon`) produces byte-identical output to the Noir circuit and the frontend, so the on-chain Merkle root always matches the root the proof is generated against. Locked by `test_recipient_hash_matches_frontend`, `test_single_leaf_root_matches_circuit`.
