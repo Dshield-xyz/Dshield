@@ -86,7 +86,18 @@ pub fn main(
     let amount_u64 = constrain_u64(amount);
     assert(amount_u64 == disclosed_u64);
 
-    // Auditor-scoped binding, so a disclosure produced for one auditor cannot
-    // be replayed as though it were addressed to another.
-    let _disclosure_commitment = Poseidon2::hash([amount, auditor_key, nullifier], 3);
+    // `auditor_key` is a public input, which is enough on its own: a proof is
+    // bound to the exact public-input vector it was generated for, so it
+    // cannot be redirected to a different `auditor_key` after the fact. That
+    // guarantee comes from `auditor_key` being `pub`, not from this hash --
+    // the hash's result is never asserted against anything, so it adds no
+    // constraint. It exists only so `auditor_key` is referenced (otherwise
+    // Noir flags it as an unused parameter).
+    //
+    // What neither this nor `pub` gives you: any proof of `auditor_key`
+    // corresponding to an actually-registered auditor. There is no registry
+    // -- the compliance contract stores KYC hashes, pools, and a disclosure
+    // VK, and nothing else. A prover may set `auditor_key` to any Field
+    // value. See docs/THREAT_MODEL.md.
+    let _auditor_key_referenced = Poseidon2::hash([amount, auditor_key, nullifier], 3);
 }
