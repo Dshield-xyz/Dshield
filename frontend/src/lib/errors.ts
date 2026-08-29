@@ -26,6 +26,15 @@ export function friendlyError(err: unknown): string {
   if (lower.includes("timed out") || lower.includes("timeout"))
     return "The request timed out. The network may be busy — try again in a moment.";
 
+  if (lower.includes("kyc") || lower.includes("not allowed"))
+    return "The on-ramp could not verify your identity. Review its requirements or choose another payment method.";
+
+  if (lower.includes("expired") || lower.includes("refunded"))
+    return "Your on-ramp session expired or was refunded. No funds were shielded; please start again.";
+
+  if (lower.includes("sep-24") || lower.includes("on-ramp") || lower.includes("anchor"))
+    return "The fiat on-ramp is unavailable right now. Please try again shortly.";
+
   if (lower.includes("insufficient") && lower.includes("fund"))
     return "Insufficient funds — your wallet doesn't have enough USDC.";
 

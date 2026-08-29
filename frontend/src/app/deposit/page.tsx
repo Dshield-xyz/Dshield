@@ -30,6 +30,7 @@ import {
   usdcToStroops,
 } from "@/lib/format";
 import { friendlyError } from "@/lib/errors";
+import { createInteractiveDeposit, getSep24Transaction, SEP24_COMPLETE_STATUSES, SEP24_FAILURE_STATUSES } from "@/lib/sep24";
 import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -159,6 +160,9 @@ export default function DepositPage() {
   // Amount as of the moment the transaction was built. `amount` is cleared
   // before the user confirms, so the modal can't read it directly.
   const [confirmStroops, setConfirmStroops] = useState<string>("0");
+  const [onRampStatus, setOnRampStatus] = useState<string>("");
+  const onRampDomain = process.env.NEXT_PUBLIC_SEP24_HOME_DOMAIN || "";
+  const onRampAsset = process.env.NEXT_PUBLIC_SEP24_ASSET_CODE || TOKEN_SYMBOL;
 
   const amountStroops = usdcToStroops(amount);
   const amountTooLarge = BigInt(amountStroops) > BigInt(MAX_NOTE_STROOPS);
@@ -171,12 +175,13 @@ export default function DepositPage() {
    * transaction, extracts the fee, and presents a confirmation UI before the
    * wallet is prompted.
    */
-  async function handleDeposit() {
-    if (!address || !poolId || !amountValid) return;
+  async function handleDeposit(depositAmount = amount, skipTopUp = false) {
+    const depositStroops = usdcToStroops(depositAmount);
+    if (!address || !poolId || BigInt(depositStroops) <= BigInt(0)) return;
 
     setIsLoading(true);
     setSessionNotes([]);
-    const stroops = amountStroops;
+    const stroops = depositStroops;
 
     try {
       // --- Pre-sign setup (trustline, faucet) ---
@@ -190,6 +195,9 @@ export default function DepositPage() {
         const balance = balVal
           ? BigInt(StellarSdk.scValToNative(balVal) as string | number)
           : BigInt(0);
+        if (balance < BigInt(stroops) && skipTopUp) {
+          throw new Error("Insufficient funds after the on-ramp completed.");
+        }
         if (balance < BigInt(stroops)) {
           toast("Topping up your wallet with test USDC…");
           await faucetUsdc(address, BigInt(stroops) * BigInt(2) - balance);
@@ -225,6 +233,39 @@ export default function DepositPage() {
     } finally {
       setIsLoading(false);
       setAmount("");
+    }
+  }
+
+  async function startOnRamp() {
+    if (!address || !onRampDomain) return;
+    setIsLoading(true);
+    try {
+      setOnRampStatus("Opening secure on-ramp…");
+      const callbackUrl = `${window.location.origin}/api/sep24-callback`;
+      const session = await createInteractiveDeposit({ homeDomain: onRampDomain, assetCode: onRampAsset, account: address, callbackUrl });
+      window.open(session.url, "dshield-sep24", "noopener,noreferrer");
+      setOnRampStatus("Complete payment and verification in the on-ramp window. Waiting for funds…");
+      const poll = async () => {
+        try {
+          const transaction = await getSep24Transaction({ homeDomain: onRampDomain, id: session.id });
+          const status = transaction.status.toLowerCase();
+          if (SEP24_COMPLETE_STATUSES.has(status)) {
+            const received = transaction.amount_out ?? transaction.amount_in;
+            if (!received || Number(received) <= 0) throw new Error("The on-ramp completed without a usable deposit amount.");
+            setOnRampStatus("Funds received — preparing your shielded note…");
+            await handleDeposit(received, true);
+            setOnRampStatus("");
+            return;
+          }
+          if (SEP24_FAILURE_STATUSES.has(status)) throw new Error(`On-ramp deposit ${status}.`);
+          window.setTimeout(() => void poll(), 5000);
+        } catch (err) {
+          setOnRampStatus(""); setIsLoading(false); toast(friendlyError(err), "error");
+        }
+      };
+      window.setTimeout(() => void poll(), 3000);
+    } catch (err) {
+      setOnRampStatus(""); setIsLoading(false); toast(friendlyError(err), "error");
     }
   }
 
@@ -306,6 +347,15 @@ export default function DepositPage() {
       />
 
       <Card className="mt-8">
+        {onRampDomain && (
+          <div className="mb-6 rounded-xl border border-brand-500/30 bg-brand-500/5 p-4">
+            <h3 className="text-sm font-semibold text-zinc-200">New here? Buy &amp; shield</h3>
+            <p className="mt-1 text-sm text-zinc-400">Pay with fiat through our configured on-ramp, then sign one transaction to shield the {onRampAsset} delivered to this wallet.</p>
+            <p className="mt-2 text-xs text-zinc-500">The on-ramp is an independent provider: it handles payment and KYC, while DShield only creates your private note after funds reach your wallet.</p>
+            <Button className="mt-4" variant="outline" onClick={startOnRamp} disabled={isLoading}>Buy {onRampAsset} &amp; shield</Button>
+            {onRampStatus && <p className="mt-3 text-sm text-brand-300" role="status">{onRampStatus}</p>}
+          </div>
+        )}
         <div className="mb-6">
           <h3 className="text-sm font-medium text-zinc-400">How it works</h3>
           <ol className="mt-3 space-y-2 text-sm text-zinc-500">

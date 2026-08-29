@@ -6,6 +6,10 @@
 
 DShield is a consumer-grade shielded stablecoin wallet built on Stellar that enables private USDC payments using Zero-Knowledge Proofs (ZKPs).
 
+## Fiat onboarding (SEP-24)
+
+When `NEXT_PUBLIC_SEP24_HOME_DOMAIN` is configured, Deposit includes **Buy & shield**. It discovers the anchor through SEP-1, opens its SEP-24 interactive payment/KYC flow, polls its transaction status, and prepares the existing shield transaction after the asset reaches the connected wallet. The anchor is a separate trust boundary: it sees the fiat/KYC relationship and can reject or refund payments; DShield never receives that data and only shields funds already in the wallet.
+
 Users can send and receive funds without publicly exposing transaction amounts, balances, or payment history while retaining the ability to selectively disclose information when required for compliance, auditing, or regulatory reporting.
 
 Built for **Stellar Hacks: Real-World ZK**, DShield demonstrates how privacy and compliance can coexist in modern financial systems.
