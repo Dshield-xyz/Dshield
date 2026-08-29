@@ -53,6 +53,12 @@ function assertBytecodeLooksLikeAcir(artifact, circuit) {
 
 function assertAbi(artifact, spec) {
   const params = artifact.abi?.parameters ?? [];
+  for (const param of params) {
+    const kind = param.type?.kind === "array" ? param.type?.type?.kind : param.type?.kind;
+    if (kind !== "field") {
+      fail(`${spec.circuit}: ABI input ${param.name} must be a field or field array`);
+    }
+  }
   const byVisibility = (visibility) => params
     .filter((param) => param.visibility === visibility)
     .map((param) => param.name);
