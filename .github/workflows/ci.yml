@@ -130,10 +130,40 @@ jobs:
             circuits/compliance/target/vk
             circuits/disclosure/target/vk
 
+  formal-circuits:
+    name: Formal Circuit Checks
+    runs-on: ubuntu-latest
+    needs: [circuits]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Nargo
+        run: |
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
+          export PATH="$HOME/.nargo/bin:$PATH"
+          noirup -v 1.0.0-beta.9
+          nargo --version
+
+      - name: Compile circuits for formal checks
+        run: |
+          export PATH="$HOME/.nargo/bin:$PATH"
+          cd circuits/shielded_pool && nargo compile
+          cd ../compliance && nargo compile
+          cd ../disclosure && nargo compile
+          cd ../hasher && nargo compile
+
+      - name: Verify formal circuit specifications
+        run: bash scripts/verify-circuits.sh --self-test
+
   contracts:
     name: Contract Tests
     runs-on: ubuntu-latest
-    needs: [circuits]
+    needs: [circuits, formal-circuits]
     steps:
       - uses: actions/checkout@v4
 
@@ -260,7 +290,7 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: [contracts, circuits, frontend, lint]
+    needs: [contracts, circuits, formal-circuits, frontend, lint]
     steps:
       - uses: actions/checkout@v4
 
