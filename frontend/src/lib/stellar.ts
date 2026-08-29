@@ -146,6 +146,97 @@ export async function buildContractCall(
 export interface RelayResult {
   hash: string;
   relayer: string;
+  /** Relayer fee actually carved out of the payout, in the withdrawn asset. */
+  feeAmount?: string;
+}
+
+// The XLM SAC and Soroswap-compatible router the pool contract swaps a
+// carved-out relayer fee through (see contracts/pool/src/lib.rs
+// swap_fee_for_asset). Both are admin-configured on the pool via
+// set_dex_router; the frontend needs its own copies to source a quote before
+// the user signs, so the "effective fee" shown matches what the contract will
+// actually charge.
+export const XLM_SAC_ID = process.env.NEXT_PUBLIC_XLM_SAC_ID || "";
+export const DEX_ROUTER_ID = process.env.NEXT_PUBLIC_DEX_ROUTER_ID || "";
+
+// Basis points on top of the router's quoted output that the relayer accepts
+// as slippage before the on-chain swap reverts. Matches the leeway a relayer
+// (frontend/src/app/api/relay-withdraw/route.ts) is expected to allow between
+// quoting a fee and the withdrawal actually landing on-chain.
+const FEE_SLIPPAGE_BPS = 100; // 1%
+
+export interface FeeQuote {
+  /** Amount of the withdrawn asset the relayer fee will carve out. */
+  feeAmount: string;
+  /** Expected XLM the swap will yield for `feeAmount`, before slippage. */
+  expectedXlmOut: string;
+  /** Slippage floor to pass as `fee_min_out` to `withdraw`. */
+  minXlmOut: string;
+}
+
+/**
+ * Quotes what `feeAmount` of the withdrawn asset is currently worth in XLM,
+ * via the same DEX router the pool contract swaps through. Returns `null`
+ * when no router/fee-asset is configured, so callers can fall back to "no fee
+ * abstraction available" rather than showing a broken quote.
+ *
+ * This is a read-only simulation (get_amounts_out), not a real swap -- the
+ * actual conversion happens on-chain inside `withdraw` itself, using
+ * `minXlmOut` from this quote as the slippage floor the relayer commits to
+ * showing the user before they sign (see acceptance criteria on issue #149).
+ */
+export async function quoteFeeSwap(
+  tokenId: string,
+  feeAmount: string,
+): Promise<FeeQuote | null> {
+  if (!DEX_ROUTER_ID || !XLM_SAC_ID) return null;
+  if (BigInt(feeAmount) <= BigInt(0)) return null;
+
+  const path = [
+    StellarSdk.nativeToScVal(tokenId, { type: "address" }),
+    StellarSdk.nativeToScVal(XLM_SAC_ID, { type: "address" }),
+  ];
+  const result = await queryContract(DEX_ROUTER_ID, "get_amounts_out", [
+    StellarSdk.nativeToScVal(BigInt(feeAmount), { type: "i128" }),
+    StellarSdk.xdr.ScVal.scvVec(path),
+  ]);
+  if (!result) return null;
+
+  const amounts = StellarSdk.scValToNative(result) as bigint[];
+  const expectedXlmOut = amounts[amounts.length - 1];
+  if (expectedXlmOut === undefined) return null;
+
+  const minXlmOut =
+    (expectedXlmOut * BigInt(10_000 - FEE_SLIPPAGE_BPS)) / BigInt(10_000);
+
+  return {
+    feeAmount,
+    expectedXlmOut: expectedXlmOut.toString(),
+    minXlmOut: minXlmOut.toString(),
+  };
+}
+
+/**
+ * Pre-flight version of the fee quote, run from the browser before the user
+ * signs anything (see acceptance criteria on issue #149: "the effective fee
+ * paid is shown to the user before they sign"). Goes through the server route
+ * rather than calling `quoteFeeSwap` directly so it reflects the exact
+ * config (router, fee asset, flat fee amount) `relay-withdraw` will use.
+ */
+export async function fetchWithdrawFeeQuote(poolId: string): Promise<FeeQuote> {
+  const fallback: FeeQuote = { feeAmount: "0", expectedXlmOut: "0", minXlmOut: "0" };
+  try {
+    const res = await fetch("/api/relay-withdraw-quote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ poolId }),
+    });
+    if (!res.ok) return fallback;
+    const body = (await res.json().catch(() => null)) as FeeQuote | null;
+    return body ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /**
@@ -170,11 +261,12 @@ export async function relayWithdrawal(params: {
     error?: string;
     hash?: string;
     relayer?: string;
+    feeAmount?: string;
   };
   if (!res.ok) {
     throw new Error(body.error || `Relayed withdrawal failed (${res.status})`);
   }
-  return { hash: body.hash!, relayer: body.relayer! };
+  return { hash: body.hash!, relayer: body.relayer!, feeAmount: body.feeAmount };
 }
 
 export async function submitTransaction(signedXdr: string): Promise<string> {
