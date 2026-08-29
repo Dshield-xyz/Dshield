@@ -18,6 +18,12 @@ export interface ShieldedNote {
   spent: boolean;
   createdAt: number;
   poolId?: string;
+  /**
+   * Circuit version this note was minted under. Used to retrieve the correct
+   * historical VK and circuit for re-proving the note in later withdrawals.
+   * Defaults to 1 for backward compatibility with notes created before versioning.
+   */
+  version: number;
 }
 
 /** Sentinel for a note whose leaf index has not been resolved yet. */
