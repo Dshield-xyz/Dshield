@@ -78,6 +78,12 @@ function assertAbi(artifact, spec) {
   for (const name of privateNames) {
     if (!spec.abi.private.includes(name)) fail(`${spec.circuit}: unexpected private ABI input ${name}`);
   }
+  for (const [name, length] of Object.entries(spec.abi.arrays ?? {})) {
+    const param = params.find((candidate) => candidate.name === name);
+    if (param?.type?.kind !== "array" || param.type.length !== length) {
+      fail(`${spec.circuit}: ABI input ${name} must be a field array of length ${length}`);
+    }
+  }
   const returnType = artifact.abi?.return_type;
   if (
     spec.abi.public.includes("return")
