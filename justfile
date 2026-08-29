@@ -252,6 +252,10 @@ test-frontend:
 # Run all unit tests
 test: test-contracts test-frontend
 
+# Run the formal/symbolic circuit specification harness
+verify-circuits:
+    node scripts/verify-circuits.mjs --self-test
+
 # Run E2E integration tests
 test-e2e:
     ./tests/e2e.sh
