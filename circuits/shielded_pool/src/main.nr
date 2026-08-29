@@ -6,6 +6,33 @@ global TREE_DEPTH: u32 = 20;
 global LEAF_DOMAIN: Field = 0x4c454146; // "LEAF" in hex (right-aligned)
 global NULLIFIER_DOMAIN: Field = 0x4e554c4c; // "NULLIFIER" in hex (right-aligned to 4 bytes)
 
+// ──────────────────────────────────────────────────────────────────────────
+// VERSIONING CONVENTION
+// ──────────────────────────────────────────────────────────────────────────
+//
+// This circuit version is BACKWARD COMPATIBLE v1. When changes are made:
+//
+// COMPATIBLE VERSION (same version tag, increment in contracts if needed):
+// - Adding additional constraints that don't change the leaf hash formula
+// - Changing non-committed public inputs
+// - Optimizing existing constraints
+// - Adding new optional checks that old leaves still satisfy
+//
+// INCOMPATIBLE VERSION (new version tag, requires migration):
+// - Changing the hash_leaf function (structure or domain tags)
+// - Changing committed field count/order (nullifier, secret, amount)
+// - Changing tree depth (affects all proofs)
+// - Changing any domain separation tag used in hash_leaf or hash_nullifier
+//
+// When creating a new version:
+// 1. Increment the version number in contracts/pool/src/lib.rs (CURRENT_CIRCUIT_VERSION)
+// 2. Register the new VK via verifier::set_vk_for_version (version, vk_bytes)
+// 3. Keep old VK registered—old notes must remain provable
+// 4. Frontend: check note.version and use corresponding circuit
+// 5. Pool: verify proofs against the note's stored version via verifier::verify_proof_for_version
+//
+global CIRCUIT_VERSION: u32 = 1;
+
 fn hash2(a: Field, b: Field) -> Field {
     Poseidon2::hash([a, b], 2)
 }
