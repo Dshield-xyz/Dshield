@@ -109,6 +109,13 @@ function verifyChecks(spec, source) {
 
 function validateSpec(spec) {
   if (!spec.circuit) fail("spec is missing circuit");
+  if (!spec.source_path) fail(`${spec.circuit}: spec is missing source_path`);
+  if (!Array.isArray(spec.artifact_candidates) || spec.artifact_candidates.length === 0) {
+    fail(`${spec.circuit}: spec must declare artifact_candidates`);
+  }
+  if (!Array.isArray(spec.abi?.public) || !Array.isArray(spec.abi?.private)) {
+    fail(`${spec.circuit}: spec must declare abi.public and abi.private`);
+  }
   if (!Array.isArray(spec.properties) || spec.properties.length === 0) {
     fail(`${spec.circuit}: spec must declare at least one property`);
   }
