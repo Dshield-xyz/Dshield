@@ -1,0 +1,178 @@
+#!/usr/bin/env node
+import { gunzipSync } from "node:zlib";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "..");
+const defaultSpecDir = path.join(repoRoot, "circuits", "formal", "specs");
+
+const args = new Set(process.argv.slice(2));
+const selfTest = args.has("--self-test");
+
+function fail(message) {
+  throw new Error(message);
+}
+
+function readJson(file) {
+  return JSON.parse(readFileSync(file, "utf8"));
+}
+
+function rel(file) {
+  return path.relative(repoRoot, file).replaceAll(path.sep, "/");
+}
+
+function compact(source) {
+  return source
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\s+/g, "");
+}
+
+function sourceEntryFor(artifact, spec) {
+  const entries = Object.values(artifact.file_map ?? {});
+  const suffix = spec.source_path.replaceAll("\\", "/");
+  return entries.find((entry) => entry.path?.replaceAll("\\", "/").endsWith(suffix))
+    ?? entries.find((entry) => entry.path?.replaceAll("\\", "/").includes(`/circuits/${spec.circuit}/src/main.nr`));
+}
+
+function assertBytecodeLooksLikeAcir(artifact, circuit) {
+  if (typeof artifact.bytecode !== "string" || artifact.bytecode.length === 0) {
+    fail(`${circuit}: missing compiled ACIR bytecode`);
+  }
+  const decoded = gunzipSync(Buffer.from(artifact.bytecode, "base64"));
+  if (decoded.length < 64) {
+    fail(`${circuit}: compiled ACIR bytecode is unexpectedly small`);
+  }
+  if (!artifact.noir_version || !artifact.hash) {
+    fail(`${circuit}: artifact must include noir_version and hash metadata`);
+  }
+}
+
+function assertAbi(artifact, spec) {
+  const params = artifact.abi?.parameters ?? [];
+  const byVisibility = (visibility) => params
+    .filter((param) => param.visibility === visibility)
+    .map((param) => param.name);
+  const publicNames = byVisibility("public");
+  const privateNames = byVisibility("private");
+
+  const expectedPublic = spec.abi.public.filter((name) => name !== "return");
+  for (const name of expectedPublic) {
+    if (!publicNames.includes(name)) fail(`${spec.circuit}: missing public ABI input ${name}`);
+  }
+  for (const name of spec.abi.private) {
+    if (!privateNames.includes(name)) fail(`${spec.circuit}: missing private ABI input ${name}`);
+  }
+  const returnType = artifact.abi?.return_type;
+  if (
+    spec.abi.public.includes("return")
+    && (returnType?.visibility !== "public" || returnType?.abi_type?.kind !== "field")
+  ) {
+    fail(`${spec.circuit}: expected a public field return value`);
+  }
+}
+
+const checkers = {
+  "u64-round-trip-range": (s) => s.includes("fnconstrain_u64(v:Field)->u64{letnarrowed=vasu64;assert(narrowedasField==v);narrowed}"),
+  "withdraw-amount-u64-witness": (s) => s.includes("letwithdraw_u64=constrain_u64(withdraw_amount);"),
+  "amount-u64-witness": (s) => s.includes("letamount_u64=constrain_u64(amount);"),
+  "withdraw-lte-amount": (s) => s.includes("assert(withdraw_u64<=amount_u64);"),
+  "change-is-amount-minus-withdraw": (s) => s.includes("letchange=amount-withdraw_amount;"),
+  "change-commitment-uses-change": (s) => s.includes("letexpected_change=hash_leaf(change_nullifier,change_secret,change);") && s.includes("assert(expected_change==change_commitment);"),
+  "hash-leaf-includes-amount": (s) => s.includes("fnhash_leaf(nullifier:Field,secret:Field,amount:Field)->Field{hash2(hash2(hash2(LEAF_DOMAIN,nullifier),secret),amount)}"),
+  "spent-leaf-uses-amount": (s) => s.includes("letleaf=hash_leaf(nullifier,secret,amount);"),
+  "computed-root-asserted": (s) => (s.includes("letcomputed_root=compute_root(leaf,path_siblings,path_bits);") || s.includes("letcomputed_root=compute_root(leaf,path_siblings,path_bits);")) && (s.includes("assert(computed_root==root);") || s.includes("assert(computed_root==merkle_root);")),
+  "nullifier-hash-asserted": (s) => s.includes("letnf=hash_nullifier(nullifier);") && s.includes("assert(nf==nullifier_hash);"),
+  "kyc-hash-asserted": (s) => s.includes("letcomputed_kyc=hash_kyc(kyc_preimage);") && s.includes("assert(computed_kyc==kyc_hash);"),
+  "disclosed-amount-u64-witness": (s) => s.includes("letdisclosed_u64=constrain_u64(disclosed_amount);"),
+  "threshold-u64-witness": (s) => s.includes("letthreshold_u64=constrain_u64(threshold);"),
+  "amount-equals-disclosed": (s) => s.includes("assert(amount_u64==disclosed_u64);"),
+  "amount-gte-threshold": (s) => s.includes("assert(amount_u64>=threshold_u64);"),
+  "hasher-poseidon2-two-input": (s) => s.includes("pubfnmain(a:Field,b:Field)->pubField{Poseidon2::hash([a,b],2)}")
+};
+
+function verifyChecks(spec, source) {
+  const normalized = compact(source);
+  for (const property of spec.properties) {
+    for (const check of property.checks) {
+      const checker = checkers[check];
+      if (!checker) fail(`${spec.circuit}: unknown formal check ${check}`);
+      if (!checker(normalized)) {
+        fail(`${spec.circuit}: property ${property.id} failed check ${check}`);
+      }
+    }
+  }
+}
+
+function verifySpec(spec, overrideArtifact = null) {
+  const candidates = spec.artifact_candidates.map((candidate) => path.join(repoRoot, candidate));
+  const artifactPath = candidates.find((candidate) => existsSync(candidate));
+  if (!artifactPath && !overrideArtifact) {
+    fail(`${spec.circuit}: no compiled artifact found in ${spec.artifact_candidates.join(", ")}`);
+  }
+
+  const artifact = overrideArtifact ?? readJson(artifactPath);
+  assertBytecodeLooksLikeAcir(artifact, spec.circuit);
+  assertAbi(artifact, spec);
+
+  const entry = sourceEntryFor(artifact, spec);
+  if (!entry?.source) {
+    fail(`${spec.circuit}: compiled artifact does not include ${spec.source_path} in file_map`);
+  }
+
+  const sourcePath = path.join(repoRoot, spec.source_path);
+  if (existsSync(sourcePath)) {
+    const currentSource = readFileSync(sourcePath, "utf8");
+    if (compact(currentSource) !== compact(entry.source)) {
+      const artifactRel = artifactPath ? rel(artifactPath) : "";
+      if (!artifactRel.startsWith("frontend/src/circuits/")) {
+        fail(`${spec.circuit}: compiled artifact source differs from ${spec.source_path}; re-run nargo compile`);
+      }
+      console.warn(`${spec.circuit}: warning: ${artifactRel} is stale relative to ${spec.source_path}; CI verifies freshly compiled target artifacts`);
+    }
+  }
+
+  verifyChecks(spec, entry.source);
+  return `${spec.circuit}: verified ${spec.properties.map((property) => property.id).join(", ")} using ${artifactPath ? rel(artifactPath) : "mutated artifact"}`;
+}
+
+function loadSpecs() {
+  return readdirSync(defaultSpecDir)
+    .filter((file) => file.endsWith(".json"))
+    .sort()
+    .map((file) => readJson(path.join(defaultSpecDir, file)));
+}
+
+function runSelfTest(specs) {
+  const shieldedPool = specs.find((spec) => spec.circuit === "shielded_pool");
+  if (!shieldedPool) fail("self-test: shielded_pool spec is missing");
+  const artifactPath = shieldedPool.artifact_candidates
+    .map((candidate) => path.join(repoRoot, candidate))
+    .find((candidate) => existsSync(candidate));
+  if (!artifactPath) fail("self-test: no shielded_pool artifact available");
+
+  const mutant = structuredClone(readJson(artifactPath));
+  const entry = sourceEntryFor(mutant, shieldedPool);
+  entry.source = entry.source
+    .replace("assert(withdraw_u64 <= amount_u64);", "assert(withdraw_u64 <= withdraw_u64);")
+    .replace("let change = amount - withdraw_amount;", "let change = amount;");
+
+  try {
+    verifySpec(shieldedPool, mutant);
+  } catch (error) {
+    return `self-test: mutation rejected (${error.message})`;
+  }
+  fail("self-test: value-conservation mutation was accepted");
+}
+
+try {
+  const specs = loadSpecs();
+  const results = specs.map((spec) => verifySpec(spec));
+  if (selfTest) results.push(runSelfTest(specs));
+  for (const result of results) console.log(result);
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
