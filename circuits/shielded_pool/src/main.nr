@@ -27,7 +27,7 @@ global NULLIFIER_DOMAIN: Field = 0x4e554c4c; // "NULLIFIER" in hex (right-aligne
 // When creating a new version:
 // 1. Increment the version number in contracts/pool/src/lib.rs (CURRENT_CIRCUIT_VERSION)
 // 2. Register the new VK via verifier::set_vk_for_version (version, vk_bytes)
-// 3. Keep old VK registered—old notes must remain provable
+// 3. Keep old VK registered - old notes must remain provable
 // 4. Frontend: check note.version and use corresponding circuit
 // 5. Pool: verify proofs against the note's stored version via verifier::verify_proof_for_version
 //
