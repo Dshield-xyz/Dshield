@@ -21,7 +21,11 @@
       "change_secret",
       "path_siblings",
       "path_bits"
-    ]
+    ],
+    "arrays": {
+      "path_siblings": 20,
+      "path_bits": 20
+    }
   },
   "properties": [
     {
