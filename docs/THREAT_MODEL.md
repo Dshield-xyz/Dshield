@@ -4,6 +4,12 @@ This document separates properties enforced by DShield's Noir circuits from
 properties enforced by Soroban contracts and from operational assumptions. It
 describes the current variable-amount note design.
 
+The formal/symbolic CI harness in
+[FORMAL_VERIFICATION.md](FORMAL_VERIFICATION.md) checks the named circuit
+relations below against compiled Nargo artifacts. Its coverage is intentionally
+limited; it is a guardrail for invariant drift, not a substitute for an
+external audit.
+
 ## Security boundaries
 
 | Component | Enforced properties | External assumptions |
