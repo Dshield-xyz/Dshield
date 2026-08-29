@@ -1,0 +1,30 @@
+{
+  "name": "@dshield/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Command-line client for DShield — script deposits, withdrawals, note management and compliance reports without a browser.",
+  "bin": {
+    "dshield": "./bin/dshield.mjs"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "dshield": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dshield/core": "workspace:*",
+    "@stellar/stellar-sdk": "^16.0.1",
+    "commander": "^12.1.0",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5",
+    "vitest": "^4.1.9"
+  }
+}

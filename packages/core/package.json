@@ -1,0 +1,31 @@
+{
+  "name": "@dshield/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared DShield note, commitment, Merkle and proof logic (isomorphic: browser + Node).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./poseidon2": "./src/poseidon2.ts",
+    "./notes": "./src/notes.ts",
+    "./format": "./src/format.ts",
+    "./prover": "./src/prover.ts",
+    "./prover-core": "./src/prover-core.ts",
+    "./report": "./src/report.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aztec/bb.js": "0.87.0",
+    "@noir-lang/noir_js": "1.0.0-beta.9",
+    "@stellar/stellar-sdk": "^16.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5",
+    "vitest": "^4.1.9"
+  }
+}
