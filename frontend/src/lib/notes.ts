@@ -23,7 +23,7 @@ export interface ShieldedNote {
    * historical VK and circuit for re-proving the note in later withdrawals.
    * Defaults to 1 for backward compatibility with notes created before versioning.
    */
-  version: number;
+  version?: number;
 }
 
 /** Sentinel for a note whose leaf index has not been resolved yet. */

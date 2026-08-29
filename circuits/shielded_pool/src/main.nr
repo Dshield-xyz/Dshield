@@ -6,9 +6,9 @@ global TREE_DEPTH: u32 = 20;
 global LEAF_DOMAIN: Field = 0x4c454146; // "LEAF" in hex (right-aligned)
 global NULLIFIER_DOMAIN: Field = 0x4e554c4c; // "NULLIFIER" in hex (right-aligned to 4 bytes)
 
-// ──────────────────────────────────────────────────────────────────────────
+// ============================================================================
 // VERSIONING CONVENTION
-// ──────────────────────────────────────────────────────────────────────────
+// ============================================================================
 //
 // This circuit version is BACKWARD COMPATIBLE v1. When changes are made:
 //
@@ -31,7 +31,6 @@ global NULLIFIER_DOMAIN: Field = 0x4e554c4c; // "NULLIFIER" in hex (right-aligne
 // 4. Frontend: check note.version and use corresponding circuit
 // 5. Pool: verify proofs against the note's stored version via verifier::verify_proof_for_version
 //
-global CIRCUIT_VERSION: u32 = 1;
 
 fn hash2(a: Field, b: Field) -> Field {
     Poseidon2::hash([a, b], 2)
