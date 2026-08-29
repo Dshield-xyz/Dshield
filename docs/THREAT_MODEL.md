@@ -12,7 +12,8 @@ describes the current variable-amount note design.
 | Pool contract | Known-root check, nullifier uniqueness, recipient-address binding, proof verification, change insertion, and token transfer. | The configured verifier and token are trusted deployments. A relayer can censor or delay, but cannot redirect a valid withdrawal. |
 | `compliance` circuit | KYC-preimage knowledge, note ownership, equality of the disclosed and committed amounts, and 64-bit range. | KYC eligibility is an administrative policy decision. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
 | `disclosure` circuit | KYC and note ownership plus `amount >= threshold`, without revealing the note amount. | The threshold's legal meaning is external policy. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
-| Compliance contract | Registered-KYC and approved-pool-root checks, proof verification, and administrator authorization for registry, pool, and key changes. | The administrator is trusted to register correct hashes, pools, and verification keys. |
+| `view_disclosure` circuit | Knowledge of the `secret` behind a public `view_key`, and that the note it opens (with a private `nullifier`) is worth the disclosed public `amount` and a member of `merkle_root`. Never takes or outputs `nullifier` as a public value -- see [Viewing-key separation](#viewing-key-separation). | The recipient of `view_key` is trusted by the note holder to hold it as intended; nothing on-chain constrains who may be handed a viewing key. |
+| Compliance contract | Registered-KYC and approved-pool-root checks, proof verification, and administrator authorization for registry, pool, and key changes. `verify_view_disclosure` is the one verification entrypoint that does not gate on KYC -- a viewing key is a delegation, not a regulatory attestation. | The administrator is trusted to register correct hashes, pools, and verification keys. |
 | `hasher` circuit | One two-input Poseidon2 hash. | Domain separation and structure must be supplied correctly by callers. |
 
 ## Trust and data flow
@@ -92,6 +93,42 @@ auditor key nobody controls, and nothing on-chain distinguishes a real
 auditor's key from an arbitrary one. Treat `auditor_key` as an opaque tag
 carried through the system, not as an access-control mechanism.
 
+## Viewing-key separation
+
+Every note has a spend-capable secret pair, `(nullifier, secret)`, and a
+viewing key, `view_key = H(H(VIEW_DOMAIN, secret), 0)`, derived from `secret`
+alone (`frontend/src/lib/poseidon2.ts`'s `computeViewKey`, matching the
+`view_disclosure` circuit's `hash_view_key`). This is a deliberate asymmetry:
+
+- **What a viewing key exposes.** Handed to a third party (an auditor, a
+  bookkeeper, a co-signer) out of band, `view_key` lets that party confirm a
+  future `view_disclosure` proof concerns the note it was derived from, and
+  read the `amount` that proof discloses. It is a pure function of `secret`
+  and nothing else.
+- **What it cannot do.** `view_key` does not determine, and cannot be
+  inverted to recover, `nullifier` -- the two are independent random field
+  elements with no algebraic relationship. The `view_disclosure` circuit takes
+  `nullifier` only as a private witness to reconstruct the note's leaf for the
+  Merkle-membership check; it is never a public input, never output, and never
+  constrained against `view_key`, `amount`, or anything else public. A
+  verifier who receives a `view_disclosure` proof, its public inputs
+  (`merkle_root`, `view_key`, `amount`), and `view_key` itself therefore has no
+  public artifact from which to derive `nullifier`, and so no path to a valid
+  `shielded_pool` withdrawal proof, which requires `nullifier` as a witness.
+  `contracts/compliance/src/tests::test_view_disclosure_public_inputs_are_exactly_root_viewkey_amount`
+  pins the public-input schema to exactly those three fields, and
+  `frontend/src/lib/notes.test.ts`'s `deriveViewingKey` suite and
+  `frontend/src/lib/poseidon2.test.ts`'s `computeViewKey` suite assert the
+  derivation is a pure, nullifier-independent function of `secret`.
+- **What a viewing key is not.** It is not a compliance attestation -- unlike
+  `compliance`/`disclosure`, `verify_view_disclosure` does not check KYC
+  registration, because sharing read access with a bookkeeper or co-signer is
+  not a claim about the sharer's regulatory status. It is also not an access
+  grant enforced on-chain: nothing prevents a note holder from generating a
+  `view_disclosure` proof for a `view_key` they invented and never shared with
+  anyone, the same caveat [Auditor-key binding](#auditor-key-binding) already
+  notes for `auditor_key`.
+
 ## Nullifiers and replay protection
 
 The circuit proves that the public nullifier hash derives from the private
@@ -125,6 +162,17 @@ successful spend. All withdrawals must use the same authoritative pool state.
 - Does not establish the policy meaning of KYC status or the threshold.
 - Same unchecked `auditor_key` as compliance.
 
+### View disclosure
+
+- Binds the prover's `secret` to the public `view_key`.
+- Proves note membership and that the disclosed `amount` equals its committed
+  value, using `nullifier` only as a private witness -- see
+  [Viewing-key separation](#viewing-key-separation).
+- Not gated on KYC: a viewing key is a delegation to view, not a regulatory
+  attestation.
+- Carries the same "no registry" caveat as `auditor_key`: nothing on-chain
+  confirms `view_key` was actually shared with its intended recipient.
+
 ### Hasher
 
 The hasher is a compatibility primitive. Security properties such as domain
@@ -142,6 +190,9 @@ separation and note structure come from how callers chain its hashes.
   not a design assumption, in issue #63.
 - No registry constrains `auditor_key` to real auditors -- see
   [Auditor-key binding](#auditor-key-binding).
+- Users protect and retain their note secrets, and now also any viewing keys
+  they derive and the recipients they share them with -- see
+  [Viewing-key separation](#viewing-key-separation).
 - Frontend and relayer software encode public inputs exactly as contracts expect.
 - Public token transfers reveal deposit and withdrawal amounts and addresses;
   privacy breaks the link between them rather than hiding either event.
