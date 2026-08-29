@@ -66,6 +66,12 @@ function assertAbi(artifact, spec) {
   for (const name of spec.abi.private) {
     if (!privateNames.includes(name)) fail(`${spec.circuit}: missing private ABI input ${name}`);
   }
+  for (const name of publicNames) {
+    if (!expectedPublic.includes(name)) fail(`${spec.circuit}: unexpected public ABI input ${name}`);
+  }
+  for (const name of privateNames) {
+    if (!spec.abi.private.includes(name)) fail(`${spec.circuit}: unexpected private ABI input ${name}`);
+  }
   const returnType = artifact.abi?.return_type;
   if (
     spec.abi.public.includes("return")
