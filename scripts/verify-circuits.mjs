@@ -151,7 +151,9 @@ function verifySpec(spec, overrideArtifact = null) {
       if (!artifactRel.startsWith("frontend/src/circuits/")) {
         fail(`${spec.circuit}: compiled artifact source differs from ${spec.source_path}; re-run nargo compile`);
       }
-      console.warn(`${spec.circuit}: warning: ${artifactRel} is stale relative to ${spec.source_path}; CI verifies freshly compiled target artifacts`);
+      if (!overrideArtifact) {
+        console.warn(`${spec.circuit}: warning: ${artifactRel} is stale relative to ${spec.source_path}; CI verifies freshly compiled target artifacts`);
+      }
     }
   }
 
@@ -174,18 +176,37 @@ function runSelfTest(specs) {
     .find((candidate) => existsSync(candidate));
   if (!artifactPath) fail("self-test: no shielded_pool artifact available");
 
-  const mutant = structuredClone(readJson(artifactPath));
-  const entry = sourceEntryFor(mutant, shieldedPool);
-  entry.source = entry.source
-    .replace("assert(withdraw_u64 <= amount_u64);", "assert(withdraw_u64 <= withdraw_u64);")
-    .replace("let change = amount - withdraw_amount;", "let change = amount;");
+  const mutations = [
+    {
+      name: "withdraw comparison",
+      from: "assert(withdraw_u64 <= amount_u64);",
+      to: "assert(withdraw_u64 <= withdraw_u64);"
+    },
+    {
+      name: "change arithmetic",
+      from: "let change = amount - withdraw_amount;",
+      to: "let change = amount;"
+    }
+  ];
 
-  try {
-    verifySpec(shieldedPool, mutant);
-  } catch (error) {
-    return `self-test: mutation rejected (${error.message})`;
+  const rejected = [];
+  for (const mutation of mutations) {
+    const mutant = structuredClone(readJson(artifactPath));
+    const entry = sourceEntryFor(mutant, shieldedPool);
+    entry.source = entry.source.replace(mutation.from, mutation.to);
+    if (!entry.source.includes(mutation.to)) {
+      fail(`self-test: could not apply ${mutation.name} mutation`);
+    }
+
+    try {
+      verifySpec(shieldedPool, mutant);
+    } catch (error) {
+      rejected.push(`${mutation.name} (${error.message})`);
+      continue;
+    }
+    fail(`self-test: ${mutation.name} mutation was accepted`);
   }
-  fail("self-test: value-conservation mutation was accepted");
+  return `self-test: mutations rejected: ${rejected.join("; ")}`;
 }
 
 try {
