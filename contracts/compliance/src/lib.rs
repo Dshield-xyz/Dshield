@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, symbol_short, Address, Bytes, BytesN,
-    Env, InvokeError, IntoVal, Symbol, Val, Vec as SorobanVec,
+    Env, IntoVal, InvokeError, Symbol, Val, Vec as SorobanVec,
 };
 use ultrahonk_soroban_verifier::{UltraHonkVerifier, VkLoadError, PROOF_BYTES};
 
@@ -60,7 +60,6 @@ fn root_belongs_to_pool(env: &Env, pools: &SorobanVec<Address>, root: &BytesN<32
     }
     false
 }
-
 
 /// Decodes a 32-byte public-input field element back to u128, rejecting any
 /// value that doesn't fit (top 16 bytes must be zero) rather than silently
@@ -354,10 +353,7 @@ impl ComplianceContract {
             .instance()
             .set(&Self::key_disclosure_vk(), &vk_bytes);
 
-        DisclosureVkUpdatedEvent {
-            updated_by: &admin,
-        }
-        .publish(&env);
+        DisclosureVkUpdatedEvent { updated_by: &admin }.publish(&env);
 
         Ok(())
     }
@@ -469,7 +465,11 @@ mod tests {
         let admin = <Address as TestAddress>::generate(env);
         let contract_id: Address = env.register(
             ComplianceContract,
-            (vk_bytes(env), admin.clone(), SorobanVec::<Address>::new(env)),
+            (
+                vk_bytes(env),
+                admin.clone(),
+                SorobanVec::<Address>::new(env),
+            ),
         );
         (contract_id, admin)
     }
@@ -483,9 +483,7 @@ mod tests {
         let env = Env::default();
         let (contract_id, _admin) = setup(&env);
         assert!(env.as_contract(&contract_id, || {
-            env.storage()
-                .instance()
-                .has(&ComplianceContract::key_vk())
+            env.storage().instance().has(&ComplianceContract::key_vk())
         }));
     }
 
@@ -1055,15 +1053,15 @@ mod tests {
         // denomination any more, so nothing downstream depends on the figure.
         let note_amount: i128 = 100_000_000;
         let pool_admin = <Address as TestAddress>::generate(env);
-        let pool_id = env.register(
-            PoolContract,
-            (verifier_id, token_id.address(), pool_admin),
-        );
+        let pool_id = env.register(PoolContract, (verifier_id, token_id.address(), pool_admin));
         let mut arr = [0u8; 32];
         arr[0] = 7;
         let commitment = BytesN::from_array(env, &arr);
-        dshield_pool::PoolContractClient::new(env, &pool_id)
-            .deposit(&depositor, &commitment, &note_amount);
+        dshield_pool::PoolContractClient::new(env, &pool_id).deposit(
+            &depositor,
+            &commitment,
+            &note_amount,
+        );
         (pool_id, note_amount)
     }
 
@@ -1072,10 +1070,8 @@ mod tests {
         let (pool_id, deposit_amount) = setup_pool(env);
         let mut pools = soroban_sdk::Vec::new(env);
         pools.push_back(pool_id.clone());
-        let contract_id: Address = env.register(
-            ComplianceContract,
-            (vk_bytes(env), admin.clone(), pools),
-        );
+        let contract_id: Address =
+            env.register(ComplianceContract, (vk_bytes(env), admin.clone(), pools));
         (contract_id, admin, pool_id, deposit_amount)
     }
 

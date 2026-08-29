@@ -782,7 +782,9 @@ impl PoolContract {
 
         for i in 0..count {
             let proof_bytes = proof_vec.get(i).ok_or(PoolError::InvalidPublicInputs)?;
-            let public_inputs = public_inputs_vec.get(i).ok_or(PoolError::InvalidPublicInputs)?;
+            let public_inputs = public_inputs_vec
+                .get(i)
+                .ok_or(PoolError::InvalidPublicInputs)?;
             let recipient = recipients.get(i).ok_or(PoolError::InvalidPublicInputs)?;
 
             if proof_bytes.len() as usize != PROOF_BYTES {
@@ -841,7 +843,9 @@ impl PoolContract {
             // All checks passed for this withdrawal. Store its state for application.
             batch_nullifiers.push_back(nf_from_proof.clone());
             batch_changes.push_back(change_commitment.clone());
-            total_payout = total_payout.checked_add(payout).ok_or(PoolError::AmountOverflow)?;
+            total_payout = total_payout
+                .checked_add(payout)
+                .ok_or(PoolError::AmountOverflow)?;
 
             withdrawal_states.push_back((nf_from_proof, change_commitment, payout, recipient));
         }
@@ -956,11 +960,7 @@ impl PoolContract {
     /// returned) instead of relying on `get_commitments`, which reads every
     /// leaf in one invocation and will exceed Soroban's per-transaction
     /// CPU/footprint limits once a pool holds enough deposits.
-    pub fn get_commitments_page(
-        env: Env,
-        start: u32,
-        limit: u32,
-    ) -> soroban_sdk::Vec<BytesN<32>> {
+    pub fn get_commitments_page(env: Env, start: u32, limit: u32) -> soroban_sdk::Vec<BytesN<32>> {
         let next_index: u32 = env
             .storage()
             .instance()
@@ -1346,9 +1346,7 @@ mod tests {
         let (pool_id, depositor, _) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        let commits: Vec<BytesN<32>> = (1u8..=7)
-            .map(|seed| dummy_commitment(&env, seed))
-            .collect();
+        let commits: Vec<BytesN<32>> = (1u8..=7).map(|seed| dummy_commitment(&env, seed)).collect();
         for c in commits.iter() {
             client.deposit(&depositor, c, &NOTE_AMOUNT);
         }
@@ -1381,10 +1379,7 @@ mod tests {
             start += page_len;
         }
         assert_eq!(paged, client.get_commitments());
-        assert_eq!(
-            rebuild_root(&env, &paged),
-            client.get_root().unwrap()
-        );
+        assert_eq!(rebuild_root(&env, &paged), client.get_root().unwrap());
     }
 
     #[test]
@@ -1421,9 +1416,7 @@ mod tests {
         let (pool_id, depositor, _) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        let commits: Vec<BytesN<32>> = (1u8..=5)
-            .map(|seed| dummy_commitment(&env, seed))
-            .collect();
+        let commits: Vec<BytesN<32>> = (1u8..=5).map(|seed| dummy_commitment(&env, seed)).collect();
         for c in commits.iter() {
             client.deposit(&depositor, c, &NOTE_AMOUNT);
         }
@@ -1464,7 +1457,11 @@ mod tests {
         for seed in 1u8..=7 {
             commitments.push_back(dummy_commitment(&batch_env, seed));
         }
-        let first_index = batch.deposit_batch(&batch_dep, &commitments, &equal_amounts(&batch_env, commitments.len()));
+        let first_index = batch.deposit_batch(
+            &batch_dep,
+            &commitments,
+            &equal_amounts(&batch_env, commitments.len()),
+        );
 
         assert_eq!(first_index, 0);
         assert_eq!(batch.get_next_index(), 7);
@@ -1473,7 +1470,10 @@ mod tests {
         // Indices are sequential and the rebuilt root matches the on-chain root.
         let commits = batch.get_commitments();
         assert_eq!(commits.len(), 7);
-        assert_eq!(rebuild_root(&batch_env, &commits), batch.get_root().unwrap());
+        assert_eq!(
+            rebuild_root(&batch_env, &commits),
+            batch.get_root().unwrap()
+        );
     }
 
     #[test]
@@ -1490,7 +1490,11 @@ mod tests {
         commitments.push_back(dummy_commitment(&env, 1));
         commitments.push_back(dummy_commitment(&env, 1)); // duplicate
 
-        let result = client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+        let result = client.try_deposit_batch(
+            &depositor,
+            &commitments,
+            &equal_amounts(&env, commitments.len()),
+        );
         assert_eq!(result.err().unwrap().unwrap(), PoolError::CommitmentExists);
         // Atomic: nothing inserted, no tokens moved.
         assert_eq!(client.get_next_index(), 0);
@@ -1506,7 +1510,11 @@ mod tests {
         let client = PoolContractClient::new(&env, &pool_id);
 
         let commitments = SorobanVec::new(&env);
-        let result = client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+        let result = client.try_deposit_batch(
+            &depositor,
+            &commitments,
+            &equal_amounts(&env, commitments.len()),
+        );
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -1528,7 +1536,11 @@ mod tests {
             commitments.push_back(dummy_commitment(&env, seed as u8));
         }
 
-        let result = client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+        let result = client.try_deposit_batch(
+            &depositor,
+            &commitments,
+            &equal_amounts(&env, commitments.len()),
+        );
         assert_eq!(result.err().unwrap().unwrap(), PoolError::BatchTooLarge);
         // Rejected up-front: no leaves inserted, no tokens moved.
         assert_eq!(client.get_next_index(), 0);
@@ -1553,12 +1565,14 @@ mod tests {
             commitments.push_back(dummy_commitment(&env, seed as u8));
         }
 
-        let first_index = client.deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+        let first_index = client.deposit_batch(
+            &depositor,
+            &commitments,
+            &equal_amounts(&env, commitments.len()),
+        );
         assert_eq!(first_index, 0);
         assert_eq!(client.get_next_index(), MAX_BATCH_SIZE);
     }
-
-
 
     #[test]
     fn test_reconstructed_root_matches_onchain_root() {
@@ -1971,8 +1985,7 @@ mod tests {
     // ──────────────────────────────────────────────
 
     // A real account (G...) address whose Ed25519 key we can hash.
-    const ACCOUNT_STRKEY: &str =
-        "GDBPMKMMG3TP3HHC7TXXUCU6ZOJG6RVQIIKCUTBYNFVXIZOLASH2IYXY";
+    const ACCOUNT_STRKEY: &str = "GDBPMKMMG3TP3HHC7TXXUCU6ZOJG6RVQIIKCUTBYNFVXIZOLASH2IYXY";
 
     #[test]
     fn test_recipient_hash_matches_frontend() {
@@ -2015,10 +2028,7 @@ mod tests {
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let result = client.try_withdraw(&recipient, &public_inputs, &proof);
-        assert_eq!(
-            result.err().unwrap().unwrap(),
-            PoolError::RecipientMismatch
-        );
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::RecipientMismatch);
     }
 
     // A second real account (G...) address, distinct from ACCOUNT_STRKEY, so a
@@ -2096,10 +2106,7 @@ mod tests {
 
         let result = client.try_withdraw(&recipient, &public_inputs, &proof);
         // Recipient binding passes; the (dummy) proof fails verification instead.
-        assert_ne!(
-            result.err().unwrap().unwrap(),
-            PoolError::RecipientMismatch
-        );
+        assert_ne!(result.err().unwrap().unwrap(), PoolError::RecipientMismatch);
     }
 
     #[test]
@@ -2198,8 +2205,11 @@ mod tests {
         let (pool_id, depositor, _) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        let result =
-            client.try_deposit(&depositor, &dummy_commitment(&env, 1), &(MAX_NOTE_AMOUNT + 1));
+        let result = client.try_deposit(
+            &depositor,
+            &dummy_commitment(&env, 1),
+            &(MAX_NOTE_AMOUNT + 1),
+        );
         assert_eq!(result.err().unwrap().unwrap(), PoolError::InvalidAmount);
     }
 
@@ -2245,7 +2255,10 @@ mod tests {
         assert_eq!(client.get_commitment_index(&c0), Some(0));
         assert_eq!(client.get_commitment_index(&c1), Some(1));
         assert_eq!(client.get_commitment(&1), Some(c1));
-        assert_eq!(client.get_commitment_index(&dummy_commitment(&env, 99)), None);
+        assert_eq!(
+            client.get_commitment_index(&dummy_commitment(&env, 99)),
+            None
+        );
     }
 
     #[test]
@@ -2589,8 +2602,7 @@ mod tests {
         commitments.push_back(dummy_commitment(&env, 1));
         commitments.push_back(dummy_commitment(&env, 2));
 
-        let result =
-            client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, 1));
+        let result = client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, 1));
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -2663,7 +2675,11 @@ mod tests {
 
         let mut commitments = SorobanVec::new(&env);
         commitments.push_back(dummy_commitment(&env, 1));
-        let result = client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+        let result = client.try_deposit_batch(
+            &depositor,
+            &commitments,
+            &equal_amounts(&env, commitments.len()),
+        );
         assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
     }
 
@@ -2960,7 +2976,10 @@ mod tests {
 
         let result = client.try_withdraw_batch(&recipients, &public_inputs, &proofs);
         // Should fail (either NullifierUsed or CommitmentExists depending on check order)
-        assert!(result.is_err(), "batch with duplicate nullifier must be rejected");
+        assert!(
+            result.is_err(),
+            "batch with duplicate nullifier must be rejected"
+        );
         // Verify it's not a batch-size error
         let err = result.err().unwrap().unwrap();
         assert_ne!(err, PoolError::BatchTooLarge);
@@ -3005,7 +3024,10 @@ mod tests {
 
         let result = client.try_withdraw_batch(&recipients, &public_inputs, &proofs);
         // Should fail (CommitmentExists or VerificationFailed depending on validation order)
-        assert!(result.is_err(), "batch with duplicate change commitment must be rejected");
+        assert!(
+            result.is_err(),
+            "batch with duplicate change commitment must be rejected"
+        );
         // Verify it's not a batch-size or structure error
         let err = result.err().unwrap().unwrap();
         assert_ne!(err, PoolError::BatchTooLarge);
@@ -3102,10 +3124,7 @@ mod tests {
         let result = client.try_withdraw_batch(&recipients, &public_inputs, &proofs);
 
         // Batch fails on second withdrawal's duplicate change commitment.
-        assert_eq!(
-            result.err().unwrap().unwrap(),
-            PoolError::CommitmentExists
-        );
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::CommitmentExists);
         // No state changes: next_index unchanged.
         assert_eq!(client.get_next_index(), index_before);
     }
@@ -3142,4 +3161,3 @@ mod tests {
         assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
     }
 }
-

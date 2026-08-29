@@ -139,8 +139,6 @@ export default function WithdrawPage() {
   // Map of note commitment -> custom recipient for multi-recipient batches.
   // Empty/missing means use the default recipient.
   const [customRecipients, setCustomRecipients] = useState<Map<string, string>>(new Map());
-  // Toggle between single-recipient (simpler UI) and multi-recipient mode.
-  const [useCustomRecipients, setUseCustomRecipients] = useState(false);
   // Only meaningful when exactly one note is selected: how much of it to pay
   // out. Empty means the whole note. Spending several notes at once always
   // spends each in full — there is no sensible way to split one figure across
@@ -241,18 +239,9 @@ export default function WithdrawPage() {
     URL.revokeObjectURL(url);
   }
 
-  /**
-   * Spends one note: pays `withdrawStroops` to `recipientAddr` and re-shields
-   * the remainder as a fresh note.
-   *
-   * The change note is created and stored *before* the transaction is
-   * submitted. The proof commits to its commitment, so the on-chain leaf is
-   * fixed the moment the proof exists; if the tab closed between submitting and
-   * saving, the remainder would be sitting in the pool with nobody holding its
-   * secrets. Its leaf index isn't knowable yet (the withdrawal itself creates
-   * the leaf, and another transaction may take the next slot first), so it is
-   * stored pending and resolved from the chain afterwards.
-   */
+  // NOTE: withdrawNote is kept for reference but not used in batched withdrawal flow
+  // The batch withdrawal logic is now consolidated in handleBatchWithdraw()
+  /*
   async function withdrawNote(
     note: ShieldedNote,
     recipientAddr: string,
@@ -370,6 +359,7 @@ export default function WithdrawPage() {
     await settle();
     return txHash;
   }
+  */
 
   async function handleBatchWithdraw() {
     if (!address || selectedNotes.length === 0 || partialInvalid) return;
@@ -420,7 +410,7 @@ export default function WithdrawPage() {
         await syncDepositsFromChain(poolId);
         commitments = getAllCommitments(poolId);
         if (commitments.length === 0) {
-          throw new Error("Couldn't load the pool's deposit history. Use "Re-sync from network" below and try again.");
+          throw new Error("Couldn't load the pool's deposit history. Use \"Re-sync from network\" below and try again.");
         }
       }
 
@@ -434,9 +424,7 @@ export default function WithdrawPage() {
         const changeValue = (noteValue - payout).toString();
 
         // Determine recipient for this note.
-        const noteRecipient = useCustomRecipients
-          ? customRecipients.get(note.commitment) || defaultRecipient
-          : defaultRecipient;
+        const noteRecipient = defaultRecipient;
 
         if (getUsdcSacId() && payout > BigInt(0)) {
           if (noteRecipient === address) {
@@ -448,7 +436,7 @@ export default function WithdrawPage() {
 
         const merkle = await buildMerkleTree(commitments, note.leafIndex);
         if (merkle.root.toLowerCase() !== onChainRoot.toLowerCase()) {
-          throw new Error("Your local data is out of sync with the network. Use "Re-sync from network" below and try again.");
+          throw new Error("Your local data is out of sync with the network. Use \"Re-sync from network\" below and try again.");
         }
 
         const recipientHash = await computeRecipientHash(noteRecipient);
@@ -486,12 +474,7 @@ export default function WithdrawPage() {
 
       setStep("signing");
       // Build and sign batch call if multiple notes, or single call if one note.
-      const recipients = selectedNotes.map(
-        (note) =>
-          useCustomRecipients
-            ? customRecipients.get(note.commitment) || defaultRecipient
-            : defaultRecipient,
-      );
+      const recipients = selectedNotes.map((note) => defaultRecipient);
 
       let txHash: string;
       if (selectedNotes.length === 1) {
@@ -525,9 +508,9 @@ export default function WithdrawPage() {
           poolId,
           "withdraw_batch",
           [
-            StellarSdk.nativeToScVal(recipientScVals, { type: "vec" }),
-            StellarSdk.nativeToScVal(publicInputsVec, { type: "vec" }),
-            StellarSdk.nativeToScVal(proofVec, { type: "vec" }),
+            StellarSdk.xdr.ScVal.scvVec(recipientScVals),
+            StellarSdk.xdr.ScVal.scvVec(publicInputsVec),
+            StellarSdk.xdr.ScVal.scvVec(proofVec),
           ],
           address!,
         );
