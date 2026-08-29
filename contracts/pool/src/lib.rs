@@ -130,7 +130,8 @@ const CURRENT_CIRCUIT_VERSION: u32 = 1;
 // against that real limit rather than an unlimited test budget). Capping
 // well under that, independent of the tree-capacity check, keeps a batch
 // inside the resource budget instead of reverting with an opaque host error.
-const MAX_BATCH_SIZE: u32 = 15;
+// With circuit versioning (adds one key per commitment), reduced from 15 to 14.
+const MAX_BATCH_SIZE: u32 = 14;
 
 // Maximum number of commitments to return in a single page query to avoid
 // exceeding Soroban's per-transaction CPU/footprint limits.
