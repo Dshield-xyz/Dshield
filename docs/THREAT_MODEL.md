@@ -12,7 +12,8 @@ describes the current variable-amount note design.
 | Pool contract | Known-root check, nullifier uniqueness, recipient-address binding, proof verification, change insertion, and token transfer. | The configured verifier and token are trusted deployments. A relayer can censor or delay, but cannot redirect a valid withdrawal. |
 | `compliance` circuit | KYC-preimage knowledge, note ownership, equality of the disclosed and committed amounts, and 64-bit range. | KYC eligibility is an administrative policy decision. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
 | `disclosure` circuit | KYC and note ownership plus `amount >= threshold`, without revealing the note amount. | The threshold's legal meaning is external policy. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
-| Compliance contract | Registered-KYC and approved-pool-root checks, proof verification, and administrator authorization for registry, pool, and key changes. | The administrator is trusted to register correct hashes, pools, and verification keys. |
+| Compliance contract | Registered-KYC and approved-pool-root checks, proof verification, administrator authorization for registry, pool, and key changes, and authenticated ASP-root rotation with an auditable event. | The administrator key and configured deployment are trusted. |
+| ASP sync job | Fetches the official OFAC SDN enhanced XML, validates and canonicalizes digital-currency identifiers, computes a deterministic Merkle root, and submits only non-empty valid roots. | The external feed, GitHub Actions runtime, CLI release, workflow secrets, and feed interpretation are trusted operational dependencies. |
 | `hasher` circuit | One two-input Poseidon2 hash. | Domain separation and structure must be supplied correctly by callers. |
 
 ## Trust and data flow
@@ -30,7 +31,9 @@ flowchart LR
     Disclosure -->|proof, root, KYC hash, auditor key| Registry[Compliance contract]
     Registry -->|confirm root| Pool
     Registry -->|verify| Verifier
-    Admin[Administrator] -->|KYC hashes, pools, and keys| Registry
+    Admin[Administrator] -->|KYC hashes, pools, keys| Registry[Compliance contract]
+    Feed[OFAC SDN enhanced XML] -->|validated address set| Sync[Scheduled ASP sync job]
+    Sync -->|admin-signed root rotation| Registry
 ```
 
 The relayer is outside the cryptographic trust boundary. It sees public
@@ -129,6 +132,14 @@ successful spend. All withdrawals must use the same authoritative pool state.
 
 The hasher is a compatibility primitive. Security properties such as domain
 separation and note structure come from how callers chain its hashes.
+
+## ASP root synchronization
+
+The scheduled job is a new trust component, not part of the zero-knowledge proof. It obtains the OFAC SDN enhanced XML, extracts only digital-currency identifiers, and applies the documented canonicalization and SHA-256 tree construction in `services/asp-sync/README.md`. The compliance contract authorizes the rotation with its administrator and emits `asp_root_rotated` after storing the root, allowing operations to audit the submitted value.
+
+The job fails closed when the feed is unavailable, malformed, too large, empty, contains an invalid identifier, or produces an unexpected pinned root. In each case it exits before submitting a transaction, so the last accepted root remains on-chain. A stale feed therefore causes stale enforcement rather than an untrusted empty or partial set; monitoring must alert on missed scheduled runs and feed age. The design does not guarantee freshness during an outage.
+
+If the feed or its transport is compromised, a syntactically valid but incorrect set could produce a valid root. The signer and workflow cannot distinguish a forged feed from a genuine one without an independent source, hash pin, or human review. Repository administrators must protect `STELLAR_ADMIN_SECRET`, restrict workflow changes, review CLI updates, and optionally set `EXPECTED_ASP_ROOT` when operating from a separately attested snapshot. Root rotations are auditable through the contract event but are not reversible automatically; recovery requires a subsequent authenticated rotation.
 
 ## Residual assumptions
 

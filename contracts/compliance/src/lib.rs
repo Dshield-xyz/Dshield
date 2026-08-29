@@ -25,6 +25,8 @@ pub enum ComplianceError {
     UnknownMerkleRoot = 10,
     /// accept_admin called with no admin rotation in progress.
     NoPendingAdmin = 13,
+    /// ASP root rotation was given the reserved all-zero root.
+    InvalidAspRoot = 14,
 }
 
 /// Cross-contract call into a pool's `is_known_root(root) -> bool` view.
@@ -110,6 +112,12 @@ pub struct AdminUpdatedEvent<'a> {
     pub new_admin: &'a Address,
 }
 
+#[contractevent(topics = ["asp_root_rotated"])]
+pub struct AspRootRotatedEvent<'a> {
+    pub root: &'a BytesN<32>,
+    pub updated_by: &'a Address,
+}
+
 // KYC registry, VKs, admin, and pools all live in bounded instance storage.
 // Every state-mutating or verification entrypoint extends the TTL so the
 // entry doesn't silently expire and brick the contract between demos.
@@ -141,6 +149,9 @@ impl ComplianceContract {
     }
     fn key_pending_admin() -> Symbol {
         symbol_short!("pendadm")
+    }
+    fn key_asp_root() -> Symbol {
+        symbol_short!("asproot")
     }
 
     pub fn __constructor(
@@ -189,6 +200,37 @@ impl ComplianceContract {
             .instance()
             .get(&Self::key_pools())
             .unwrap_or(SorobanVec::new(&env))
+    }
+
+    /// Replaces the sanctioned/flagged-address Merkle root consumed by the ASP
+    /// membership flow. Only the configured admin may rotate it. The event is
+    /// intentionally emitted after storage is updated so an off-chain sync job
+    /// can confirm the committed root from the transaction's event stream.
+    pub fn rotate_asp_root(
+        env: Env,
+        root: BytesN<32>,
+    ) -> Result<(), ComplianceError> {
+        if root.to_array() == [0u8; 32] {
+            return Err(ComplianceError::InvalidAspRoot);
+        }
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&Self::key_admin())
+            .ok_or(ComplianceError::VkNotSet)?;
+        admin.require_auth();
+        bump_instance(&env);
+        env.storage().instance().set(&Self::key_asp_root(), &root);
+        AspRootRotatedEvent {
+            root: &root,
+            updated_by: &admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn get_asp_root(env: Env) -> Option<BytesN<32>> {
+        env.storage().instance().get(&Self::key_asp_root())
     }
 
     /// Step 1 of admin rotation: the current admin nominates `new_admin`.
@@ -1297,6 +1339,43 @@ mod tests {
     // ──────────────────────────────────────────────
     //  Admin rotation
     // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_rotate_asp_root_requires_admin_auth() {
+        let env = Env::default();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let result = client.try_rotate_asp_root(&dummy_hash(&env, 42));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rotate_asp_root_rejects_zero_root() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let result = client.try_rotate_asp_root(&BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(result.err().unwrap().unwrap(), ComplianceError::InvalidAspRoot);
+    }
+
+    #[test]
+    fn test_rotate_asp_root_stores_fixture_root_and_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let root = BytesN::from_array(&env, &[
+            0x81, 0xc9, 0x0c, 0x0b, 0x41, 0x69, 0x05, 0xda,
+            0xda, 0xd3, 0x2c, 0x31, 0xf0, 0x2e, 0xee, 0xf7,
+            0xe7, 0x4a, 0x63, 0x84, 0x85, 0x8f, 0x28, 0xc8,
+            0xef, 0xd4, 0x8a, 0x70, 0x4a, 0xd0, 0xd7, 0x48,
+        ]);
+        client.rotate_asp_root(&root);
+        assert_eq!(client.get_asp_root(), Some(root.clone()));
+        let expected = AspRootRotatedEvent { root: &root, updated_by: &admin };
+        assert_eq!(env.events().all(), std::vec![expected.to_xdr(&env, &contract_id)]);
+    }
 
     #[test]
     fn test_accept_admin_transfers_privileges() {
