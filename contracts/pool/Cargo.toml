@@ -13,7 +13,11 @@ crate-type = ["cdylib", "rlib"]
 soroban-sdk = { workspace = true, features = ["alloc", "hazmat-address"] }
 soroban-poseidon = "26.0.0"
 ultrahonk_soroban_verifier = { git = "https://github.com/yugocabrio/rs-soroban-ultrahonk", rev = "661db07200f890b1bd9a7349ed787c70a706dd12", default-features = false }
+dshield-governance-auth = { path = "../governance-auth" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils", "alloc", "hazmat-address"] }
 soroban-env-host = "26.1.3"
+# Used only in tests, to spin up a real governance contract for end-to-end
+# queue/delay/execute coverage of the timelock-gated entry points.
+dshield-governance = { path = "../governance" }

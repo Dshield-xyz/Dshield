@@ -8,6 +8,7 @@ use soroban_sdk::{
     crypto::BnScalar, symbol_short, token, Address, Bytes, BytesN, Env, IntoVal, InvokeError,
     Symbol, Val, Vec as SorobanVec, U256,
 };
+use dshield_governance_auth::require_timelock;
 use ultrahonk_soroban_verifier::PROOF_BYTES;
 
 #[contract]
@@ -34,6 +35,8 @@ pub enum PoolError {
     InvalidAmount = 15,
     Paused = 16,
     NotAuthorized = 17,
+    TimelockNotSet = 18,
+    NoPendingAdmin = 19,
 }
 
 #[contractevent(topics = ["deposit"], data_format = "map")]
@@ -65,6 +68,12 @@ pub struct VerifierUpdatedEvent<'a> {
     pub updated_by: &'a Address,
 }
 
+#[contractevent(topics = ["admin_updated"])]
+pub struct AdminUpdatedEvent<'a> {
+    pub previous_admin: &'a Address,
+    pub new_admin: &'a Address,
+}
+
 fn key_commitment_prefix() -> Symbol {
     symbol_short!("cm")
 }
@@ -85,6 +94,12 @@ fn key_verifier() -> Symbol {
 }
 fn key_admin() -> Symbol {
     symbol_short!("admin")
+}
+fn key_timelock() -> Symbol {
+    symbol_short!("timelock")
+}
+fn key_pending_admin() -> Symbol {
+    symbol_short!("pendadm")
 }
 fn key_paused() -> Symbol {
     symbol_short!("paused")
@@ -384,11 +399,19 @@ impl PoolContract {
     /// A pool holds notes of arbitrary value, so it takes no denomination:
     /// one pool serves every amount, which is also what gives every user the
     /// same anonymity set instead of splitting it across tiers.
+    /// `timelock` is the address of a deployed `dshield-governance`
+    /// `GovernanceContract` (the project's timelock) that gates
+    /// `set_verifier` and admin rotation: those entry points accept a call
+    /// only when invoked by this address, which happens only after the
+    /// change was queued and its delay elapsed. `pause`/`unpause` stay
+    /// directly admin-gated since a circuit breaker that itself has to wait
+    /// out a delay defeats its purpose.
     pub fn __constructor(
         env: Env,
         verifier: Address,
         token: Address,
         admin: Address,
+        timelock: Address,
     ) -> Result<(), PoolError> {
         if env.storage().instance().has(&key_verifier()) {
             return Err(PoolError::AlreadyInitialized);
@@ -396,6 +419,7 @@ impl PoolContract {
         env.storage().instance().set(&key_verifier(), &verifier);
         env.storage().instance().set(&key_token(), &token);
         env.storage().instance().set(&key_admin(), &admin);
+        env.storage().instance().set(&key_timelock(), &timelock);
         Ok(())
     }
 
@@ -440,16 +464,23 @@ impl PoolContract {
         env.storage().instance().get(&key_admin())
     }
 
-    /// Admin-gated: points the pool at a different verifier contract, e.g. to
-    /// swap in a fixed verifier after a bug is found in the VK or the pinned
-    /// verifier dependency.
+    pub fn get_timelock(env: Env) -> Option<Address> {
+        env.storage().instance().get(&key_timelock())
+    }
+
+    /// Timelock-gated: points the pool at a different verifier contract, e.g.
+    /// to swap in a fixed verifier after a bug is found in the VK or the
+    /// pinned verifier dependency. Only callable by the configured governance
+    /// contract, and only once it has actually executed a queued
+    /// `set_verifier` call after that call's delay elapsed -- see
+    /// `__constructor`.
     pub fn set_verifier(env: Env, verifier: Address) -> Result<(), PoolError> {
-        let admin: Address = env
+        let timelock: Address = env
             .storage()
             .instance()
-            .get(&key_admin())
-            .ok_or(PoolError::NotAuthorized)?;
-        admin.require_auth();
+            .get(&key_timelock())
+            .ok_or(PoolError::TimelockNotSet)?;
+        require_timelock(&timelock);
         bump_instance(&env);
 
         let previous_verifier: Address = env
@@ -462,7 +493,59 @@ impl PoolContract {
         VerifierUpdatedEvent {
             previous_verifier: &previous_verifier,
             new_verifier: &verifier,
-            updated_by: &admin,
+            updated_by: &timelock,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Step 1 of timelock-gated admin rotation: queues the pool's next admin.
+    /// Only callable by the configured governance contract (after a queued
+    /// `propose_admin` call has waited out its delay), mirroring
+    /// `set_verifier`. Takes effect only once `new_admin` calls
+    /// `accept_admin`, so a typoed or unreachable address can never brick
+    /// admin access.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), PoolError> {
+        let timelock: Address = env
+            .storage()
+            .instance()
+            .get(&key_timelock())
+            .ok_or(PoolError::TimelockNotSet)?;
+        require_timelock(&timelock);
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&key_pending_admin(), &new_admin);
+        Ok(())
+    }
+
+    /// Step 2 of admin rotation: the proposed admin claims the role directly
+    /// (no further timelock delay -- the delay already happened on
+    /// `propose_admin`). Must be called by the address named in
+    /// `propose_admin`; the previous admin loses access as soon as this
+    /// succeeds.
+    pub fn accept_admin(env: Env) -> Result<(), PoolError> {
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_pending_admin())
+            .ok_or(PoolError::NoPendingAdmin)?;
+        pending_admin.require_auth();
+        bump_instance(&env);
+
+        let previous_admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+
+        env.storage().instance().set(&key_admin(), &pending_admin);
+        env.storage().instance().remove(&key_pending_admin());
+
+        AdminUpdatedEvent {
+            previous_admin: &previous_admin,
+            new_admin: &pending_admin,
         }
         .publish(&env);
 
@@ -984,9 +1067,10 @@ mod tests {
         sac.mint(&depositor, &1_000_000_000);
 
         let verifier_id = <Address as TestAddress>::generate(env);
+        let timelock_id = <Address as TestAddress>::generate(env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), admin.clone()),
+            (verifier_id, token_id.address(), admin.clone(), timelock_id),
         );
         (pool_id, depositor, token_id.address())
     }
@@ -1003,9 +1087,10 @@ mod tests {
         sac.mint(&depositor2, &1_000_000_000);
 
         let verifier_id = <Address as TestAddress>::generate(env);
+        let timelock_id = <Address as TestAddress>::generate(env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), admin.clone()),
+            (verifier_id, token_id.address(), admin.clone(), timelock_id),
         );
         (pool_id, depositor1, depositor2, token_id.address())
     }
@@ -1505,9 +1590,10 @@ mod tests {
 
         let depositor = <Address as TestAddress>::generate(&env);
         let verifier_id = <Address as TestAddress>::generate(&env);
+        let timelock_id = <Address as TestAddress>::generate(&env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), admin.clone()),
+            (verifier_id, token_id.address(), admin.clone(), timelock_id),
         );
         let client = PoolContractClient::new(&env, &pool_id);
 
@@ -2603,7 +2689,7 @@ mod tests {
         env.mock_all_auths();
         let (pool_id, _, _) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
-        let admin = client.get_admin().unwrap();
+        let timelock = client.get_timelock().unwrap();
 
         // The verifier_id generated inside setup_with_token isn't returned to
         // the caller, so instead call set_verifier twice and confirm the
@@ -2617,7 +2703,7 @@ mod tests {
         let expected = VerifierUpdatedEvent {
             previous_verifier: &v1,
             new_verifier: &v2,
-            updated_by: &admin,
+            updated_by: &timelock,
         };
         assert_eq!(
             *env.events().all().events().last().unwrap(),
@@ -2626,7 +2712,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_verifier_requires_admin_auth() {
+    fn test_set_verifier_requires_timelock_auth() {
         let env = Env::default();
         let (pool_id, _, _) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
@@ -2634,6 +2720,32 @@ mod tests {
 
         // Reject any auth so set_verifier (called without mocking) fails.
         env.set_auths(&[]);
+        let result = client.try_set_verifier(&new_verifier);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_verifier_rejects_admin_caller() {
+        // The whole point of gating set_verifier behind the timelock is that
+        // the admin can no longer call it directly -- only the configured
+        // timelock contract's own outgoing call satisfies require_auth here.
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let admin = client.get_admin().unwrap();
+        let new_verifier = <Address as TestAddress>::generate(&env);
+
+        env.set_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &pool_id,
+                fn_name: "set_verifier",
+                args: (new_verifier.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }
+        .into()]);
         let result = client.try_set_verifier(&new_verifier);
         assert!(result.is_err());
     }
@@ -2669,5 +2781,230 @@ mod tests {
             result.err().unwrap().unwrap(),
             PoolError::VerificationFailed
         );
+    }
+
+    // ──────────────────────────────────────────────
+    //  Admin: propose_admin / accept_admin
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_propose_and_accept_admin_rotates_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let old_admin = client.get_admin().unwrap();
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        client.propose_admin(&new_admin);
+        assert_eq!(client.get_admin().unwrap(), old_admin);
+
+        client.accept_admin();
+        assert_eq!(client.get_admin().unwrap(), new_admin);
+    }
+
+    #[test]
+    fn test_propose_admin_requires_timelock_auth() {
+        let env = Env::default();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        env.set_auths(&[]);
+        let result = client.try_propose_admin(&new_admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accept_admin_requires_pending_admin_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        client.propose_admin(&new_admin);
+
+        env.set_auths(&[]);
+        let result = client.try_accept_admin();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accept_admin_without_pending_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let result = client.try_accept_admin();
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            PoolError::NoPendingAdmin
+        );
+    }
+
+    #[test]
+    fn test_accept_admin_emits_admin_updated_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let old_admin = client.get_admin().unwrap();
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        client.propose_admin(&new_admin);
+        client.accept_admin();
+
+        let expected = AdminUpdatedEvent {
+            previous_admin: &old_admin,
+            new_admin: &new_admin,
+        };
+        assert_eq!(
+            *env.events().all().events().last().unwrap(),
+            expected.to_xdr(&env, &pool_id),
+        );
+    }
+
+    #[test]
+    fn test_new_admin_can_pause_after_rotation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        client.propose_admin(&new_admin);
+        client.accept_admin();
+
+        client.pause();
+        assert!(client.is_paused());
+    }
+
+    // ──────────────────────────────────────────────
+    //  End-to-end: real GovernanceContract gating set_verifier
+    // ──────────────────────────────────────────────
+    //
+    // The tests above prove set_verifier/propose_admin reject a non-timelock
+    // caller, but that only shows require_auth is wired to the right
+    // address -- not that a real governance contract's queue/delay/execute
+    // path actually drives it end-to-end. These tests deploy the real
+    // dshield-governance contract as the pool's timelock and exercise it.
+
+    fn setup_with_governance(env: &Env, delay: u64) -> (Address, Address, Address, Address) {
+        use dshield_governance::GovernanceContract;
+
+        env.mock_all_auths();
+        let gov_admin = <Address as TestAddress>::generate(env);
+        let governance_id = env.register(GovernanceContract, (gov_admin.clone(), delay));
+
+        let admin = <Address as TestAddress>::generate(env);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let verifier_id = <Address as TestAddress>::generate(env);
+        let pool_id = env.register(
+            PoolContract,
+            (
+                verifier_id,
+                token_id.address(),
+                admin.clone(),
+                governance_id.clone(),
+            ),
+        );
+        (pool_id, governance_id, gov_admin, admin)
+    }
+
+    fn queue_set_verifier(
+        env: &Env,
+        governance_id: &Address,
+        pool_id: &Address,
+        new_verifier: &Address,
+    ) -> u32 {
+        use dshield_governance::GovernanceContractClient;
+        use soroban_sdk::xdr::ToXdr;
+
+        let gov = GovernanceContractClient::new(env, governance_id);
+        let mut args: SorobanVec<Val> = SorobanVec::new(env);
+        args.push_back(new_verifier.into_val(env));
+        gov.queue(pool_id, &Symbol::new(env, "set_verifier"), &args.to_xdr(env))
+    }
+
+    #[test]
+    fn test_governance_execute_rotates_pool_verifier() {
+        use dshield_governance::GovernanceContractClient;
+        use soroban_sdk::testutils::Ledger;
+
+        let env = Env::default();
+        let (pool_id, governance_id, _gov_admin, _admin) = setup_with_governance(&env, 100);
+        let gov = GovernanceContractClient::new(&env, &governance_id);
+
+        let new_verifier = <Address as TestAddress>::generate(&env);
+        let call_id = queue_set_verifier(&env, &governance_id, &pool_id, &new_verifier);
+
+        // Cannot execute before the delay elapses.
+        let early = gov.try_execute(&call_id);
+        assert!(early.is_err());
+
+        env.ledger().with_mut(|l| l.timestamp += 200);
+        gov.execute(&call_id);
+
+        // The pool's verifier actually changed: proven the same way the
+        // existing set_verifier_then_withdraw test does, by observing the
+        // next set_verifier's `previous_verifier` in its emitted event.
+        let another_verifier = <Address as TestAddress>::generate(&env);
+        let call_id2 = queue_set_verifier(&env, &governance_id, &pool_id, &another_verifier);
+        env.ledger().with_mut(|l| l.timestamp += 200);
+        gov.execute(&call_id2);
+
+        // Pool's own verifier_updated event is emitted before governance's
+        // call_executed event that wraps it, so it's second-to-last.
+        let expected = VerifierUpdatedEvent {
+            previous_verifier: &new_verifier,
+            new_verifier: &another_verifier,
+            updated_by: &governance_id,
+        };
+        let all_events = env.events().all();
+        let events = all_events.events();
+        assert_eq!(
+            *events.get(events.len() - 2).unwrap(),
+            expected.to_xdr(&env, &pool_id),
+        );
+    }
+
+    #[test]
+    fn test_governance_cancel_prevents_pool_verifier_change() {
+        use dshield_governance::GovernanceContractClient;
+        use soroban_sdk::testutils::Ledger;
+
+        let env = Env::default();
+        let (pool_id, governance_id, _gov_admin, _admin) = setup_with_governance(&env, 100);
+        let gov = GovernanceContractClient::new(&env, &governance_id);
+
+        let new_verifier = <Address as TestAddress>::generate(&env);
+        let call_id = queue_set_verifier(&env, &governance_id, &pool_id, &new_verifier);
+
+        gov.cancel(&call_id);
+
+        env.ledger().with_mut(|l| l.timestamp += 200);
+        let result = gov.try_execute(&call_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_governance_execute_at_exactly_eta_rotates_verifier() {
+        use dshield_governance::GovernanceContractClient;
+        use soroban_sdk::testutils::Ledger;
+
+        let env = Env::default();
+        let (pool_id, governance_id, _gov_admin, _admin) = setup_with_governance(&env, 500);
+        let gov = GovernanceContractClient::new(&env, &governance_id);
+
+        let new_verifier = <Address as TestAddress>::generate(&env);
+        let call_id = queue_set_verifier(&env, &governance_id, &pool_id, &new_verifier);
+        let call = gov.get_call(&call_id).unwrap();
+
+        env.ledger().with_mut(|l| l.timestamp = call.eta);
+        gov.execute(&call_id);
+
+        assert_eq!(gov.get_call(&call_id).unwrap().status, dshield_governance::CallStatus::Executed);
     }
 }
