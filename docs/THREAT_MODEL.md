@@ -9,7 +9,7 @@ describes the current variable-amount note design.
 | Component | Enforced properties | External assumptions |
 | --- | --- | --- |
 | `shielded_pool` circuit | Note membership and opening; nullifier derivation; 64-bit note and withdrawal amounts; `withdraw_amount <= amount`; change commitment for `amount - withdraw_amount`. | Its public recipient field is not derived from a Stellar address. |
-| Pool contract | Known-root check, nullifier uniqueness, recipient-address binding, proof verification, change insertion, and token transfer. | The configured verifier and token are trusted deployments. A relayer can censor or delay, but cannot redirect a valid withdrawal. |
+| Pool contract | Known-root check, nullifier uniqueness, recipient-address binding, proof verification, change insertion, token transfer, and fee-carve-out bounds (`fee_amount <= payout` and `<= max_fee_bps`). | The configured verifier, token, and DEX router are trusted deployments. A relayer can censor or delay, but cannot redirect a valid withdrawal, and cannot charge a fee above the admin-configured (and hard-capped) `max_fee_bps` -- see [Fee abstraction](#fee-abstraction). |
 | `compliance` circuit | KYC-preimage knowledge, note ownership, equality of the disclosed and committed amounts, and 64-bit range. | KYC eligibility is an administrative policy decision. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
 | `disclosure` circuit | KYC and note ownership plus `amount >= threshold`, without revealing the note amount. | The threshold's legal meaning is external policy. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
 | Compliance contract | Registered-KYC and approved-pool-root checks, proof verification, and administrator authorization for registry, pool, and key changes. | The administrator is trusted to register correct hashes, pools, and verification keys. |
@@ -36,6 +36,59 @@ flowchart LR
 The relayer is outside the cryptographic trust boundary. It sees public
 withdrawal data and can refuse to submit it, but cannot change the payout
 address while retaining a valid proof.
+
+## Fee abstraction
+
+Issue #149: a withdrawing caller never needs to hold or acquire the fee
+asset (e.g. XLM) themselves. The relayer recovers its Soroban resource-fee
+cost by carving a fee out of the payout and swapping it for the fee asset
+on-chain, inside `withdraw` itself, rather than being paid in the withdrawn
+asset directly or absorbing the cost.
+
+**What is proof-committed vs. contract-only.** The withdrawal circuit commits
+to a single `withdraw_amount` field; it has no concept of a fee split. The fee
+carve-out is entirely a contract-level accounting decision made *after* proof
+verification: `recipient_amount = payout - fee_amount`, where `fee_amount` is
+an ordinary (non-proof-bound) parameter to `withdraw`, exactly like
+`recipient` and `fee_recipient`. This means:
+
+- A malicious relayer can set `fee_amount` to anything up to the payout, the
+  same way it could already submit `recipient` incorrectly -- the pool does
+  not know or care who is "supposed" to charge what.
+- What bounds the damage is `max_fee_bps`, an admin-configured cap (itself
+  capped by a hard-coded `MAX_FEE_BPS_CEILING`, 5%) that `withdraw` enforces
+  against the proof-committed `payout` before any transfer happens. A relayer
+  can overcharge up to that ceiling; it cannot exceed it, and it cannot ever
+  redirect the *recipient's* remainder (only the frontend's own pre-signing
+  quote protects the user from a relayer charging the full allowed ceiling
+  instead of a fair market rate -- this is a UX/reputation check, not a
+  cryptographic one).
+
+**DEX-path liveness assumption.** The fee swap calls a configured,
+Soroswap-router-compatible contract (`set_dex_router`) via
+`swap_exact_tokens_for_tokens`. This introduces a new liveness dependency that
+did not previously exist in `withdraw`:
+
+- If no router/fee-asset is configured, `fee_amount > 0` withdrawals fail
+  with `DexRouterNotSet`; `fee_amount = 0` withdrawals are unaffected (the
+  original, pre-#149 code path).
+- If a swap path exists but has no liquidity, or slippage exceeds
+  `fee_min_out`, the swap -- and therefore the entire withdrawal -- reverts.
+  `fee_min_out` is the relayer's own quote (sourced via
+  `frontend/src/lib/stellar.ts`'s `quoteFeeSwap`), so a relayer that quotes
+  honestly bears this risk itself; a relayer that quotes badly makes its own
+  withdrawals fail more often, not the user's funds unsafe.
+- The router contract is a trusted dependency in the same sense the verifier
+  and token are: a malicious or buggy router could refuse to pay out, pay out
+  less than it received, or behave inconsistently with the interface this
+  contract assumes. It cannot, however, touch the recipient's own
+  `recipient_amount` transfer, which happens independently beforehand.
+
+**Approval scope.** The pool approves the router for exactly `fee_amount`,
+expiring one ledger past the swap's deadline, rather than a standing
+allowance -- a compromised or buggy router can only ever pull the one fee
+slice it was just approved for, not an arbitrary amount at an arbitrary later
+time.
 
 ## Amount integrity and value conservation
 
@@ -147,6 +200,10 @@ separation and note structure come from how callers chain its hashes.
   privacy breaks the link between them rather than hiding either event.
 - Poseidon2 implementations in Noir, the frontend, and Soroban remain
   byte-for-byte compatible.
+- A swap path from the withdrawn asset to the configured fee asset exists and
+  has enough liquidity at the moment of withdrawal -- see
+  [Fee abstraction](#fee-abstraction). Its absence fails the withdrawal
+  cleanly rather than compromising it.
 
 See [SECURITY.md](../SECURITY.md) for browser-storage, rate-limiting, reporting,
 and deployment limitations.
