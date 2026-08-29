@@ -10,6 +10,7 @@ const defaultSpecDir = path.join(repoRoot, "circuits", "formal", "specs");
 
 const args = new Set(process.argv.slice(2));
 const selfTest = args.has("--self-test");
+const requireTargetArtifacts = args.has("--require-target-artifacts");
 
 function fail(message) {
   throw new Error(message);
@@ -106,11 +107,31 @@ function verifyChecks(spec, source) {
   }
 }
 
+function validateSpec(spec) {
+  if (!spec.circuit) fail("spec is missing circuit");
+  if (!Array.isArray(spec.properties) || spec.properties.length === 0) {
+    fail(`${spec.circuit}: spec must declare at least one property`);
+  }
+  const propertyIds = new Set();
+  for (const property of spec.properties) {
+    if (!property.id) fail(`${spec.circuit}: property is missing id`);
+    if (propertyIds.has(property.id)) fail(`${spec.circuit}: duplicate property ${property.id}`);
+    propertyIds.add(property.id);
+    if (!Array.isArray(property.checks) || property.checks.length === 0) {
+      fail(`${spec.circuit}: property ${property.id} must declare checks`);
+    }
+  }
+}
+
 function verifySpec(spec, overrideArtifact = null) {
-  const candidates = spec.artifact_candidates.map((candidate) => path.join(repoRoot, candidate));
+  validateSpec(spec);
+  const artifactCandidates = requireTargetArtifacts
+    ? spec.artifact_candidates.filter((candidate) => candidate.includes("/target/") || candidate.includes("\\target\\"))
+    : spec.artifact_candidates;
+  const candidates = artifactCandidates.map((candidate) => path.join(repoRoot, candidate));
   const artifactPath = candidates.find((candidate) => existsSync(candidate));
   if (!artifactPath && !overrideArtifact) {
-    fail(`${spec.circuit}: no compiled artifact found in ${spec.artifact_candidates.join(", ")}`);
+    fail(`${spec.circuit}: no compiled artifact found in ${artifactCandidates.join(", ")}`);
   }
 
   const artifact = overrideArtifact ?? readJson(artifactPath);

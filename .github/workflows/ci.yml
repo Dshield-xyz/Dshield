@@ -158,7 +158,7 @@ jobs:
           cd ../hasher && nargo compile
 
       - name: Verify formal circuit specifications
-        run: bash scripts/verify-circuits.sh --self-test
+        run: bash scripts/verify-circuits.sh --require-target-artifacts --self-test
 
   contracts:
     name: Contract Tests
