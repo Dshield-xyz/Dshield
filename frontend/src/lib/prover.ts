@@ -1,7 +1,8 @@
 import poolCircuit from "@/circuits/shielded_pool.json";
 import complianceCircuit from "@/circuits/compliance.json";
 import disclosureCircuit from "@/circuits/disclosure.json";
-import { runProof, type ProofResult, type ProofStage } from "./prover-core";
+import viewDisclosureCircuit from "@/circuits/view_disclosure.json";
+import { runProof, verifyProof, type ProofResult, type ProofStage } from "./prover-core";
 import type { ProverWorkerRequest, ProverWorkerResponse } from "./prover.worker";
 
 export type { ProofResult, ProofStage };
@@ -185,6 +186,56 @@ export async function proveDisclosure(
       path_siblings: inputs.pathSiblings.map(ensureHex),
     },
     onProgress,
+  );
+}
+
+/**
+ * Proves a note's `amount` to whoever was handed `viewKey` out of band,
+ * without revealing `nullifier`/`secret` or exposing spend capability. The
+ * witness still needs `nullifier` to reconstruct the note's leaf and walk it
+ * to `merkleRoot`, but the circuit never outputs or constrains it against
+ * anything public — see circuits/view_disclosure/src/main.nr.
+ */
+export async function proveViewDisclosure(
+  inputs: {
+    nullifier: string;
+    secret: string;
+    amount: string;
+    viewKey: string;
+    merkleRoot: string;
+    pathSiblings: string[];
+    pathBits: number[];
+  },
+  onProgress?: (stage: ProofStage) => void,
+): Promise<ProofResult> {
+  return generateProof(
+    viewDisclosureCircuit as Record<string, unknown>,
+    {
+      nullifier: ensureHex(inputs.nullifier),
+      secret: ensureHex(inputs.secret),
+      amount: decimal(inputs.amount),
+      view_key: ensureHex(inputs.viewKey),
+      merkle_root: ensureHex(inputs.merkleRoot),
+      path_bits: inputs.pathBits.map(String),
+      path_siblings: inputs.pathSiblings.map(ensureHex),
+    },
+    onProgress,
+  );
+}
+
+/**
+ * Verifies a view-disclosure proof entirely client-side — no wallet, no
+ * transaction, no pool indexer lookup. Used by the auditor-facing `/audit`
+ * page, where the verifier may have nothing but the proof they were handed.
+ */
+export async function verifyViewDisclosure(
+  proofHex: string,
+  publicInputsHex: string,
+): Promise<boolean> {
+  return verifyProof(
+    viewDisclosureCircuit as Record<string, unknown>,
+    proofHex,
+    publicInputsHex,
   );
 }
 

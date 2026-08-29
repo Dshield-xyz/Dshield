@@ -5,6 +5,7 @@ import {
   markNoteSpent,
   getActiveNotes,
   generateRandomField,
+  deriveViewingKey,
   serializeNote,
   serializeNotes,
   parseNote,
@@ -41,6 +42,47 @@ describe("generateRandomField", () => {
     const a = generateRandomField();
     const b = generateRandomField();
     expect(a).not.toBe(b);
+  });
+});
+
+describe("deriveViewingKey", () => {
+  it("is deterministic for the same secret", async () => {
+    const a = await deriveViewingKey("00aabbcc");
+    const b = await deriveViewingKey("00aabbcc");
+    expect(a).toBe(b);
+  });
+
+  it("differs for different secrets", async () => {
+    const a = await deriveViewingKey("00aabbcc");
+    const b = await deriveViewingKey("00ddeeff");
+    expect(a).not.toBe(b);
+  });
+
+  it("does not depend on nullifier: a viewing key is a pure function of secret", async () => {
+    // The whole point of the view/spend separation is that the viewing key
+    // can be computed (and independently verified) from `secret` alone. If
+    // it were a function of both, handing it out would start to leak
+    // spend-adjacent information.
+    const note = makeNote({ secret: "00112233" });
+    const viewKeyA = await deriveViewingKey(note.secret);
+    const viewKeyB = await deriveViewingKey(
+      makeNote({ secret: "00112233", nullifier: "ffffffff" }).secret,
+    );
+    expect(viewKeyA).toBe(viewKeyB);
+  });
+
+  it("is not the identity function: the viewing key never equals the secret or nullifier", async () => {
+    // A cheap but real regression guard: if this ever degenerated into
+    // returning its input unchanged, a viewing key would literally BE the
+    // secret, destroying the entire key-separation guarantee.
+    const note = makeNote();
+    const viewKey = await deriveViewingKey(note.secret);
+    expect(viewKey.replace(/^0x/, "").replace(/^0+/, "")).not.toBe(
+      note.secret.replace(/^0x/, "").replace(/^0+/, ""),
+    );
+    expect(viewKey.replace(/^0x/, "").replace(/^0+/, "")).not.toBe(
+      note.nullifier.replace(/^0x/, "").replace(/^0+/, ""),
+    );
   });
 });
 
