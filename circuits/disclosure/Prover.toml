@@ -1,4 +1,4 @@
-merkle_root = "0x176489737d67d5817447af20de4fd7a4bf3e1b10f633feef0ecb44a4767e53da"
+merkle_root = "0x147cdc1d655aa3b64028f43a78ca592c2b83c7e5e101559d1ed8c632f4615e96"
 kyc_hash = "0x180d9d9269e831d822945d8db05ffa31739fa937f8cd19145f77418a12957309"
 threshold = "500000"
 auditor_key = "42"
@@ -6,6 +6,7 @@ kyc_preimage = "99887766"
 nullifier = "1234"
 secret = "5678"
 amount = "1000000"
+asset = "7"
 path_bits = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 path_siblings = [
     "0x0000000000000000000000000000000000000000000000000000000000000000",

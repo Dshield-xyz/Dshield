@@ -20,8 +20,15 @@ fn hash2(a: Field, b: Field) -> Field {
 /// `amount` is part of the commitment: notes carry their own value, so the
 /// pool no longer needs a fixed per-pool denomination and a spend can pay out
 /// part of a note and re-shield the rest.
-fn hash_leaf(nullifier: Field, secret: Field, amount: Field) -> Field {
-    hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount)
+///
+/// `asset` is bound in exactly the same way as `amount`: a note is tied to one
+/// SEP-41 asset, so a single pool can hold notes for many assets without a
+/// proof for one asset ever opening a note of another. The pool contract
+/// recomputes this same asset field from the payout token's address and rejects
+/// a withdrawal whose leaf commits to a different asset, which is what makes the
+/// binding sound on-chain rather than a naming convention.
+fn hash_leaf(nullifier: Field, secret: Field, amount: Field, asset: Field) -> Field {
+    hash2(hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount), asset)
 }
 
 fn hash_nullifier(nullifier: Field) -> Field {
@@ -76,6 +83,7 @@ pub fn main(
     recipient: pub Field,
     withdraw_amount: pub Field,
     change_commitment: pub Field,
+    asset: pub Field,
     nullifier: Field,
     secret: Field,
     amount: Field,
@@ -91,8 +99,10 @@ pub fn main(
     assert(withdraw_u64 <= amount_u64);
     let change = amount - withdraw_amount;
 
-    // The spent note exists in the tree and carries exactly `amount`.
-    let leaf = hash_leaf(nullifier, secret, amount);
+    // The spent note exists in the tree and carries exactly `amount` of
+    // `asset`. `asset` is a public input, so the pool contract can check it
+    // matches the token it is about to pay out (see asset_id_from_address).
+    let leaf = hash_leaf(nullifier, secret, amount, asset);
 
     let nf = hash_nullifier(nullifier);
     assert(nf == nullifier_hash);
@@ -101,8 +111,10 @@ pub fn main(
     assert(computed_root == root);
 
     // The re-shielded remainder is a well-formed note the spender can later
-    // open, worth exactly what was not paid out.
-    let expected_change = hash_leaf(change_nullifier, change_secret, change);
+    // open, worth exactly what was not paid out and denominated in the same
+    // `asset` -- so change can never silently switch a note to a different
+    // asset than the one that was spent.
+    let expected_change = hash_leaf(change_nullifier, change_secret, change, asset);
     assert(expected_change == change_commitment);
 
     // `recipient` is a committed public input. The front-running protection is

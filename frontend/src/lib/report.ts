@@ -1,6 +1,6 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { POOL_CONTRACT_ID, queryContract } from "./stellar";
-import { computeCommitment, computeNullifierHash } from "./poseidon2";
+import { computeCommitment, computeNullifierHash, assetToField } from "./poseidon2";
 import { fetchCommitmentsFromChain, lookupNoteTxs } from "./indexer";
 import { type ShieldedNote } from "./notes";
 import { getNetworkLabel } from "./explorer";
@@ -44,10 +44,12 @@ export async function buildComplianceReport(
   // amount is part of the commitment, so this also checks the note's recorded
   // value against what it actually claims on-chain: a note whose amount was
   // edited no longer hashes to a leaf the pool holds, and `integrityOk` fails.
+  const assetField = await assetToField(note.asset);
   const commitment = await computeCommitment(
     note.nullifier,
     note.secret,
     note.amount,
+    assetField,
   );
   const nullifierHash = await computeNullifierHash(note.nullifier);
   const commitmentClean = commitment.replace(/^0x/, "").toLowerCase();

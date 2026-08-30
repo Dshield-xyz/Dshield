@@ -32,10 +32,12 @@ import {
   computeNullifierHash,
   computeRecipientHash,
   buildMerkleTree,
+  assetToField,
 } from "@/lib/poseidon2";
 import {
   syncDepositsFromChain,
   fetchCommitmentsFromChain,
+  fetchMerkleProofFromService,
 } from "@/lib/indexer";
 import { proveWithdrawal, proveWithdrawalBatch, type ProofStage } from "@/lib/prover";
 import { friendlyError } from "@/lib/errors";
@@ -107,16 +109,24 @@ const PROGRESS_STEPS = [
 async function buildChangeNote(
   poolId: string,
   changeValue: string,
+  asset: string,
 ): Promise<ShieldedNote> {
   const nullifier = generateRandomField();
   const secret = generateRandomField();
-  const commitment = await computeCommitment(nullifier, secret, changeValue);
+  const assetField = await assetToField(asset);
+  const commitment = await computeCommitment(
+    nullifier,
+    secret,
+    changeValue,
+    assetField,
+  );
   return {
     nullifier,
     secret,
     commitment: commitment.replace(/^0x/, ""),
     leafIndex: PENDING_LEAF_INDEX,
     amount: changeValue,
+    asset,
     spent: false,
     createdAt: Date.now(),
     poolId,
@@ -239,7 +249,7 @@ export default function WithdrawPage() {
       return;
     }
     let cancelled = false;
-    fetchWithdrawFeeQuote(poolId).then((quote) => {
+    fetchWithdrawFeeQuote(poolId, selectedNotes[0].asset).then((quote) => {
       if (!cancelled) setFeeQuote(quote);
     });
     return () => {
@@ -305,19 +315,28 @@ export default function WithdrawPage() {
     const rootBytes = StellarSdk.scValToNative(rootVal) as Buffer;
     const onChainRoot = "0x" + Buffer.from(rootBytes).toString("hex");
 
-    const chainCommitments = await fetchCommitmentsFromChain(poolId);
-    let commitments: string[];
-    if (chainCommitments && chainCommitments.length > 0) {
-      commitments = chainCommitments;
-    } else {
-      await syncDepositsFromChain(poolId);
-      commitments = getAllCommitments(note.poolId || POOL_CONTRACT_ID);
-      if (commitments.length === 0) {
-        throw new Error("Couldn't load the pool's deposit history. Use “Re-sync from network” below and try again.");
+    // Prefer a self-hosted indexer service if one is configured — it skips
+    // both the RPC round trips and the in-browser tree rebuild. Never a
+    // trust boundary: whatever it returns is checked against onChainRoot
+    // below exactly like the locally-rebuilt path is, so a stale or
+    // misbehaving service just falls through to direct RPC scanning.
+    let merkle = await fetchMerkleProofFromService(poolId, note.leafIndex);
+
+    if (!merkle) {
+      const chainCommitments = await fetchCommitmentsFromChain(poolId);
+      let commitments: string[];
+      if (chainCommitments && chainCommitments.length > 0) {
+        commitments = chainCommitments;
+      } else {
+        await syncDepositsFromChain(poolId);
+        commitments = getAllCommitments(note.poolId || POOL_CONTRACT_ID);
+        if (commitments.length === 0) {
+          throw new Error("Couldn't load the pool's deposit history. Use “Re-sync from network” below and try again.");
+        }
       }
+      merkle = await buildMerkleTree(commitments, note.leafIndex);
     }
 
-    const merkle = await buildMerkleTree(commitments, note.leafIndex);
     if (merkle.root.toLowerCase() !== onChainRoot.toLowerCase()) {
       throw new Error("Your local data is out of sync with the network. Use “Re-sync from network” below and try again.");
     }
@@ -334,13 +353,15 @@ export default function WithdrawPage() {
     setProofStage(null);
     const recipientHash = await computeRecipientHash(recipientAddr);
 
-    const changeNote = await buildChangeNote(poolId, changeValue);
+    const changeNote = await buildChangeNote(poolId, changeValue, note.asset);
+    const assetField = await assetToField(note.asset);
 
     const { proof, publicInputs } = await proveWithdrawal(
       {
         nullifier: note.nullifier,
         secret: note.secret,
         amount: note.amount,
+        asset: assetField,
         withdrawAmount: withdrawStroops,
         changeNullifier: changeNote.nullifier,
         changeSecret: changeNote.secret,
@@ -365,20 +386,32 @@ export default function WithdrawPage() {
     }
 
     onStep("submitting");
-    const relayed = await relayWithdrawal({ poolId, recipient: recipientAddr, publicInputs, proof });
+    const relayed = await relayWithdrawal({
+      poolId,
+      recipient: recipientAddr,
+      publicInputs,
+      proof,
+      asset: note.asset,
+    });
     if (relayed) {
       await settle();
       return relayed.hash;
     }
 
     onStep("signing");
+    // No relayer configured, so this is submitted directly by the user's
+    // wallet with no fee carve-out to abstract away.
     const tx = await buildContractCall(
       poolId,
       "withdraw",
       [
         StellarSdk.nativeToScVal(recipientAddr, { type: "address" }),
+        StellarSdk.nativeToScVal(note.asset, { type: "address" }),
         StellarSdk.xdr.ScVal.scvBytes(Buffer.from(publicInputs, "hex")),
         StellarSdk.xdr.ScVal.scvBytes(Buffer.from(proof, "hex")),
+        StellarSdk.nativeToScVal(BigInt(0), { type: "i128" }),
+        StellarSdk.nativeToScVal(BigInt(0), { type: "i128" }),
+        StellarSdk.nativeToScVal(recipientAddr, { type: "address" }),
       ],
       address!,
     );
