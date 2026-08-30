@@ -3,6 +3,7 @@ import {
   poseidon2Hash,
   computeCommitment,
   computeNullifierHash,
+  computeViewKey,
   getZeroHashes,
   buildMerkleTree,
   normalizeField,
@@ -13,14 +14,16 @@ const KNOWN_ZERO_HASH =
   "0x0b63a53787021a4a962a452c2921b3663aff1ffd8d5510540f8e659e782956f1";
 const KNOWN_NULLIFIER_HASH =
   "0x162e3a2744c870a14bcdbd4028e3400ba6ae1d2e869fa850b1b411e57a370e04";
-// hash_leaf(nullifier=1234, secret=5678, amount=1000000) as computed by the
-// Noir circuits — the exact fixture in circuits/shielded_pool/Prover.toml,
-// which the circuit accepts as the leaf behind that file's `root`. Pinning it
-// here is what keeps the TypeScript and Noir implementations from drifting: if
-// they disagree, every note minted by the app becomes unwithdrawable, and the
-// only symptom is a proof that fails to verify.
+// hash_leaf(nullifier=1234, secret=5678, amount=1000000, asset=7) as computed
+// by the Noir circuits — the exact fixture in
+// circuits/shielded_pool/Prover.toml, which the circuit accepts as the leaf
+// behind that file's `root`. Pinning it here is what keeps the TypeScript and
+// Noir implementations from drifting: if they disagree, every note minted by
+// the app becomes unwithdrawable, and the only symptom is a proof that fails
+// to verify.
 const KNOWN_LEAF =
-  "0x16111c32922f91c6807ea7b21de7ce3164cec5defead888c64e8d33451507952";
+  "0x16a7837ad782bec94584ff0aa6b46490108419c80b92a3b1f870538bdabb19d8";
+const KNOWN_ASSET = "07";
 
 describe("normalizeField", () => {
   it("left-pads a value whose top byte is zero to 32 bytes", () => {
@@ -67,37 +70,48 @@ describe("poseidon2Hash", () => {
 
 describe("computeCommitment", () => {
   it("matches the Noir circuits' hash_leaf for the shared fixture", async () => {
-    expect(await computeCommitment("04d2", "162e", "1000000")).toBe(KNOWN_LEAF);
+    expect(await computeCommitment("04d2", "162e", "1000000", KNOWN_ASSET)).toBe(
+      KNOWN_LEAF,
+    );
   });
 
   it("binds the amount: the same secrets with a different value differ", async () => {
     // The whole basis of variable-value notes. If the amount did not change the
     // commitment, a note could be spent for any amount the holder chose.
-    const a = await computeCommitment("00aabb", "00ccdd", "1000000");
-    const b = await computeCommitment("00aabb", "00ccdd", "1000001");
+    const a = await computeCommitment("00aabb", "00ccdd", "1000000", "01");
+    const b = await computeCommitment("00aabb", "00ccdd", "1000001", "01");
+    expect(a).not.toBe(b);
+  });
+
+  it("binds the asset: the same secrets and amount with a different asset differ", async () => {
+    // A single pool holds notes for many assets; if asset did not change the
+    // commitment, a proof for one asset could open (and spend) a note that
+    // actually holds a different one.
+    const a = await computeCommitment("00aabb", "00ccdd", "1000000", "01");
+    const b = await computeCommitment("00aabb", "00ccdd", "1000000", "02");
     expect(a).not.toBe(b);
   });
 
   it("accepts an amount as bigint or decimal string interchangeably", async () => {
-    const fromString = await computeCommitment("00aabb", "00ccdd", "1000000");
-    const fromBigInt = await computeCommitment("00aabb", "00ccdd", BigInt(1000000));
+    const fromString = await computeCommitment("00aabb", "00ccdd", "1000000", "01");
+    const fromBigInt = await computeCommitment("00aabb", "00ccdd", BigInt(1000000), "01");
     expect(fromString).toBe(fromBigInt);
   });
 
   it("returns a hex string", async () => {
-    const result = await computeCommitment("00aabb", "00ccdd", "1000000");
+    const result = await computeCommitment("00aabb", "00ccdd", "1000000", "01");
     expect(result.startsWith("0x")).toBe(true);
   });
 
   it("is deterministic", async () => {
-    const a = await computeCommitment("00aabb", "00ccdd", "1000000");
-    const b = await computeCommitment("00aabb", "00ccdd", "1000000");
+    const a = await computeCommitment("00aabb", "00ccdd", "1000000", "01");
+    const b = await computeCommitment("00aabb", "00ccdd", "1000000", "01");
     expect(a).toBe(b);
   });
 
   it("differs with different inputs", async () => {
-    const a = await computeCommitment("00aabb", "00ccdd", "1000000");
-    const b = await computeCommitment("00ccdd", "00aabb", "1000000");
+    const a = await computeCommitment("00aabb", "00ccdd", "1000000", "01");
+    const b = await computeCommitment("00ccdd", "00aabb", "1000000", "01");
     expect(a).not.toBe(b);
   });
 });
@@ -106,6 +120,38 @@ describe("computeNullifierHash", () => {
   it("matches the known hash for field value 1234 (0x04d2)", async () => {
     const result = await computeNullifierHash("04d2");
     expect(result).toBe(KNOWN_NULLIFIER_HASH);
+  });
+});
+
+describe("computeViewKey", () => {
+  // Fixture shared with circuits/view_disclosure/Prover.toml: secret=5678
+  // (0x162e) must derive the same view_key the circuit accepts, or every
+  // viewing key computed by the app becomes unprovable.
+  const KNOWN_VIEW_KEY =
+    "0x209a8e46bf9ac6f94eea835478cb1942a8128e8fab0fac130b810abb2dc6f5ff";
+
+  it("matches the Noir circuit's hash_view_key for the shared fixture", async () => {
+    expect(await computeViewKey("162e")).toBe(KNOWN_VIEW_KEY);
+  });
+
+  it("is deterministic", async () => {
+    const a = await computeViewKey("00aabb");
+    const b = await computeViewKey("00aabb");
+    expect(a).toBe(b);
+  });
+
+  it("differs for different secrets", async () => {
+    const a = await computeViewKey("00aabb");
+    const b = await computeViewKey("00ccdd");
+    expect(a).not.toBe(b);
+  });
+
+  it("is independent of any nullifier value: a pure function of secret", async () => {
+    // Same secret, computed with nothing else in scope -- there is no
+    // nullifier parameter to this function at all, which is the point.
+    const a = await computeViewKey("00aabb");
+    const b = await computeViewKey("00aabb");
+    expect(a).toBe(b);
   });
 });
 
@@ -135,7 +181,7 @@ describe("getZeroHashes", () => {
 
 describe("buildMerkleTree", () => {
   it("returns 20-element pathSiblings and pathBits for 1 leaf", async () => {
-    const commitment = await computeCommitment("00aabb", "00ccdd", "1000000");
+    const commitment = await computeCommitment("00aabb", "00ccdd", "1000000", "01");
     const proof = await buildMerkleTree([commitment], 0);
     expect(proof.pathSiblings).toHaveLength(20);
     expect(proof.pathBits).toHaveLength(20);
@@ -143,21 +189,21 @@ describe("buildMerkleTree", () => {
   });
 
   it("pathBits are all 0 for index 0", async () => {
-    const commitment = await computeCommitment("00aabb", "00ccdd", "1000000");
+    const commitment = await computeCommitment("00aabb", "00ccdd", "1000000", "01");
     const proof = await buildMerkleTree([commitment], 0);
     expect(proof.pathBits.every((b) => b === 0)).toBe(true);
   });
 
   it("pathBits for index 1 starts with 1", async () => {
-    const c0 = await computeCommitment("001111", "002222", "1000000");
-    const c1 = await computeCommitment("003333", "004444", "1000000");
+    const c0 = await computeCommitment("001111", "002222", "1000000", "01");
+    const c1 = await computeCommitment("003333", "004444", "1000000", "01");
     const proof = await buildMerkleTree([c0, c1], 1);
     expect(proof.pathBits[0]).toBe(1);
   });
 
   it("siblings at index 0 with 1 leaf are all zero hashes", async () => {
     const zeroes = await getZeroHashes();
-    const commitment = await computeCommitment("00aabb", "00ccdd", "1000000");
+    const commitment = await computeCommitment("00aabb", "00ccdd", "1000000", "01");
     const proof = await buildMerkleTree([commitment], 0);
     for (let i = 0; i < 20; i++) {
       expect(proof.pathSiblings[i]).toBe(zeroes[i]);
@@ -165,16 +211,16 @@ describe("buildMerkleTree", () => {
   });
 
   it("produces different roots for different commitments", async () => {
-    const c1 = await computeCommitment("001111", "002222", "1000000");
-    const c2 = await computeCommitment("003333", "004444", "1000000");
+    const c1 = await computeCommitment("001111", "002222", "1000000", "01");
+    const c2 = await computeCommitment("003333", "004444", "1000000", "01");
     const proof1 = await buildMerkleTree([c1], 0);
     const proof2 = await buildMerkleTree([c2], 0);
     expect(proof1.root).not.toBe(proof2.root);
   });
 
   it("2-leaf tree has different root than 1-leaf tree", async () => {
-    const c0 = await computeCommitment("001111", "002222", "1000000");
-    const c1 = await computeCommitment("003333", "004444", "1000000");
+    const c0 = await computeCommitment("001111", "002222", "1000000", "01");
+    const c1 = await computeCommitment("003333", "004444", "1000000", "01");
     const proof1Leaf = await buildMerkleTree([c0], 0);
     const proof2Leaves = await buildMerkleTree([c0, c1], 0);
     expect(proof1Leaf.root).not.toBe(proof2Leaves.root);
@@ -183,9 +229,11 @@ describe("buildMerkleTree", () => {
   });
 
   it("2-leaf tree: sibling at level 0 for index 0 is the other leaf", async () => {
-    const c0 = await computeCommitment("001111", "002222", "1000000");
-    const c1 = await computeCommitment("003333", "004444", "1000000");
+    const c0 = await computeCommitment("001111", "002222", "1000000", "01");
+    const c1 = await computeCommitment("003333", "004444", "1000000", "01");
     const proof = await buildMerkleTree([c0, c1], 0);
     expect(proof.pathSiblings[0].toLowerCase()).toBe(c1.toLowerCase());
   });
 });
+
+

@@ -783,3 +783,7 @@ convenience.
 - [CAP-0075 (Poseidon/Poseidon2)](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0075.md)
 - [CAP-0059 (BLS12-381)](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0059.md)
 - [Privacy Pools Whitepaper](https://privacypools.com/whitepaper.pdf)
+
+## Fiat on-ramp trust boundary
+
+The optional SEP-24 onboarding path is intentionally outside the privacy pool's trust boundary. DShield discovers a configured Stellar anchor through SEP-1, sends the user to the anchor's interactive payment and KYC flow, and polls the anchor only for transaction status. The anchor can associate fiat payment, identity, and the receiving public wallet; it cannot create a shielded note or access note secrets. DShield creates a note only after the anchor reports completion and the wallet has the delivered asset, followed by the user's normal wallet signature.

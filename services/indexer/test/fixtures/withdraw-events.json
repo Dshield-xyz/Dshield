@@ -1,0 +1,7 @@
+[
+  {
+    "nullifierHash": "0x000000000000000000000000000000000000000000000000000000000000dead",
+    "txHash": "fixture-tx-withdraw-0",
+    "ledgerClosedAt": "2026-01-01T00:01:00.000Z"
+  }
+]

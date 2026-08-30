@@ -99,9 +99,11 @@ const checkers = {
   "amount-u64-witness": (s) => s.includes("letamount_u64=constrain_u64(amount);"),
   "withdraw-lte-amount": (s) => s.includes("assert(withdraw_u64<=amount_u64);"),
   "change-is-amount-minus-withdraw": (s) => s.includes("letchange=amount-withdraw_amount;"),
-  "change-commitment-uses-change": (s) => s.includes("letexpected_change=hash_leaf(change_nullifier,change_secret,change);") && s.includes("assert(expected_change==change_commitment);"),
-  "hash-leaf-includes-amount": (s) => s.includes("fnhash_leaf(nullifier:Field,secret:Field,amount:Field)->Field{hash2(hash2(hash2(LEAF_DOMAIN,nullifier),secret),amount)}"),
-  "spent-leaf-uses-amount": (s) => s.includes("letleaf=hash_leaf(nullifier,secret,amount);"),
+  "change-commitment-uses-change": (s) => s.includes("letexpected_change=hash_leaf(change_nullifier,change_secret,change,asset);") && s.includes("assert(expected_change==change_commitment);"),
+  "hash-leaf-includes-amount": (s) => s.includes("fnhash_leaf(nullifier:Field,secret:Field,amount:Field,asset:Field)->Field{hash2(hash2(hash2(hash2(LEAF_DOMAIN,nullifier),secret),amount),asset)}"),
+  "spent-leaf-uses-amount": (s) => s.includes("letleaf=hash_leaf(nullifier,secret,amount,asset);"),
+  "withdraw-asset-is-public": (s) => s.includes("asset:pubField,"),
+  "change-leaf-binds-asset": (s) => s.includes("letexpected_change=hash_leaf(change_nullifier,change_secret,change,asset);"),
   "computed-root-asserted": (s) => (s.includes("letcomputed_root=compute_root(leaf,path_siblings,path_bits);") || s.includes("letcomputed_root=compute_root(leaf,path_siblings,path_bits);")) && (s.includes("assert(computed_root==root);") || s.includes("assert(computed_root==merkle_root);")),
   "nullifier-hash-asserted": (s) => s.includes("letnf=hash_nullifier(nullifier);") && s.includes("assert(nf==nullifier_hash);"),
   "kyc-hash-asserted": (s) => s.includes("letcomputed_kyc=hash_kyc(kyc_preimage);") && s.includes("assert(computed_kyc==kyc_hash);"),
@@ -211,6 +213,11 @@ function runSelfTest(specs) {
       name: "change arithmetic",
       from: "let change = amount - withdraw_amount;",
       to: "let change = amount;"
+    },
+    {
+      name: "asset binding",
+      from: "let expected_change = hash_leaf(change_nullifier, change_secret, change, asset);",
+      to: "let expected_change = hash_leaf(change_nullifier, change_secret, change, amount);"
     }
   ];
 
