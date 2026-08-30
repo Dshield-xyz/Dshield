@@ -18,6 +18,7 @@ const NAV_ITEMS = [
   { href: "/compliance", label: "Compliance" },
   { href: "/audit", label: "Audit" },
   { href: "/history", label: "History" },
+  { href: "/admin", label: "Governance" },
 ];
 
 interface Balances {

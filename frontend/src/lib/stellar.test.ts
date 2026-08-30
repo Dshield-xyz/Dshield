@@ -90,6 +90,7 @@ describe("relayWithdrawal", () => {
     recipient: ISSUER,
     publicInputs: "00",
     proof: "00",
+    asset: TOKEN_ID,
   };
 
   it("returns null on 503 so the caller can fall back to wallet signing", async () => {
@@ -175,7 +176,7 @@ describe("fetchWithdrawFeeQuote", () => {
       "fetch",
       vi.fn().mockResolvedValue({ ok: false, status: 500 }),
     );
-    expect(await s.fetchWithdrawFeeQuote(POOL_ID)).toEqual({
+    expect(await s.fetchWithdrawFeeQuote(POOL_ID, TOKEN_ID)).toEqual({
       feeAmount: "0",
       expectedXlmOut: "0",
       minXlmOut: "0",
@@ -185,7 +186,7 @@ describe("fetchWithdrawFeeQuote", () => {
   it("returns the zero-fee fallback when the request throws", async () => {
     const s = await loadStellarWithDex();
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
-    expect(await s.fetchWithdrawFeeQuote(POOL_ID)).toEqual({
+    expect(await s.fetchWithdrawFeeQuote(POOL_ID, TOKEN_ID)).toEqual({
       feeAmount: "0",
       expectedXlmOut: "0",
       minXlmOut: "0",
@@ -199,11 +200,14 @@ describe("fetchWithdrawFeeQuote", () => {
       "fetch",
       vi.fn().mockResolvedValue({ ok: true, json: async () => quote }),
     );
-    expect(await s.fetchWithdrawFeeQuote(POOL_ID)).toEqual(quote);
+    expect(await s.fetchWithdrawFeeQuote(POOL_ID, TOKEN_ID)).toEqual(quote);
 
     const fetchMock = vi.mocked(globalThis.fetch);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/relay-withdraw-quote");
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ poolId: POOL_ID });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      poolId: POOL_ID,
+      asset: TOKEN_ID,
+    });
   });
 });

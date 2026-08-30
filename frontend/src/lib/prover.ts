@@ -55,7 +55,9 @@ async function generateProof(
 
     function onError(event: ErrorEvent) {
       cleanup();
-      reject(event.error instanceof Error ? event.error : new Error(event.message));
+      reject(
+        event.error instanceof Error ? event.error : new Error(event.message),
+      );
     }
 
     function cleanup() {
@@ -91,6 +93,7 @@ export async function proveWithdrawal(
     nullifier: string;
     secret: string;
     amount: string;
+    asset: string;
     withdrawAmount: string;
     changeNullifier: string;
     changeSecret: string;
@@ -109,6 +112,7 @@ export async function proveWithdrawal(
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
       amount: decimal(inputs.amount),
+      asset: ensureHex(inputs.asset),
       change_nullifier: ensureHex(inputs.changeNullifier),
       change_secret: ensureHex(inputs.changeSecret),
       root: ensureHex(inputs.root),
@@ -123,12 +127,67 @@ export async function proveWithdrawal(
   );
 }
 
+/**
+ * Generates multiple withdrawal proofs in parallel, one per note being spent.
+ * Each proof is independent and uses its own witness; they can be proven
+ * concurrently to amortize the total proving time across multiple worker threads.
+ *
+ * Returns an array of { proof, publicInputs } tuples in the same order as the
+ * input array. If any proof generation fails, the entire batch fails.
+ *
+ * The onProgress callback is invoked per-proof, with each call tagged by the
+ * note index (e.g., "note 0: executing...") so the UI can track progress
+ * across the batch.
+ */
+export async function proveWithdrawalBatch(
+  inputsArray: Array<{
+    nullifier: string;
+    secret: string;
+    amount: string;
+    withdrawAmount: string;
+    changeNullifier: string;
+    changeSecret: string;
+    changeCommitment: string;
+    root: string;
+    nullifierHash: string;
+    recipientHash: string;
+    pathSiblings: string[];
+    pathBits: number[];
+  }>,
+  onProgress?: (note: number, stage: ProofStage) => void,
+): Promise<ProofResult[]> {
+  // Generate all proofs in parallel.
+  const proofPromises = inputsArray.map((inputs, idx) =>
+    generateProof(
+      poolCircuit as Record<string, unknown>,
+      {
+        nullifier: ensureHex(inputs.nullifier),
+        secret: ensureHex(inputs.secret),
+        amount: decimal(inputs.amount),
+        change_nullifier: ensureHex(inputs.changeNullifier),
+        change_secret: ensureHex(inputs.changeSecret),
+        root: ensureHex(inputs.root),
+        nullifier_hash: ensureHex(inputs.nullifierHash),
+        recipient: ensureHex(inputs.recipientHash),
+        withdraw_amount: decimal(inputs.withdrawAmount),
+        change_commitment: ensureHex(inputs.changeCommitment),
+        path_bits: inputs.pathBits.map(String),
+        path_siblings: inputs.pathSiblings.map(ensureHex),
+      },
+      onProgress ? (stage) => onProgress(idx, stage) : undefined,
+    ),
+  );
+
+  return Promise.all(proofPromises);
+}
+
 export async function proveCompliance(
   inputs: {
     kycPreimage: string;
     nullifier: string;
     secret: string;
     amount: string;
+    asset: string;
     auditorKey: string;
     merkleRoot: string;
     kycHash: string;
@@ -145,6 +204,7 @@ export async function proveCompliance(
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
       amount: decimal(inputs.amount),
+      asset: ensureHex(inputs.asset),
       auditor_key: ensureHex(inputs.auditorKey),
       merkle_root: ensureHex(inputs.merkleRoot),
       kyc_hash: ensureHex(inputs.kycHash),
@@ -162,6 +222,7 @@ export async function proveDisclosure(
     nullifier: string;
     secret: string;
     amount: string;
+    asset: string;
     auditorKey: string;
     merkleRoot: string;
     kycHash: string;
@@ -178,6 +239,7 @@ export async function proveDisclosure(
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
       amount: decimal(inputs.amount),
+      asset: ensureHex(inputs.asset),
       auditor_key: ensureHex(inputs.auditorKey),
       merkle_root: ensureHex(inputs.merkleRoot),
       kyc_hash: ensureHex(inputs.kycHash),

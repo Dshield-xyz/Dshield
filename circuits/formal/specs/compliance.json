@@ -17,6 +17,7 @@
       "nullifier",
       "secret",
       "amount",
+      "asset",
       "path_siblings",
       "path_bits"
     ],

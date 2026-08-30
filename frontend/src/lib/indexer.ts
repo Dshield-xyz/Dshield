@@ -1,6 +1,12 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { getRpcServer, POOL_CONTRACT_ID, queryContract } from "./stellar";
+import {
+  getRpcServer,
+  POOL_CONTRACT_ID,
+  INDEXER_SERVICE_URL,
+  queryContract,
+} from "./stellar";
 import { saveDeposit, getDeposits } from "./deposits";
+import type { MerkleProof } from "./poseidon2";
 
 // Must not exceed the contract's own MAX_PAGE_SIZE (contracts/pool/src/lib.rs)
 // — a larger request is silently clamped there, which would just mean more
@@ -51,6 +57,56 @@ export async function fetchCommitmentsFromChain(
   }
 
   return commitments;
+}
+
+/**
+ * Fetches a ready-made Merkle path for `leafIndex` from a self-hosted
+ * standalone indexer service (see services/indexer/) instead of scanning RPC
+ * events or paging `get_commitments_page` in-browser. Returns null if no
+ * service is configured (`NEXT_PUBLIC_INDEXER_SERVICE_URL` unset), it's
+ * unreachable, it reports a different pool than requested, or the leaf
+ * hasn't been indexed yet — callers should treat null as "fall back to
+ * direct RPC", not as an error.
+ *
+ * This is a convenience path only, never a trust boundary: the service is a
+ * cache, not a source of truth. `withdrawNote` (frontend/src/app/withdraw/page.tsx)
+ * always independently checks the root this returns against the pool
+ * contract's own `get_root` before using it in a proof, so a stale, buggy,
+ * or malicious service can at worst cause a fallback to direct RPC — it can
+ * never cause a proof to be built against a root the contract won't accept.
+ * See services/indexer/README.md for the full trust model.
+ */
+export async function fetchMerkleProofFromService(
+  poolId: string,
+  leafIndex: number,
+): Promise<MerkleProof | null> {
+  if (!INDEXER_SERVICE_URL) return null;
+  try {
+    const base = INDEXER_SERVICE_URL.replace(/\/+$/, "");
+    const res = await fetch(`${base}/proof/${leafIndex}`);
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      poolId?: string;
+      root?: string;
+      pathSiblings?: string[];
+      pathBits?: number[];
+    };
+    if (body.poolId !== poolId) return null;
+    if (
+      typeof body.root !== "string" ||
+      !Array.isArray(body.pathSiblings) ||
+      !Array.isArray(body.pathBits)
+    ) {
+      return null;
+    }
+    return {
+      root: body.root,
+      pathSiblings: body.pathSiblings,
+      pathBits: body.pathBits,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export interface NoteTxRefs {

@@ -12,8 +12,8 @@ fn hash2(a: Field, b: Field) -> Field {
 
 /// Note commitment -- must stay byte-for-byte identical to the shielded_pool
 /// circuit's `hash_leaf` (and to the frontend / pool contract).
-fn hash_leaf(nullifier: Field, secret: Field, amount: Field) -> Field {
-    hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount)
+fn hash_leaf(nullifier: Field, secret: Field, amount: Field, asset: Field) -> Field {
+    hash2(hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount), asset)
 }
 
 /// Viewing key derived from a note's `secret` alone -- deliberately
@@ -52,6 +52,7 @@ pub fn main(
     // Private inputs
     nullifier: Field,
     secret: Field,
+    asset: Field,
     path_siblings: [Field; TREE_DEPTH],
     path_bits: [Field; TREE_DEPTH],
 ) {
@@ -69,7 +70,7 @@ pub fn main(
     //    no public artifact of this proof (proof bytes, public inputs, or
     //    `view_key` itself) can be used to recover it. See
     //    docs/THREAT_MODEL.md for the key-separation argument in full.
-    let leaf = hash_leaf(nullifier, secret, amount);
+    let leaf = hash_leaf(nullifier, secret, amount, asset);
     let computed_root = compute_root(leaf, path_siblings, path_bits);
     assert(computed_root == merkle_root);
 }

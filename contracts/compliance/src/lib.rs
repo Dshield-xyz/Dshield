@@ -1,7 +1,8 @@
 #![no_std]
+use dshield_governance_auth::require_timelock;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, symbol_short, Address, Bytes, BytesN,
-    Env, InvokeError, IntoVal, Symbol, Val, Vec as SorobanVec,
+    Env, IntoVal, InvokeError, Symbol, Val, Vec as SorobanVec,
 };
 use ultrahonk_soroban_verifier::{UltraHonkVerifier, VkLoadError, PROOF_BYTES};
 
@@ -25,6 +26,7 @@ pub enum ComplianceError {
     UnknownMerkleRoot = 10,
     /// accept_admin called with no admin rotation in progress.
     NoPendingAdmin = 13,
+    TimelockNotSet = 14,
     ViewVkNotSet = 14,
 }
 
@@ -61,7 +63,6 @@ fn root_belongs_to_pool(env: &Env, pools: &SorobanVec<Address>, root: &BytesN<32
     }
     false
 }
-
 
 /// Decodes a 32-byte public-input field element back to u128, rejecting any
 /// value that doesn't fit (top 16 bytes must be zero) rather than silently
@@ -122,6 +123,12 @@ pub struct AdminUpdatedEvent<'a> {
     pub new_admin: &'a Address,
 }
 
+#[contractevent(topics = ["asp_root_rotated"])]
+pub struct AspRootRotatedEvent<'a> {
+    pub root: &'a BytesN<32>,
+    pub updated_by: &'a Address,
+}
+
 // KYC registry, VKs, admin, and pools all live in bounded instance storage.
 // Every state-mutating or verification entrypoint extends the TTL so the
 // entry doesn't silently expire and brick the contract between demos.
@@ -157,12 +164,21 @@ impl ComplianceContract {
     fn key_pending_admin() -> Symbol {
         symbol_short!("pendadm")
     }
+    fn key_timelock() -> Symbol {
+        symbol_short!("timelock")
+    }
 
+    /// `timelock` is the address of a deployed `dshield-governance`
+    /// `GovernanceContract` (the project's timelock) that gates
+    /// `propose_admin` and `set_disclosure_vk`: those entry points accept a
+    /// call only when invoked by this address, which happens only after the
+    /// change was queued and its delay elapsed.
     pub fn __constructor(
         env: Env,
         vk_bytes: Bytes,
         admin: Address,
         pools: soroban_sdk::Vec<Address>,
+        timelock: Address,
     ) -> Result<(), ComplianceError> {
         if env.storage().instance().has(&Self::key_vk()) {
             return Err(ComplianceError::AlreadyInitialized);
@@ -174,7 +190,12 @@ impl ComplianceContract {
         env.storage().instance().set(&Self::key_vk(), &vk_bytes);
         env.storage().instance().set(&Self::key_admin(), &admin);
         env.storage().instance().set(&Self::key_pools(), &pools);
+        env.storage().instance().set(&Self::key_timelock(), &timelock);
         Ok(())
+    }
+
+    pub fn get_timelock(env: Env) -> Option<Address> {
+        env.storage().instance().get(&Self::key_timelock())
     }
 
     /// Updates the set of pool contracts whose roots/amounts are trusted for
@@ -206,16 +227,18 @@ impl ComplianceContract {
             .unwrap_or(SorobanVec::new(&env))
     }
 
-    /// Step 1 of admin rotation: the current admin nominates `new_admin`.
-    /// Takes effect only once `new_admin` calls `accept_admin`, so a typoed
-    /// or unreachable address can never brick admin access.
+    /// Step 1 of timelock-gated admin rotation: queues the compliance
+    /// contract's next admin. Only callable by the configured governance
+    /// contract (after a queued `propose_admin` call has waited out its
+    /// delay). Takes effect only once `new_admin` calls `accept_admin`, so a
+    /// typoed or unreachable address can never brick admin access.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ComplianceError> {
-        let admin: Address = env
+        let timelock: Address = env
             .storage()
             .instance()
-            .get(&Self::key_admin())
-            .ok_or(ComplianceError::VkNotSet)?;
-        admin.require_auth();
+            .get(&Self::key_timelock())
+            .ok_or(ComplianceError::TimelockNotSet)?;
+        require_timelock(&timelock);
         bump_instance(&env);
         env.storage()
             .instance()
@@ -352,13 +375,17 @@ impl ComplianceContract {
         Ok(())
     }
 
+    /// Timelock-gated: rotates the disclosure VK. Only callable by the
+    /// configured governance contract, and only once it has actually
+    /// executed a queued `set_disclosure_vk` call after that call's delay
+    /// elapsed -- see `__constructor`.
     pub fn set_disclosure_vk(env: Env, vk_bytes: Bytes) -> Result<(), ComplianceError> {
-        let admin: Address = env
+        let timelock: Address = env
             .storage()
             .instance()
-            .get(&Self::key_admin())
-            .ok_or(ComplianceError::VkNotSet)?;
-        admin.require_auth();
+            .get(&Self::key_timelock())
+            .ok_or(ComplianceError::TimelockNotSet)?;
+        require_timelock(&timelock);
         bump_instance(&env);
 
         let _ = UltraHonkVerifier::new(&env, &vk_bytes).map_err(|e| match e {
@@ -370,7 +397,7 @@ impl ComplianceContract {
             .set(&Self::key_disclosure_vk(), &vk_bytes);
 
         DisclosureVkUpdatedEvent {
-            updated_by: &admin,
+            updated_by: &timelock,
         }
         .publish(&env);
 
@@ -573,13 +600,19 @@ mod tests {
         BytesN::from_array(env, &arr)
     }
 
-    fn setup(env: &Env) -> (Address, Address) {
+    fn setup(env: &Env) -> (Address, Address, Address) {
         let admin = <Address as TestAddress>::generate(env);
+        let timelock = <Address as TestAddress>::generate(env);
         let contract_id: Address = env.register(
             ComplianceContract,
-            (vk_bytes(env), admin.clone(), SorobanVec::<Address>::new(env)),
+            (
+                vk_bytes(env),
+                admin.clone(),
+                SorobanVec::<Address>::new(env),
+                timelock.clone(),
+            ),
         );
-        (contract_id, admin)
+        (contract_id, admin, timelock)
     }
 
     // ──────────────────────────────────────────────
@@ -589,18 +622,16 @@ mod tests {
     #[test]
     fn test_constructor_stores_vk() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         assert!(env.as_contract(&contract_id, || {
-            env.storage()
-                .instance()
-                .has(&ComplianceContract::key_vk())
+            env.storage().instance().has(&ComplianceContract::key_vk())
         }));
     }
 
     #[test]
     fn test_constructor_stores_admin() {
         let env = Env::default();
-        let (contract_id, admin) = setup(&env);
+        let (contract_id, admin, _timelock) = setup(&env);
         let stored_admin: Address = env.as_contract(&contract_id, || {
             env.storage()
                 .instance()
@@ -630,7 +661,7 @@ mod tests {
     fn test_register_kyc_stores_hash() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 1);
@@ -641,7 +672,7 @@ mod tests {
     #[test]
     fn test_kyc_not_registered_returns_false() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 99);
@@ -651,7 +682,7 @@ mod tests {
     #[test]
     fn test_register_kyc_requires_admin_auth() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 1);
@@ -663,7 +694,7 @@ mod tests {
     fn test_multiple_kyc_registrations() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let h1 = dummy_hash(&env, 1);
@@ -682,7 +713,7 @@ mod tests {
     fn test_register_kyc_idempotent() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 1);
@@ -695,7 +726,7 @@ mod tests {
     fn test_register_kyc_zero_hash() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
@@ -707,7 +738,7 @@ mod tests {
     fn test_register_kyc_max_hash() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let max_hash = BytesN::from_array(&env, &[0xFF; 32]);
@@ -719,7 +750,7 @@ mod tests {
     fn test_register_kyc_succeeds_with_auth() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 1);
@@ -731,7 +762,7 @@ mod tests {
     fn test_many_kyc_registrations_isolation() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         for i in 0u8..20 {
@@ -755,7 +786,7 @@ mod tests {
     #[test]
     fn test_verify_compliance_bad_public_inputs_length() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let bad_inputs = Bytes::from_slice(&env, &[0u8; 64]);
@@ -771,7 +802,7 @@ mod tests {
     #[test]
     fn test_verify_compliance_empty_public_inputs() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let empty_inputs = Bytes::from_slice(&env, &[]);
@@ -787,7 +818,7 @@ mod tests {
     #[test]
     fn test_verify_compliance_oversized_public_inputs() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let big_inputs = Bytes::from_slice(&env, &[0u8; 256]);
@@ -803,7 +834,7 @@ mod tests {
     #[test]
     fn test_verify_compliance_127_bytes_rejected() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let inputs = Bytes::from_slice(&env, &[0u8; 127]);
@@ -819,7 +850,7 @@ mod tests {
     #[test]
     fn test_verify_compliance_129_bytes_rejected() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let inputs = Bytes::from_slice(&env, &[0u8; 129]);
@@ -839,7 +870,7 @@ mod tests {
     #[test]
     fn test_verify_compliance_kyc_not_registered() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let mut pi = [0u8; 128];
@@ -858,7 +889,7 @@ mod tests {
     fn test_verify_compliance_wrong_proof_length() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 0xAB);
@@ -880,7 +911,7 @@ mod tests {
     fn test_verify_compliance_empty_proof() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 1);
@@ -902,7 +933,7 @@ mod tests {
     fn test_verify_compliance_kyc_hash_extraction_exact_position() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let mut kyc_arr = [0u8; 32];
@@ -928,7 +959,7 @@ mod tests {
     fn test_verify_compliance_kyc_hash_one_bit_off_rejected() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 0xAA);
@@ -953,7 +984,7 @@ mod tests {
     #[test]
     fn test_proof_length_checked_before_kyc() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let pi = Bytes::from_slice(&env, &[0u8; 128]);
@@ -969,7 +1000,7 @@ mod tests {
     #[test]
     fn test_public_inputs_length_checked_before_proof_length() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         // Both invalid: short public inputs + short proof
@@ -999,7 +1030,7 @@ mod tests {
     fn test_set_disclosure_vk_stores_vk() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         client.set_disclosure_vk(&disclosure_vk_bytes(&env));
@@ -1012,9 +1043,9 @@ mod tests {
     }
 
     #[test]
-    fn test_set_disclosure_vk_requires_admin() {
+    fn test_set_disclosure_vk_requires_timelock_auth() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let result = client.try_set_disclosure_vk(&disclosure_vk_bytes(&env));
@@ -1022,10 +1053,36 @@ mod tests {
     }
 
     #[test]
+    fn test_set_disclosure_vk_rejects_admin_caller() {
+        // The whole point of gating set_disclosure_vk behind the timelock is
+        // that the admin can no longer call it directly -- only the
+        // configured timelock contract's own outgoing call satisfies
+        // require_auth here.
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, admin, _timelock) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let vk = disclosure_vk_bytes(&env);
+
+        env.set_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "set_disclosure_vk",
+                args: (vk.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }
+        .into()]);
+        let result = client.try_set_disclosure_vk(&vk);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_set_disclosure_vk_invalid_length() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let short_vk = Bytes::from_slice(&env, &[0u8; 32]);
@@ -1041,7 +1098,7 @@ mod tests {
     fn test_verify_disclosure_vk_not_set() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 1);
@@ -1062,7 +1119,7 @@ mod tests {
     #[test]
     fn test_verify_disclosure_bad_public_inputs_length() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let bad_inputs = Bytes::from_slice(&env, &[0u8; 64]);
@@ -1079,7 +1136,7 @@ mod tests {
     fn test_verify_disclosure_kyc_not_registered() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         client.set_disclosure_vk(&disclosure_vk_bytes(&env));
@@ -1100,7 +1157,7 @@ mod tests {
     fn test_verify_disclosure_wrong_proof_length() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         client.set_disclosure_vk(&disclosure_vk_bytes(&env));
@@ -1123,7 +1180,7 @@ mod tests {
     #[test]
     fn test_verify_disclosure_proof_checked_before_kyc() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let pi = Bytes::from_slice(&env, &[0u8; 128]);
@@ -1148,7 +1205,7 @@ mod tests {
     //  at VerificationFailed — that's the signal the gate let it through.
     // ──────────────────────────────────────────────
 
-    fn setup_pool(env: &Env) -> (Address, i128) {
+    fn setup_pool(env: &Env) -> (Address, Address, i128) {
         use dshield_pool::PoolContract;
         use soroban_sdk::token::StellarAssetClient;
 
@@ -1163,28 +1220,31 @@ mod tests {
         // denomination any more, so nothing downstream depends on the figure.
         let note_amount: i128 = 100_000_000;
         let pool_admin = <Address as TestAddress>::generate(env);
+        let pool_timelock = <Address as TestAddress>::generate(env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), pool_admin),
+            (verifier_id, token_id.address(), pool_admin, pool_timelock),
         );
         let mut arr = [0u8; 32];
         arr[0] = 7;
         let commitment = BytesN::from_array(env, &arr);
         dshield_pool::PoolContractClient::new(env, &pool_id)
-            .deposit(&depositor, &commitment, &note_amount);
+            .deposit(&depositor, &token_id.address(), &commitment, &note_amount);
         (pool_id, note_amount)
     }
 
-    fn setup_with_pool(env: &Env) -> (Address, Address, Address, i128) {
+    fn setup_with_pool(env: &Env) -> (Address, Address, Address, Address, i128) {
         let admin = <Address as TestAddress>::generate(env);
+        let timelock = <Address as TestAddress>::generate(env);
         let (pool_id, deposit_amount) = setup_pool(env);
+        let (pool_id, _token_addr, deposit_amount) = setup_pool(env);
         let mut pools = soroban_sdk::Vec::new(env);
         pools.push_back(pool_id.clone());
         let contract_id: Address = env.register(
             ComplianceContract,
-            (vk_bytes(env), admin.clone(), pools),
+            (vk_bytes(env), admin.clone(), pools, timelock.clone()),
         );
-        (contract_id, admin, pool_id, deposit_amount)
+        (contract_id, admin, timelock, pool_id, deposit_amount)
     }
 
     fn root_of(env: &Env, pool_id: &Address) -> BytesN<32> {
@@ -1203,7 +1263,7 @@ mod tests {
     fn test_verify_compliance_unknown_root_rejected() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin, _pool_id, _amount) = setup_with_pool(&env);
+        let (contract_id, _admin, _timelock, _pool_id, _amount) = setup_with_pool(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 1);
@@ -1232,7 +1292,7 @@ mod tests {
         // amount gate is gone rather than silently accepting.
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin, pool_id, note_amount) = setup_with_pool(&env);
+        let (contract_id, _admin, _timelock, pool_id, note_amount) = setup_with_pool(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 1);
@@ -1256,7 +1316,7 @@ mod tests {
     fn test_verify_compliance_correct_amount_passes_gate() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin, pool_id, deposit_amount) = setup_with_pool(&env);
+        let (contract_id, _admin, _timelock, pool_id, deposit_amount) = setup_with_pool(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let kyc_hash = dummy_hash(&env, 1);
@@ -1282,7 +1342,7 @@ mod tests {
     fn test_verify_disclosure_threshold_within_amount_passes_gate() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin, pool_id, deposit_amount) = setup_with_pool(&env);
+        let (contract_id, _admin, _timelock, pool_id, deposit_amount) = setup_with_pool(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
         client.set_disclosure_vk(&disclosure_vk_bytes(&env));
 
@@ -1311,7 +1371,7 @@ mod tests {
         // proof verification decide the rest.
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin, pool_id, note_amount) = setup_with_pool(&env);
+        let (contract_id, _admin, _timelock, pool_id, note_amount) = setup_with_pool(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
         client.set_disclosure_vk(&disclosure_vk_bytes(&env));
 
@@ -1335,7 +1395,7 @@ mod tests {
     #[test]
     fn test_set_pools_requires_admin() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let mut pools = soroban_sdk::Vec::new(&env);
@@ -1348,7 +1408,7 @@ mod tests {
     fn test_set_pools_updates_configured_pools() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let mut pools = soroban_sdk::Vec::new(&env);
@@ -1368,7 +1428,7 @@ mod tests {
     fn test_set_pools_emits_pools_updated_event() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, admin) = setup(&env);
+        let (contract_id, admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let mut pools = soroban_sdk::Vec::new(&env);
@@ -1390,12 +1450,14 @@ mod tests {
     fn test_set_disclosure_vk_emits_disclosure_vk_updated_event() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, admin) = setup(&env);
+        let (contract_id, _admin, timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         client.set_disclosure_vk(&disclosure_vk_bytes(&env));
 
-        let expected = DisclosureVkUpdatedEvent { updated_by: &admin };
+        let expected = DisclosureVkUpdatedEvent {
+            updated_by: &timelock,
+        };
         assert_eq!(
             env.events().all(),
             std::vec![expected.to_xdr(&env, &contract_id)],
@@ -1407,10 +1469,47 @@ mod tests {
     // ──────────────────────────────────────────────
 
     #[test]
-    fn test_accept_admin_transfers_privileges() {
+    fn test_rotate_asp_root_requires_admin_auth() {
+        let env = Env::default();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let result = client.try_rotate_asp_root(&dummy_hash(&env, 42));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rotate_asp_root_rejects_zero_root() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let result = client.try_rotate_asp_root(&BytesN::from_array(&env, &[0u8; 32]));
+        assert_eq!(result.err().unwrap().unwrap(), ComplianceError::InvalidAspRoot);
+    }
+
+    #[test]
+    fn test_rotate_asp_root_stores_fixture_root_and_emits_event() {
         let env = Env::default();
         env.mock_all_auths();
         let (contract_id, admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let root = BytesN::from_array(&env, &[
+            0x81, 0xc9, 0x0c, 0x0b, 0x41, 0x69, 0x05, 0xda,
+            0xda, 0xd3, 0x2c, 0x31, 0xf0, 0x2e, 0xee, 0xf7,
+            0xe7, 0x4a, 0x63, 0x84, 0x85, 0x8f, 0x28, 0xc8,
+            0xef, 0xd4, 0x8a, 0x70, 0x4a, 0xd0, 0xd7, 0x48,
+        ]);
+        client.rotate_asp_root(&root);
+        assert_eq!(client.get_asp_root(), Some(root.clone()));
+        let expected = AspRootRotatedEvent { root: &root, updated_by: &admin };
+        assert_eq!(env.events().all(), std::vec![expected.to_xdr(&env, &contract_id)]);
+    }
+
+    #[test]
+    fn test_accept_admin_transfers_privileges() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
         let new_admin = <Address as TestAddress>::generate(&env);
 
@@ -1434,7 +1533,7 @@ mod tests {
     #[test]
     fn test_old_admin_loses_access_after_rotation() {
         let env = Env::default();
-        let (contract_id, admin) = setup(&env);
+        let (contract_id, admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
         let new_admin = <Address as TestAddress>::generate(&env);
 
@@ -1462,7 +1561,7 @@ mod tests {
     #[test]
     fn test_accept_admin_requires_pending_admin_auth() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
         let new_admin = <Address as TestAddress>::generate(&env);
 
@@ -1479,7 +1578,7 @@ mod tests {
     fn test_accept_admin_without_proposal_fails() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
 
         let result = client.try_accept_admin();
@@ -1490,12 +1589,36 @@ mod tests {
     }
 
     #[test]
-    fn test_propose_admin_requires_current_admin_auth() {
+    fn test_propose_admin_requires_timelock_auth() {
         let env = Env::default();
-        let (contract_id, _admin) = setup(&env);
+        let (contract_id, _admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
         let new_admin = <Address as TestAddress>::generate(&env);
 
+        let result = client.try_propose_admin(&new_admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_propose_admin_rejects_admin_caller() {
+        // Admin rotation on compliance is now timelock-gated too: the admin
+        // can no longer call propose_admin directly.
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, admin, _timelock) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        env.set_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "propose_admin",
+                args: (new_admin.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }
+        .into()]);
         let result = client.try_propose_admin(&new_admin);
         assert!(result.is_err());
     }
@@ -1716,7 +1839,7 @@ mod tests {
     fn test_accept_admin_emits_admin_updated_event() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, admin) = setup(&env);
+        let (contract_id, admin, _timelock) = setup(&env);
         let client = ComplianceContractClient::new(&env, &contract_id);
         let new_admin = <Address as TestAddress>::generate(&env);
 

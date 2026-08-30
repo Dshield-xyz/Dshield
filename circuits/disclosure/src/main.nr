@@ -13,10 +13,14 @@ fn hash2(a: Field, b: Field) -> Field {
 /// Note commitment -- must stay byte-for-byte identical to the shielded_pool
 /// circuit's `hash_leaf` (and to the frontend / pool contract), which is why it
 /// is a chain of two-input Poseidon2 hashes rather than one wide hash.
-/// `amount` is bound into the commitment, so a note's value is now something
-/// this circuit can actually prove rather than an unconstrained witness.
-fn hash_leaf(nullifier: Field, secret: Field, amount: Field) -> Field {
-    hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount)
+/// `amount` and `asset` are bound into the commitment, so a note's value and
+/// the asset it is denominated in are now something this circuit can actually
+/// prove rather than unconstrained witnesses. `asset` is a private witness
+/// here: the prover cannot lie about it without breaking Merkle membership
+/// (the real leaf commits to a specific asset), so the threshold comparison is
+/// necessarily about whatever asset the note actually holds.
+fn hash_leaf(nullifier: Field, secret: Field, amount: Field, asset: Field) -> Field {
+    hash2(hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount), asset)
 }
 
 fn hash_kyc(kyc_preimage: Field) -> Field {
@@ -62,6 +66,7 @@ pub fn main(
     nullifier: Field,
     secret: Field,
     amount: Field,
+    asset: Field,
     path_siblings: [Field; TREE_DEPTH],
     path_bits: [Field; TREE_DEPTH],
 ) {
@@ -70,8 +75,9 @@ pub fn main(
     assert(computed_kyc == kyc_hash);
 
     // 2. Wallet authorization: user owns a note in the shielded pool, and that
-    //    note is worth exactly `amount` -- the value is bound into the leaf.
-    let leaf = hash_leaf(nullifier, secret, amount);
+    //    note is worth exactly `amount` of `asset` -- both are bound into the
+    //    leaf, so membership can only be proven with the note's real asset.
+    let leaf = hash_leaf(nullifier, secret, amount, asset);
     let computed_root = compute_root(leaf, path_siblings, path_bits);
     assert(computed_root == merkle_root);
 

@@ -308,6 +308,51 @@ jobs:
         working-directory: frontend
         run: pnpm build
 
+  indexer-service:
+    name: Indexer Service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Nargo (for hasher circuit)
+        run: |
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
+          export PATH="$HOME/.nargo/bin:$PATH"
+          noirup -v 1.0.0-beta.9
+
+      - name: Compile hasher circuit
+        run: |
+          export PATH="$HOME/.nargo/bin:$PATH"
+          cd circuits/hasher && nargo compile
+          cp target/hasher.json ../../services/indexer/circuits/
+
+      - name: Build packages/core
+        working-directory: packages/core
+        run: |
+          npm install
+          npm run build
+
+      - name: Test packages/core
+        working-directory: packages/core
+        run: npm test
+
+      - name: Install services/indexer dependencies
+        working-directory: services/indexer
+        run: npm install
+
+      - name: Build services/indexer
+        working-directory: services/indexer
+        run: npm run build
+
+      - name: Test services/indexer
+        working-directory: services/indexer
+        run: npm test
+
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest

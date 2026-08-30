@@ -4,7 +4,8 @@ members = [
     "contracts/verifier",
     "contracts/pool",
     "contracts/compliance",
-    "contracts/bridge_adapter",
+    "contracts/governance",
+    "contracts/governance-auth",
 ]
 
 [workspace.dependencies]

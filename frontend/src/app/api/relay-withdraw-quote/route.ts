@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { quoteFeeSwap, queryContract, DEX_ROUTER_ID, XLM_SAC_ID } from "@/lib/stellar";
+import { quoteFeeSwap, DEX_ROUTER_ID, XLM_SAC_ID } from "@/lib/stellar";
 
 // Read-only pre-flight for the withdraw page: shows the effective relayer fee
 // (in the asset the user actually holds) before they sign, per issue #149's
@@ -23,22 +23,21 @@ export async function POST(req: NextRequest) {
   }
 
   let poolId: string;
+  let asset: string;
   try {
     const body = await req.json();
     poolId = String(body.poolId || "");
+    asset = String(body.asset || "");
   } catch {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
   if (!isStrKeyContract(poolId)) {
     return NextResponse.json({ error: "Invalid pool id." }, { status: 400 });
   }
-
-  const tokenVal = await queryContract(poolId, "get_token");
-  const tokenId = tokenVal ? (StellarSdk.scValToNative(tokenVal) as string) : null;
-  if (!tokenId) {
+  if (!isStrKeyContract(asset)) {
     return NextResponse.json({ feeAmount: "0", expectedXlmOut: "0", minXlmOut: "0" });
   }
 
-  const quote = await quoteFeeSwap(tokenId, RELAYER_FEE_STROOPS);
+  const quote = await quoteFeeSwap(asset, RELAYER_FEE_STROOPS);
   return NextResponse.json(quote ?? { feeAmount: "0", expectedXlmOut: "0", minXlmOut: "0" });
 }
