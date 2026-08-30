@@ -35,6 +35,12 @@ pub enum PoolError {
     InvalidAmount = 15,
     Paused = 16,
     NotAuthorized = 17,
+    // Recurring-authorization errors
+    AuthNotFound = 18,
+    AuthRevoked = 19,
+    AuthExhausted = 20,
+    PeriodNotElapsed = 21,
+    AmountExceedsCap = 22,
     VersionMismatch = 18,
     InvalidVersion = 19,
     InvalidFee = 18,
@@ -182,6 +188,117 @@ fn key_fee_asset() -> Symbol {
 }
 fn key_max_fee_bps() -> Symbol {
     symbol_short!("maxfee")
+}
+
+// ── Recurring-authorization storage keys ────────────────────────────────────
+// Persistent storage (grows with every authorization; never evicted).
+fn key_auth_prefix() -> Symbol {
+    symbol_short!("ra")
+}
+fn key_auth_nullifier_prefix() -> Symbol {
+    symbol_short!("ran")
+}
+// ────────────────────────────────────────────────────────────────────────────
+
+#[contractevent(topics = ["auth_created"], data_format = "map")]
+pub struct AuthCreatedEvent<'a> {
+    #[topic]
+    pub auth_commitment: &'a BytesN<32>,
+    pub recipient: &'a BytesN<32>,
+    pub max_amount: &'a u64,
+    pub period_secs: &'a u64,
+    pub max_uses: &'a u32,
+}
+
+#[contractevent(topics = ["auth_revoked"], data_format = "single-value")]
+pub struct AuthRevokedEvent<'a> {
+    pub auth_commitment: &'a BytesN<32>,
+}
+
+#[contractevent(topics = ["recurring_withdraw"], data_format = "map")]
+pub struct RecurringWithdrawEvent<'a> {
+    #[topic]
+    pub auth_commitment: &'a BytesN<32>,
+    pub payout: &'a u64,
+    pub uses_remaining: &'a u32,
+}
+
+/// On-chain state for one pre-authorized recurring withdrawal.
+///
+/// Stored in persistent storage keyed by `(key_auth_prefix(), auth_commitment)`.
+/// Serialized as a Soroban struct; adding fields at the end is forward-compatible.
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug)]
+pub struct RecurringAuth {
+    /// Recipient hash (same encoding as the withdrawal circuit public input).
+    pub recipient_hash: BytesN<32>,
+    /// Maximum tokens per occurrence, in base units (stroops).
+    pub max_amount: u64,
+    /// Minimum seconds between occurrences.
+    pub period_secs: u64,
+    /// Total remaining occurrences.  Decremented on each successful call;
+    /// a zero value means the authorization is exhausted.
+    pub uses_remaining: u32,
+    /// Unix timestamp (seconds) of the last successful recurring withdrawal,
+    /// or zero if no occurrence has run yet.
+    pub last_withdraw_ts: u64,
+    /// True when the owner has revoked this authorization.
+    pub revoked: bool,
+}
+
+// The recurring circuit exposes eight public inputs in declaration order:
+// root, note_nullifier_hash, auth_commitment, recipient, max_amount,
+// period_secs, max_uses, change_commitment.
+const RECURRING_PUBLIC_INPUT_BYTES: u32 = 8 * 32;
+
+struct RecurringInputs {
+    root: [u8; 32],
+    note_nullifier_hash: [u8; 32],
+    auth_commitment: [u8; 32],
+    recipient_hash: [u8; 32],
+    max_amount: [u8; 32],
+    period_secs: [u8; 32],
+    max_uses: [u8; 32],
+    change_commitment: [u8; 32],
+}
+
+fn parse_recurring_inputs(bytes: &Bytes) -> Result<RecurringInputs, PoolError> {
+    if bytes.len() != RECURRING_PUBLIC_INPUT_BYTES {
+        return Err(PoolError::InvalidPublicInputs);
+    }
+    let mut buf = [0u8; RECURRING_PUBLIC_INPUT_BYTES as usize];
+    bytes.copy_into_slice(&mut buf);
+    let field = |i: usize| {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&buf[i * 32..(i + 1) * 32]);
+        out
+    };
+    Ok(RecurringInputs {
+        root: field(0),
+        note_nullifier_hash: field(1),
+        auth_commitment: field(2),
+        recipient_hash: field(3),
+        max_amount: field(4),
+        period_secs: field(5),
+        max_uses: field(6),
+        change_commitment: field(7),
+    })
+}
+
+/// Decodes a public-input field element as a u64 policy value (max_amount,
+/// period_secs, max_uses).  Rejects if any byte above the low 8 bytes is set.
+fn u64_from_field(bytes: &[u8; 32]) -> Result<u64, PoolError> {
+    let (high, low) = bytes.split_at(24);
+    for b in high {
+        if *b != 0 {
+            return Err(PoolError::InvalidPublicInputs);
+        }
+    }
+    let mut value: u64 = 0;
+    for b in low {
+        value = (value << 8) | (*b as u64);
+    }
+    Ok(value)
 }
 
 const TREE_DEPTH: u32 = 20;

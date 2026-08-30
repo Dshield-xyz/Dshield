@@ -419,3 +419,84 @@ If the feed or its transport is compromised, a syntactically valid but incorrect
 
 See [SECURITY.md](../SECURITY.md) for browser-storage, rate-limiting, reporting,
 and deployment limitations.
+
+---
+
+## Recurring authorizations
+
+`authorize_recurring` lets a user pre-prove ownership of a note and bind a
+policy tuple `(recipient, max_amount, period_secs, max_uses)` to an on-chain
+record.  Subsequent occurrences are triggered by the relayer (or any caller)
+without a new ZK proof.
+
+### What the proof guarantees
+
+| Property | How it is enforced |
+| --- | --- |
+| Note ownership | Same Merkle-membership check as a normal withdrawal; source note nullifier is consumed during setup. |
+| Recipient binding | Proof commits to `recipient`; contract recomputes `recipient_hash_from_address` and rejects mismatches before any state change. |
+| Policy commitment | `auth_commitment = H(RECA, auth_nullifier, recipient, max_amount, period_secs, max_uses)`; verified in-circuit so no parameter can be altered after the proof is made. |
+| Amount safety | `max_amount` and `amount` are both range-constrained to 64 bits; circuit asserts `max_amount ≤ amount`. |
+| Change note | Circuit commits the re-shielded remainder `amount − max_amount`; inserted on-chain atomically during `authorize_recurring`. |
+
+### What the contract enforces on every occurrence
+
+The relayer calls `withdraw_recurring(auth_commitment, payout)`.  No proof is
+verified at this point; the constraints below replace it:
+
+- `payout ≤ auth.max_amount` — per-call cap.
+- `now ≥ auth.last_withdraw_ts + auth.period_secs` — time-lock.
+- `auth.uses_remaining > 0` — use-count guard.
+- `!auth.revoked` — revocation flag.
+
+These are on-chain state checks, not ZK proofs.  They are correct but weaker
+than a per-call proof: a compromise of the contract (e.g. a future upgrade bug)
+would bypass them.  The original setup proof is, by contrast, unforgeable.
+
+### Exposure if the `auth_nullifier` secret leaks
+
+The `auth_nullifier` is stored in the user's `localStorage` alongside the auth
+record.  It is used only to call `revoke_recurring`, which requires a signed
+transaction from the authorized `recipient` address anyway.  Leaking the
+`auth_nullifier` alone does **not** enable an attacker to perform additional
+withdrawals — it only enables early revocation.
+
+Contrast with a leaked note secret in today's one-shot withdrawal flow: that
+leaks the entire remaining note balance.  A recurring authorization leaks at
+most `max_amount × uses_remaining` of future withdrawals, and only to the
+pre-committed recipient.
+
+### Worst-case exposure comparison
+
+| Leaked secret | One-shot withdrawal | Recurring authorization |
+| --- | --- | --- |
+| Note nullifier + secret | Full note balance (unbounded) | Not applicable — note consumed at setup |
+| `auth_nullifier` | N/A | Only revocation — no extra payout |
+| Relayer account | Can censor/delay; cannot redirect funds | Same |
+
+### Residual risks
+
+- **Relayer liveness** — occurrences only execute if the relayer submits them.
+  A stopped or censoring relayer delays payments but cannot steal them.  The
+  owner can call `withdraw_recurring` directly at any time.
+- **Scheduler over-firing** — a cron job that calls the relay route more
+  frequently than `period_secs` receives `PeriodNotElapsed` (HTTP 200,
+  `status: "skipped"`) and causes no harm.
+- **`localStorage` XSS exposure** — the auth record, auth nullifier, and change
+  note are stored in plaintext localStorage, subject to the same XSS caveat as
+  all other DShield note secrets.  See the plaintext-localStorage warning in
+  README.md and SECURITY.md.
+- **No per-occurrence proof** — the relayer executes against pre-committed
+  parameters.  It cannot forge additional occurrences or exceed the `max_amount`
+  cap, but it can execute occurrences up to `max_uses` without the owner
+  manually approving each one.  This is intentional (that is the whole point of
+  the feature) and bounded by `max_uses` and the per-call `max_amount` cap.
+- **Revocation latency** — `revoke_recurring` is a signed Stellar transaction.
+  Between the time the owner decides to revoke and the ledger confirming that
+  transaction, one more occurrence may execute if the relayer fires at exactly
+  the right moment.  Owners should factor in one additional occurrence when
+  deciding whether to revoke.
+- **Auth commitment key collision** — `auth_commitment` is a Poseidon2 hash
+  over all policy parameters.  Collisions are computationally infeasible under
+  the BN254 security assumption.  A duplicate `auth_commitment` is rejected by
+  `authorize_recurring` with `CommitmentExists`.
