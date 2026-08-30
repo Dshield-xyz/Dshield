@@ -34,6 +34,9 @@ pub enum PoolError {
     InvalidAmount = 15,
     Paused = 16,
     NotAuthorized = 17,
+    AssetNotSupported = 18,
+    AssetMismatch = 19,
+    UnsupportedAsset = 20,
 }
 
 #[contractevent(topics = ["deposit"], data_format = "map")]
@@ -65,6 +68,18 @@ pub struct VerifierUpdatedEvent<'a> {
     pub updated_by: &'a Address,
 }
 
+#[contractevent(topics = ["asset_added"])]
+pub struct AssetAddedEvent<'a> {
+    pub asset: &'a Address,
+    pub added_by: &'a Address,
+}
+
+#[contractevent(topics = ["asset_removed"])]
+pub struct AssetRemovedEvent<'a> {
+    pub asset: &'a Address,
+    pub removed_by: &'a Address,
+}
+
 fn key_commitment_prefix() -> Symbol {
     symbol_short!("cm")
 }
@@ -89,8 +104,16 @@ fn key_admin() -> Symbol {
 fn key_paused() -> Symbol {
     symbol_short!("paused")
 }
-fn key_token() -> Symbol {
-    symbol_short!("token")
+/// Membership marker for an allow-listed asset: `(prefix, asset_address) ->
+/// ()`. Presence means the asset can be deposited and withdrawn.
+fn key_asset_prefix() -> Symbol {
+    symbol_short!("asset")
+}
+/// The allow-listed assets in registration order, for enumeration
+/// (`get_assets`). The membership markers above are the source of truth for
+/// per-call checks; this list mirrors them for read-only listing.
+fn key_asset_list() -> Symbol {
+    symbol_short!("assetl")
 }
 fn key_root_history_prefix() -> Symbol {
     symbol_short!("rh")
@@ -103,8 +126,8 @@ fn key_commitment_by_index_prefix() -> Symbol {
 }
 
 const TREE_DEPTH: u32 = 20;
-// The withdrawal circuit exposes five field elements; see parse_public_inputs.
-const PUBLIC_INPUT_BYTES: u32 = 5 * 32;
+// The withdrawal circuit exposes six field elements; see parse_public_inputs.
+const PUBLIC_INPUT_BYTES: u32 = 6 * 32;
 // Largest value a single note may carry. The circuit range-constrains note
 // values to 64 bits so the `withdraw + change == amount` arithmetic cannot wrap
 // the BN254 field, and the contract refuses to create notes it could not later
@@ -202,15 +225,21 @@ fn zeroes_for_tree(env: &Env) -> Vec<BytesN<32>> {
     zeroes
 }
 
-/// The five field elements the withdrawal circuit exposes, in declaration
+/// The six field elements the withdrawal circuit exposes, in declaration
 /// order: `root`, `nullifier_hash`, `recipient`, `withdraw_amount`,
-/// `change_commitment` (see circuits/shielded_pool/src/main.nr).
+/// `change_commitment`, `asset` (see circuits/shielded_pool/src/main.nr).
+///
+/// `asset` is the field element the spent note's leaf commits to. The contract
+/// recomputes the same field from the payout token's address
+/// (`asset_id_from_address`) and rejects the withdrawal unless they match, so a
+/// proof built for one asset cannot pull a different asset out of the pool.
 struct WithdrawInputs {
     root: [u8; 32],
     nullifier_hash: [u8; 32],
     recipient_hash: [u8; 32],
     withdraw_amount: [u8; 32],
     change_commitment: [u8; 32],
+    asset: [u8; 32],
 }
 
 fn parse_public_inputs(bytes: &Bytes) -> Result<WithdrawInputs, PoolError> {
@@ -230,6 +259,7 @@ fn parse_public_inputs(bytes: &Bytes) -> Result<WithdrawInputs, PoolError> {
         recipient_hash: field(2),
         withdraw_amount: field(3),
         change_commitment: field(4),
+        asset: field(5),
     })
 }
 
@@ -266,11 +296,58 @@ fn verify_proof(
         .map_err(|_| PoolError::VerificationFailed)
 }
 
-fn load_token(env: &Env) -> Result<Address, PoolError> {
-    env.storage()
+/// Derives the field element a note commits to for `asset`, from the SEP-41
+/// token's contract address. This MUST match the frontend's `assetToField` and
+/// the circuit's `asset` public input: it takes the token's 32-byte contract
+/// id, reduces it modulo the BN254 scalar field, and returns the 32-byte
+/// big-endian encoding. Binding the withdrawal proof's `asset` public input to
+/// this value is what stops a proof for one asset from paying out another. Only
+/// contract (C...) addresses are supported, since SEP-41 assets are contracts.
+fn asset_id_from_address(env: &Env, asset: &Address) -> Result<BytesN<32>, PoolError> {
+    let payload = asset.to_payload().ok_or(PoolError::UnsupportedAsset)?;
+    let hash = match payload {
+        AddressPayload::ContractIdHash(h) => h,
+        _ => return Err(PoolError::UnsupportedAsset),
+    };
+    let modulus = <BnScalar as Field>::modulus(env);
+    let bytes = Bytes::from_array(env, &hash.to_array());
+    let reduced = U256::from_be_bytes(env, &bytes).rem_euclid(&modulus);
+    let out_bytes = reduced.to_be_bytes();
+    let mut out = [0u8; 32];
+    out_bytes.copy_into_slice(&mut out);
+    Ok(BytesN::from_array(env, &out))
+}
+
+/// True if `asset` is on the admin-managed allow-list of assets this pool
+/// accepts. Deposits and withdrawals of any other asset are rejected.
+fn is_asset_supported(env: &Env, asset: &Address) -> bool {
+    let key = (key_asset_prefix(), asset.clone());
+    env.storage().instance().has(&key)
+}
+
+fn require_asset_supported(env: &Env, asset: &Address) -> Result<(), PoolError> {
+    if is_asset_supported(env, asset) {
+        Ok(())
+    } else {
+        Err(PoolError::AssetNotSupported)
+    }
+}
+
+/// Adds `asset` to the allow-list if not already present. Records both the
+/// O(1) membership marker and the enumeration list.
+fn register_asset(env: &Env, asset: &Address) {
+    let key = (key_asset_prefix(), asset.clone());
+    if env.storage().instance().has(&key) {
+        return;
+    }
+    env.storage().instance().set(&key, &());
+    let mut list: SorobanVec<Address> = env
+        .storage()
         .instance()
-        .get(&key_token())
-        .ok_or(PoolError::TokenNotSet)
+        .get(&key_asset_list())
+        .unwrap_or_else(|| SorobanVec::new(env));
+    list.push_back(asset.clone());
+    env.storage().instance().set(&key_asset_list(), &list);
 }
 
 /// Notes carry their own value, so any positive amount up to the circuit's
@@ -384,6 +461,13 @@ impl PoolContract {
     /// A pool holds notes of arbitrary value, so it takes no denomination:
     /// one pool serves every amount, which is also what gives every user the
     /// same anonymity set instead of splitting it across tiers.
+    ///
+    /// `token` seeds the asset allow-list with the pool's first supported
+    /// asset. The admin can allow-list further SEP-41 assets later with
+    /// `add_asset`, and a single pool instance then holds shielded notes for
+    /// every allow-listed asset over one shared tree and nullifier set — the
+    /// anonymity set is shared across assets rather than fragmented into a
+    /// separate pool per asset.
     pub fn __constructor(
         env: Env,
         verifier: Address,
@@ -394,9 +478,85 @@ impl PoolContract {
             return Err(PoolError::AlreadyInitialized);
         }
         env.storage().instance().set(&key_verifier(), &verifier);
-        env.storage().instance().set(&key_token(), &token);
         env.storage().instance().set(&key_admin(), &admin);
+        register_asset(&env, &token);
         Ok(())
+    }
+
+    /// Admin-gated: allow-lists another SEP-41 asset so the pool can shield it
+    /// alongside the assets it already holds, sharing the same tree and
+    /// nullifier set. Idempotent — re-adding a supported asset is a no-op.
+    pub fn add_asset(env: Env, asset: Address) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+        // Reject an address that has no valid note asset field (e.g. a G...
+        // account), so a later deposit can't be allow-listed against something
+        // no proof could ever bind to.
+        asset_id_from_address(&env, &asset)?;
+        register_asset(&env, &asset);
+        AssetAddedEvent {
+            asset: &asset,
+            added_by: &admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Admin-gated: removes `asset` from the allow-list, blocking new deposits
+    /// and withdrawals of it. Notes already shielded in the tree are unaffected
+    /// as commitments, but become unspendable until the asset is re-added — the
+    /// funds are not lost, only frozen behind the allow-list.
+    pub fn remove_asset(env: Env, asset: Address) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+
+        let key = (key_asset_prefix(), asset.clone());
+        if !env.storage().instance().has(&key) {
+            return Err(PoolError::AssetNotSupported);
+        }
+        env.storage().instance().remove(&key);
+        let list: SorobanVec<Address> = env
+            .storage()
+            .instance()
+            .get(&key_asset_list())
+            .unwrap_or_else(|| SorobanVec::new(&env));
+        let mut next: SorobanVec<Address> = SorobanVec::new(&env);
+        for a in list.iter() {
+            if a != asset {
+                next.push_back(a);
+            }
+        }
+        env.storage().instance().set(&key_asset_list(), &next);
+
+        AssetRemovedEvent {
+            asset: &asset,
+            removed_by: &admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// True if `asset` is currently on the allow-list.
+    pub fn is_asset_supported(env: Env, asset: Address) -> bool {
+        is_asset_supported(&env, &asset)
+    }
+
+    /// Every allow-listed asset, in registration order.
+    pub fn get_assets(env: Env) -> soroban_sdk::Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&key_asset_list())
+            .unwrap_or_else(|| SorobanVec::new(&env))
     }
 
     /// Pauses deposits and withdrawals. Admin-gated circuit breaker for
@@ -469,20 +629,25 @@ impl PoolContract {
         Ok(())
     }
 
-    /// Shields `amount` behind `commitment`, which must be
-    /// `H(H(H(LEAF_DOMAIN, nullifier), secret), amount)` for the same `amount`
-    /// -- the contract cannot check that (the commitment is opaque to it), but
-    /// a note whose committed value disagrees with what was transferred simply
-    /// cannot be withdrawn, since the circuit recomputes the leaf from the
-    /// value it pays out.
+    /// Shields `amount` of `asset` behind `commitment`, which must be
+    /// `H(H(H(H(LEAF_DOMAIN, nullifier), secret), amount), asset_field)` for the
+    /// same `amount` and for `asset_field = asset_id_from_address(asset)` -- the
+    /// contract cannot check that (the commitment is opaque to it), but a note
+    /// whose committed value or asset disagrees with what was transferred simply
+    /// cannot be withdrawn, since the circuit recomputes the leaf from both the
+    /// value it pays out and the asset the pool is asked to pay it in. `asset`
+    /// must be on the allow-list; the transferred asset and the one bound into
+    /// the commitment are the same for exactly this reason.
     pub fn deposit(
         env: Env,
         depositor: Address,
+        asset: Address,
         commitment: BytesN<32>,
         amount: i128,
     ) -> Result<u32, PoolError> {
         depositor.require_auth();
         check_amount(amount)?;
+        require_asset_supported(&env, &asset)?;
         if Self::is_paused(env.clone()) {
             return Err(PoolError::Paused);
         }
@@ -502,9 +667,8 @@ impl PoolContract {
             return Err(PoolError::TreeFull);
         }
 
-        let token_addr = load_token(&env)?;
         let contract_addr = env.current_contract_address();
-        token::Client::new(&env, &token_addr).transfer(&depositor, &contract_addr, &amount);
+        token::Client::new(&env, &asset).transfer(&depositor, &contract_addr, &amount);
 
         let idx = next_index;
         let zeroes = zeroes_for_tree(&env);
@@ -518,9 +682,10 @@ impl PoolContract {
         Ok(idx)
     }
 
-    /// Deposit several notes in a single transaction (one signature, one token
-    /// transfer of the summed value). `amounts[i]` is the value shielded behind
-    /// `commitments[i]`; the two vectors must be the same length. Each
+    /// Deposit several notes of the same `asset` in a single transaction (one
+    /// signature, one token transfer of the summed value). `amounts[i]` is the
+    /// value shielded behind `commitments[i]`; the two vectors must be the same
+    /// length. To shield more than one asset, call this once per asset. Each
     /// commitment is inserted at the next sequential leaf index exactly as
     /// repeated `deposit` calls would, so the resulting root and per-leaf
     /// indices are identical — clients can rebuild the tree the same way.
@@ -537,10 +702,12 @@ impl PoolContract {
     pub fn deposit_batch(
         env: Env,
         depositor: Address,
+        asset: Address,
         commitments: soroban_sdk::Vec<BytesN<32>>,
         amounts: soroban_sdk::Vec<i128>,
     ) -> Result<u32, PoolError> {
         depositor.require_auth();
+        require_asset_supported(&env, &asset)?;
         if Self::is_paused(env.clone()) {
             return Err(PoolError::Paused);
         }
@@ -564,14 +731,13 @@ impl PoolContract {
             return Err(PoolError::TreeFull);
         }
 
-        let token_addr = load_token(&env)?;
         let mut total: i128 = 0;
         for amount in amounts.iter() {
             check_amount(amount)?;
             total = total.checked_add(amount).ok_or(PoolError::AmountOverflow)?;
         }
         let contract_addr = env.current_contract_address();
-        token::Client::new(&env, &token_addr).transfer(&depositor, &contract_addr, &total);
+        token::Client::new(&env, &asset).transfer(&depositor, &contract_addr, &total);
 
         let zeroes = zeroes_for_tree(&env);
         let first_index = next_index;
@@ -612,12 +778,14 @@ impl PoolContract {
     pub fn withdraw(
         env: Env,
         recipient: Address,
+        asset: Address,
         public_inputs: Bytes,
         proof_bytes: Bytes,
     ) -> Result<u32, PoolError> {
         if proof_bytes.len() as usize != PROOF_BYTES {
             return Err(PoolError::VerificationFailed);
         }
+        require_asset_supported(&env, &asset)?;
         if Self::is_paused(env.clone()) {
             return Err(PoolError::Paused);
         }
@@ -627,7 +795,19 @@ impl PoolContract {
         let nf_from_proof = BytesN::from_array(&env, &inputs.nullifier_hash);
         let recipient_from_proof = BytesN::from_array(&env, &inputs.recipient_hash);
         let change_commitment = BytesN::from_array(&env, &inputs.change_commitment);
+        let asset_from_proof = BytesN::from_array(&env, &inputs.asset);
         let payout = amount_from_field(&inputs.withdraw_amount)?;
+
+        // Bind the proof to the asset being paid out. The spent note's leaf
+        // commits to an asset field; if the caller names a different asset than
+        // the one the proof was generated for, the recomputed field will not
+        // match and the withdrawal is rejected. This is what enforces, in the
+        // circuit-checked leaf rather than in bookkeeping, that a proof for
+        // asset A cannot withdraw asset B.
+        let expected_asset = asset_id_from_address(&env, &asset)?;
+        if expected_asset != asset_from_proof {
+            return Err(PoolError::AssetMismatch);
+        }
 
         let nf_key = (key_nullifier_prefix(), nf_from_proof.clone());
         if env.storage().persistent().has(&nf_key) {
@@ -675,8 +855,6 @@ impl PoolContract {
             .ok_or(PoolError::VerifierNotSet)?;
         verify_proof(&env, &verifier, public_inputs, proof_bytes)?;
 
-        let token_addr = load_token(&env)?;
-
         // Mark the nullifier used and insert the change note BEFORE the token
         // transfer (checks-effects-interactions). The deployed token is the
         // trusted Stellar Asset Contract with no transfer hooks, but this
@@ -697,7 +875,7 @@ impl PoolContract {
         // out, which is how a user consolidates or refreshes shielded value. The
         // SAC rejects a zero-value transfer, so skip the call in that case.
         if payout > 0 {
-            token::Client::new(&env, &token_addr).transfer(
+            token::Client::new(&env, &asset).transfer(
                 &env.current_contract_address(),
                 &recipient,
                 &payout,
@@ -816,12 +994,6 @@ impl PoolContract {
         out
     }
 
-    pub fn get_token(env: Env) -> Result<Address, PoolError> {
-        env.storage()
-            .instance()
-            .get(&key_token())
-            .ok_or(PoolError::TokenNotSet)
-    }
 }
 
 #[cfg(test)]

@@ -2,7 +2,10 @@ import poolCircuit from "@/circuits/shielded_pool.json";
 import complianceCircuit from "@/circuits/compliance.json";
 import disclosureCircuit from "@/circuits/disclosure.json";
 import { runProof, type ProofResult, type ProofStage } from "./prover-core";
-import type { ProverWorkerRequest, ProverWorkerResponse } from "./prover.worker";
+import type {
+  ProverWorkerRequest,
+  ProverWorkerResponse,
+} from "./prover.worker";
 
 export type { ProofResult, ProofStage };
 
@@ -54,7 +57,9 @@ async function generateProof(
 
     function onError(event: ErrorEvent) {
       cleanup();
-      reject(event.error instanceof Error ? event.error : new Error(event.message));
+      reject(
+        event.error instanceof Error ? event.error : new Error(event.message),
+      );
     }
 
     function cleanup() {
@@ -90,6 +95,7 @@ export async function proveWithdrawal(
     nullifier: string;
     secret: string;
     amount: string;
+    asset: string;
     withdrawAmount: string;
     changeNullifier: string;
     changeSecret: string;
@@ -108,6 +114,7 @@ export async function proveWithdrawal(
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
       amount: decimal(inputs.amount),
+      asset: ensureHex(inputs.asset),
       change_nullifier: ensureHex(inputs.changeNullifier),
       change_secret: ensureHex(inputs.changeSecret),
       root: ensureHex(inputs.root),
@@ -128,6 +135,7 @@ export async function proveCompliance(
     nullifier: string;
     secret: string;
     amount: string;
+    asset: string;
     auditorKey: string;
     merkleRoot: string;
     kycHash: string;
@@ -144,6 +152,7 @@ export async function proveCompliance(
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
       amount: decimal(inputs.amount),
+      asset: ensureHex(inputs.asset),
       auditor_key: ensureHex(inputs.auditorKey),
       merkle_root: ensureHex(inputs.merkleRoot),
       kyc_hash: ensureHex(inputs.kycHash),
@@ -161,6 +170,7 @@ export async function proveDisclosure(
     nullifier: string;
     secret: string;
     amount: string;
+    asset: string;
     auditorKey: string;
     merkleRoot: string;
     kycHash: string;
@@ -177,6 +187,7 @@ export async function proveDisclosure(
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
       amount: decimal(inputs.amount),
+      asset: ensureHex(inputs.asset),
       auditor_key: ensureHex(inputs.auditorKey),
       merkle_root: ensureHex(inputs.merkleRoot),
       kyc_hash: ensureHex(inputs.kycHash),
