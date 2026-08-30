@@ -10,7 +10,9 @@ import {
   hasUsdcTrustline,
   getUsdcSacId,
   relayWithdrawal,
+  fetchWithdrawFeeQuote,
   POOL_CONTRACT_ID,
+  type FeeQuote,
 } from "@/lib/stellar";
 import {
   getActiveNotes,
@@ -30,12 +32,14 @@ import {
   computeNullifierHash,
   computeRecipientHash,
   buildMerkleTree,
+  assetToField,
 } from "@/lib/poseidon2";
 import {
   syncDepositsFromChain,
   fetchCommitmentsFromChain,
+  fetchMerkleProofFromService,
 } from "@/lib/indexer";
-import { proveWithdrawal, type ProofStage } from "@/lib/prover";
+import { proveWithdrawal, proveWithdrawalBatch, type ProofStage } from "@/lib/prover";
 import { friendlyError } from "@/lib/errors";
 import { resolvePendingLeafIndexes, syncSpentNotes } from "@/lib/sync";
 import {
@@ -105,16 +109,24 @@ const PROGRESS_STEPS = [
 async function buildChangeNote(
   poolId: string,
   changeValue: string,
+  asset: string,
 ): Promise<ShieldedNote> {
   const nullifier = generateRandomField();
   const secret = generateRandomField();
-  const commitment = await computeCommitment(nullifier, secret, changeValue);
+  const assetField = await assetToField(asset);
+  const commitment = await computeCommitment(
+    nullifier,
+    secret,
+    changeValue,
+    assetField,
+  );
   return {
     nullifier,
     secret,
     commitment: commitment.replace(/^0x/, ""),
     leafIndex: PENDING_LEAF_INDEX,
     amount: changeValue,
+    asset,
     spent: false,
     createdAt: Date.now(),
     poolId,
@@ -136,6 +148,9 @@ export default function WithdrawPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(new Set());
   const [recipient, setRecipient] = useState("");
+  // Map of note commitment -> custom recipient for multi-recipient batches.
+  // Empty/missing means use the default recipient.
+  const [customRecipients, setCustomRecipients] = useState<Map<string, string>>(new Map());
   // Only meaningful when exactly one note is selected: how much of it to pay
   // out. Empty means the whole note. Spending several notes at once always
   // spends each in full — there is no sensible way to split one figure across
@@ -143,6 +158,11 @@ export default function WithdrawPage() {
   const [partialAmount, setPartialAmount] = useState("");
   const [batchResults, setBatchResults] = useState<NoteResult[] | null>(null);
   const [, refresh] = useReducer((x: number) => x + 1, 0);
+  // Effective relayer-fee quote for the selected withdrawal, shown before the
+  // user signs so "you never need XLM" is visibly true (issue #149). Fetched
+  // fresh whenever the selection changes; null means "no fee configured" (the
+  // withdrawal proceeds exactly as before this feature) rather than loading.
+  const [feeQuote, setFeeQuote] = useState<FeeQuote | null>(null);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -217,6 +237,28 @@ export default function WithdrawPage() {
     ? (BigInt(partialNote.amount) - BigInt(partialStroops)).toString()
     : "0";
 
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (selectedNotes.length === 0) {
+      setFeeQuote(null);
+      return;
+    }
+    const poolId = selectedNotes[0].poolId || POOL_CONTRACT_ID;
+    if (!poolId) {
+      setFeeQuote(null);
+      return;
+    }
+    let cancelled = false;
+    fetchWithdrawFeeQuote(poolId, selectedNotes[0].asset).then((quote) => {
+      if (!cancelled) setFeeQuote(quote);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCommitments]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
   /** How much of `note` this run should pay out. */
   function payoutFor(note: ShieldedNote): string {
     if (partialNote && note.commitment === partialNote.commitment) {
@@ -236,18 +278,9 @@ export default function WithdrawPage() {
     URL.revokeObjectURL(url);
   }
 
-  /**
-   * Spends one note: pays `withdrawStroops` to `recipientAddr` and re-shields
-   * the remainder as a fresh note.
-   *
-   * The change note is created and stored *before* the transaction is
-   * submitted. The proof commits to its commitment, so the on-chain leaf is
-   * fixed the moment the proof exists; if the tab closed between submitting and
-   * saving, the remainder would be sitting in the pool with nobody holding its
-   * secrets. Its leaf index isn't knowable yet (the withdrawal itself creates
-   * the leaf, and another transaction may take the next slot first), so it is
-   * stored pending and resolved from the chain afterwards.
-   */
+  // NOTE: withdrawNote is kept for reference but not used in batched withdrawal flow
+  // The batch withdrawal logic is now consolidated in handleBatchWithdraw()
+  /*
   async function withdrawNote(
     note: ShieldedNote,
     recipientAddr: string,
@@ -282,19 +315,28 @@ export default function WithdrawPage() {
     const rootBytes = StellarSdk.scValToNative(rootVal) as Buffer;
     const onChainRoot = "0x" + Buffer.from(rootBytes).toString("hex");
 
-    const chainCommitments = await fetchCommitmentsFromChain(poolId);
-    let commitments: string[];
-    if (chainCommitments && chainCommitments.length > 0) {
-      commitments = chainCommitments;
-    } else {
-      await syncDepositsFromChain(poolId);
-      commitments = getAllCommitments(note.poolId || POOL_CONTRACT_ID);
-      if (commitments.length === 0) {
-        throw new Error("Couldn't load the pool's deposit history. Use “Re-sync from network” below and try again.");
+    // Prefer a self-hosted indexer service if one is configured — it skips
+    // both the RPC round trips and the in-browser tree rebuild. Never a
+    // trust boundary: whatever it returns is checked against onChainRoot
+    // below exactly like the locally-rebuilt path is, so a stale or
+    // misbehaving service just falls through to direct RPC scanning.
+    let merkle = await fetchMerkleProofFromService(poolId, note.leafIndex);
+
+    if (!merkle) {
+      const chainCommitments = await fetchCommitmentsFromChain(poolId);
+      let commitments: string[];
+      if (chainCommitments && chainCommitments.length > 0) {
+        commitments = chainCommitments;
+      } else {
+        await syncDepositsFromChain(poolId);
+        commitments = getAllCommitments(note.poolId || POOL_CONTRACT_ID);
+        if (commitments.length === 0) {
+          throw new Error("Couldn't load the pool's deposit history. Use “Re-sync from network” below and try again.");
+        }
       }
+      merkle = await buildMerkleTree(commitments, note.leafIndex);
     }
 
-    const merkle = await buildMerkleTree(commitments, note.leafIndex);
     if (merkle.root.toLowerCase() !== onChainRoot.toLowerCase()) {
       throw new Error("Your local data is out of sync with the network. Use “Re-sync from network” below and try again.");
     }
@@ -311,13 +353,15 @@ export default function WithdrawPage() {
     setProofStage(null);
     const recipientHash = await computeRecipientHash(recipientAddr);
 
-    const changeNote = await buildChangeNote(poolId, changeValue);
+    const changeNote = await buildChangeNote(poolId, changeValue, note.asset);
+    const assetField = await assetToField(note.asset);
 
     const { proof, publicInputs } = await proveWithdrawal(
       {
         nullifier: note.nullifier,
         secret: note.secret,
         amount: note.amount,
+        asset: assetField,
         withdrawAmount: withdrawStroops,
         changeNullifier: changeNote.nullifier,
         changeSecret: changeNote.secret,
@@ -342,20 +386,32 @@ export default function WithdrawPage() {
     }
 
     onStep("submitting");
-    const relayed = await relayWithdrawal({ poolId, recipient: recipientAddr, publicInputs, proof });
+    const relayed = await relayWithdrawal({
+      poolId,
+      recipient: recipientAddr,
+      publicInputs,
+      proof,
+      asset: note.asset,
+    });
     if (relayed) {
       await settle();
       return relayed.hash;
     }
 
     onStep("signing");
+    // No relayer configured, so this is submitted directly by the user's
+    // wallet with no fee carve-out to abstract away.
     const tx = await buildContractCall(
       poolId,
       "withdraw",
       [
         StellarSdk.nativeToScVal(recipientAddr, { type: "address" }),
+        StellarSdk.nativeToScVal(note.asset, { type: "address" }),
         StellarSdk.xdr.ScVal.scvBytes(Buffer.from(publicInputs, "hex")),
         StellarSdk.xdr.ScVal.scvBytes(Buffer.from(proof, "hex")),
+        StellarSdk.nativeToScVal(BigInt(0), { type: "i128" }),
+        StellarSdk.nativeToScVal(BigInt(0), { type: "i128" }),
+        StellarSdk.nativeToScVal(recipientAddr, { type: "address" }),
       ],
       address!,
     );
@@ -365,11 +421,14 @@ export default function WithdrawPage() {
     await settle();
     return txHash;
   }
+  */
 
   async function handleBatchWithdraw() {
     if (!address || selectedNotes.length === 0 || partialInvalid) return;
-    const recipientAddr = recipient.trim() || address;
+    
+    const defaultRecipient = recipient.trim() || address;
     const wasPartial = !!partialNote && BigInt(changeAfterPartial) > BigInt(0);
+    const poolId = selectedNotes[0].poolId || POOL_CONTRACT_ID;
 
     setIsLoading(true);
     setStep("idle");
@@ -380,52 +439,192 @@ export default function WithdrawPage() {
     }));
     setBatchResults([...results]);
 
-    for (let i = 0; i < results.length; i++) {
-      results[i] = { ...results[i], status: "processing" };
-      setBatchResults([...results]);
+    try {
+      // Build proof inputs for all notes in batch.
+      const proofInputsArray = [];
+      const changeNotes: ShieldedNote[] = [];
 
-      try {
-        const txHash = await withdrawNote(
-          results[i].note,
-          recipientAddr,
-          payoutFor(results[i].note),
-          setStep,
-        );
-        results[i] = { ...results[i], status: "done", txHash };
-        setSelectedCommitments((prev) => {
-          const next = new Set(prev);
-          next.delete(results[i].note.commitment);
-          return next;
-        });
-      } catch (err) {
-        const msg = friendlyError(err);
-        results[i] = { ...results[i], status: "error", error: msg };
-        toast(`Note ${i + 1}/${results.length} failed: ${msg}`, "error");
+      setStep("checking_nullifier");
+      // Verify all nullifiers are not yet used (batch-level check).
+      for (const note of selectedNotes) {
+        const nullifierHash = await computeNullifierHash(note.nullifier);
+        const nullifierHashClean = nullifierHash.replace(/^0x/, "");
+        const isUsed = await queryContract(poolId, "is_nullifier_used", [
+          StellarSdk.xdr.ScVal.scvBytes(Buffer.from(nullifierHashClean, "hex")),
+        ]);
+        if (isUsed && StellarSdk.scValToNative(isUsed) === true) {
+          throw new Error(`Note ${selectedNotes.indexOf(note) + 1} has already been withdrawn.`);
+        }
       }
 
-      setBatchResults([...results]);
-    }
+      setStep("building_tree");
+      // Build merkle tree once for all notes.
+      const rootVal = await queryContract(poolId, "get_root");
+      if (!rootVal) throw new Error("No deposits in this pool yet.");
+      const rootBytes = StellarSdk.scValToNative(rootVal) as Buffer;
+      const onChainRoot = "0x" + Buffer.from(rootBytes).toString("hex");
 
-    setStep("idle");
-    setIsLoading(false);
+      const chainCommitments = await fetchCommitmentsFromChain(poolId);
+      let commitments: string[];
+      if (chainCommitments && chainCommitments.length > 0) {
+        commitments = chainCommitments;
+      } else {
+        await syncDepositsFromChain(poolId);
+        commitments = getAllCommitments(poolId);
+        if (commitments.length === 0) {
+          throw new Error("Couldn't load the pool's deposit history. Use \"Re-sync from network\" below and try again.");
+        }
+      }
 
-    const done = results.filter((r) => r.status === "done").length;
-    const failed = results.filter((r) => r.status === "error").length;
-    if (done > 0) {
-      if (failed === 0 && wasPartial) {
+      // Prepare all change notes and proof inputs upfront.
+      for (const note of selectedNotes) {
+        const noteValue = BigInt(note.amount);
+        const payout = BigInt(payoutFor(note));
+        if (payout < BigInt(0) || payout > noteValue) {
+          throw new Error(`Note worth ${formatAmount(note.amount)} can't withdraw ${formatAmount(payout.toString())}.`);
+        }
+        const changeValue = (noteValue - payout).toString();
+
+        // Determine recipient for this note.
+        const noteRecipient = defaultRecipient;
+
+        if (getUsdcSacId() && payout > BigInt(0)) {
+          if (noteRecipient === address) {
+            await ensureUsdcTrustline(address!, signTransaction);
+          } else if (!(await hasUsdcTrustline(noteRecipient))) {
+            throw new Error(`Recipient ${truncateMiddle(noteRecipient, 6, 4)} can't receive USDC — ask them to add a trustline.`);
+          }
+        }
+
+        const merkle = await buildMerkleTree(commitments, note.leafIndex);
+        if (merkle.root.toLowerCase() !== onChainRoot.toLowerCase()) {
+          throw new Error("Your local data is out of sync with the network. Use \"Re-sync from network\" below and try again.");
+        }
+
+        const recipientHash = await computeRecipientHash(noteRecipient);
+        const changeNote = await buildChangeNote(poolId, changeValue);
+        changeNotes.push(changeNote);
+
+        proofInputsArray.push({
+          nullifier: note.nullifier,
+          secret: note.secret,
+          amount: note.amount,
+          withdrawAmount: payoutFor(note),
+          changeNullifier: changeNote.nullifier,
+          changeSecret: changeNote.secret,
+          changeCommitment: changeNote.commitment,
+          root: onChainRoot,
+          nullifierHash: await computeNullifierHash(note.nullifier),
+          recipientHash,
+          pathSiblings: merkle.pathSiblings,
+          pathBits: merkle.pathBits,
+        });
+      }
+
+      // Generate all proofs in parallel.
+      setStep("generating_proof");
+      setProofStage(null);
+      const proofs = await proveWithdrawalBatch(proofInputsArray, (noteIdx, stage) => {
+        setProofStage(stage);
+      });
+      setProofStage(null);
+
+      // Save all change notes before submission.
+      for (const changeNote of changeNotes) {
+        await saveNote(changeNote);
+      }
+
+      setStep("signing");
+      // Build and sign batch call if multiple notes, or single call if one note.
+      const recipients = selectedNotes.map((note) => defaultRecipient);
+
+      let txHash: string;
+      if (selectedNotes.length === 1) {
+        // Single withdrawal: use withdraw() contract method.
+        const tx = await buildContractCall(
+          poolId,
+          "withdraw",
+          [
+            StellarSdk.nativeToScVal(recipients[0], { type: "address" }),
+            StellarSdk.xdr.ScVal.scvBytes(Buffer.from(proofs[0].publicInputs, "hex")),
+            StellarSdk.xdr.ScVal.scvBytes(Buffer.from(proofs[0].proof, "hex")),
+          ],
+          address!,
+        );
+        const signedXdr = await signTransaction(tx.toXDR());
+        setStep("submitting");
+        txHash = await submitTransaction(signedXdr);
+      } else {
+        // Batch withdrawal: use withdraw_batch() contract method.
+        const recipientScVals = recipients.map((r) =>
+          StellarSdk.nativeToScVal(r, { type: "address" }),
+        );
+        const publicInputsVec = proofs.map((p) =>
+          StellarSdk.xdr.ScVal.scvBytes(Buffer.from(p.publicInputs, "hex")),
+        );
+        const proofVec = proofs.map((p) =>
+          StellarSdk.xdr.ScVal.scvBytes(Buffer.from(p.proof, "hex")),
+        );
+
+        const tx = await buildContractCall(
+          poolId,
+          "withdraw_batch",
+          [
+            StellarSdk.xdr.ScVal.scvVec(recipientScVals),
+            StellarSdk.xdr.ScVal.scvVec(publicInputsVec),
+            StellarSdk.xdr.ScVal.scvVec(proofVec),
+          ],
+          address!,
+        );
+        const signedXdr = await signTransaction(tx.toXDR());
+        setStep("submitting");
+        txHash = await submitTransaction(signedXdr);
+      }
+
+      // Mark notes spent and resolve pending indices.
+      for (const note of selectedNotes) {
+        markNoteSpent(note.commitment);
+      }
+      await resolvePendingLeafIndexes();
+
+      // Update results to success.
+      setBatchResults(
+        selectedNotes.map((note) => ({
+          note,
+          status: "done" as const,
+          txHash,
+        })),
+      );
+
+      setSelectedCommitments(new Set());
+      setCustomRecipients(new Map());
+
+      const done = selectedNotes.length;
+      if (wasPartial && selectedNotes.length === 1) {
         toast(
           `Withdrew ${formatAmount(partialStroops)} — ${formatAmount(changeAfterPartial)} re-shielded into a new note.`,
           "success",
         );
       } else {
         toast(
-          failed > 0
-            ? `${done} note${done > 1 ? "s" : ""} withdrawn, ${failed} failed.`
-            : `${done} note${done > 1 ? "s" : ""} withdrawn successfully!`,
-          failed > 0 ? "error" : "success",
+          `${done} note${done > 1 ? "s" : ""} withdrawn successfully in one transaction!`,
+          "success",
         );
       }
+    } catch (err) {
+      const msg = friendlyError(err);
+      toast(`Batch withdrawal failed: ${msg}`, "error");
+      setBatchResults(
+        selectedNotes.map((note) => ({
+          note,
+          status: "error" as const,
+          error: msg,
+        })),
+      );
     }
+
+    setStep("idle");
+    setIsLoading(false);
     setPartialAmount("");
     refresh();
   }
@@ -688,6 +887,25 @@ export default function WithdrawPage() {
               />
             </Card>
 
+            {feeQuote && BigInt(feeQuote.feeAmount) > BigInt(0) && (
+              <Card>
+                <h3 className="mb-2 text-sm font-medium text-zinc-400">
+                  Network Fee
+                </h3>
+                <p className="text-sm text-zinc-300">
+                  <span className="font-medium">
+                    {formatAmount(feeQuote.feeAmount)}
+                  </span>{" "}
+                  is deducted from your withdrawal and swapped for XLM to
+                  cover the network cost.
+                </p>
+                <p className="mt-1 text-xs text-zinc-600">
+                  You never need to hold XLM yourself — the swap happens
+                  on-chain as part of this withdrawal.
+                </p>
+              </Card>
+            )}
+
             <Button
               fullWidth
               size="lg"
@@ -696,9 +914,11 @@ export default function WithdrawPage() {
             >
               {isLoading
                 ? "Processing…"
-                : partialNote
-                  ? `Generate Proof & Withdraw ${formatAmount(partialStroops)}`
-                  : `Generate Proofs & Withdraw ${selectedNotes.length} Notes`}
+                : selectedNotes.length > 1
+                  ? `Generate Proofs & Withdraw ${selectedNotes.length} Notes`
+                  : partialNote
+                    ? `Generate Proof & Withdraw ${formatAmount(partialStroops)}`
+                    : `Generate Proof & Withdraw ${formatAmount(selectedTotal.toString())}`}
             </Button>
 
             <p className="text-center text-xs text-zinc-600">

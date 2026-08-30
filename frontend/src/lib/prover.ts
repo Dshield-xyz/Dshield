@@ -1,20 +1,24 @@
-import {
-  POOL_CIRCUIT,
-  COMPLIANCE_CIRCUIT,
-  DISCLOSURE_CIRCUIT,
-  buildWithdrawalWitness,
-  buildComplianceWitness,
-  buildDisclosureWitness,
-  type ProofResult,
-  type ProofStage,
-  type WithdrawalProofInputs,
-  type ComplianceProofInputs,
-  type DisclosureProofInputs,
-} from "@dshield/core/prover";
-import { runProof } from "@dshield/core/prover-core";
+import poolCircuit from "@/circuits/shielded_pool.json";
+import complianceCircuit from "@/circuits/compliance.json";
+import disclosureCircuit from "@/circuits/disclosure.json";
+import viewDisclosureCircuit from "@/circuits/view_disclosure.json";
+import { runProof, verifyProof, type ProofResult, type ProofStage } from "./prover-core";
 import type { ProverWorkerRequest, ProverWorkerResponse } from "./prover.worker";
 
 export type { ProofResult, ProofStage };
+
+// ──────────────────────────────────────────────────────────────────────────
+// CIRCUIT VERSIONING
+// ──────────────────────────────────────────────────────────────────────────
+// When a new incompatible circuit version is deployed:
+// 1. Import the new circuit JSON (e.g., poolCircuitV2 from circuitV2.json)
+// 2. Add a helper: getPoolCircuitForVersion(version: number)
+// 3. Use: const circuit = getPoolCircuitForVersion(note.version)
+// 4. Pass note.version to the pool contract for verify_proof_for_version call
+//
+// For now, version 1 is the only version. This comment serves as a template
+// for future circuit upgrades.
+// ──────────────────────────────────────────────────────────────────────────
 
 let worker: Worker | null = null;
 let nextRequestId = 0;
@@ -69,7 +73,9 @@ async function generateProof(
 
     function onError(event: ErrorEvent) {
       cleanup();
-      reject(event.error instanceof Error ? event.error : new Error(event.message));
+      reject(
+        event.error instanceof Error ? event.error : new Error(event.message),
+      );
     }
 
     function cleanup() {
@@ -88,34 +94,246 @@ async function generateProof(
 /**
  * Proves a spend of one note: `withdrawAmount` of its `amount` is paid out and
  * the remainder is re-shielded into a new note under `changeNullifier` /
- * `changeSecret`. See {@link WithdrawalProofInputs} in @dshield/core for the
- * field contract (amounts are decimal strings, not hex).
+ * `changeSecret`.
+ *
+ * A change note is always produced, even for a full withdrawal where the
+ * remainder is zero, so that a full and a partial spend are indistinguishable
+ * on-chain. The caller must therefore always store the change note — see the
+ * withdraw page, which saves it before submitting.
+ *
+ * Amounts are decimal strings of token base units. They must not be hex: Noir
+ * would read a `0x`-prefixed amount as a different number than the contract's
+ * big-endian byte decoding does, and the payout would silently disagree with
+ * what the note is worth.
+ *
+ * The `noteVersion` parameter specifies which circuit version to use for proof
+ * generation. For now, only version 1 is available, but this supports future
+ * backward-compatible note retrieval from old versions.
  */
 export async function proveWithdrawal(
-  inputs: WithdrawalProofInputs,
+  inputs: {
+    nullifier: string;
+    secret: string;
+    amount: string;
+    asset: string;
+    withdrawAmount: string;
+    changeNullifier: string;
+    changeSecret: string;
+    changeCommitment: string;
+    root: string;
+    nullifierHash: string;
+    recipientHash: string;
+    pathSiblings: string[];
+    pathBits: number[];
+    noteVersion?: number;
+  },
   onProgress?: (stage: ProofStage) => void,
 ): Promise<ProofResult> {
-  return generateProof(POOL_CIRCUIT, buildWithdrawalWitness(inputs), onProgress);
+  // For now, all versions use the same circuit (v1).
+  // This will be extended when incompatible versions ship.
+  const circuit = poolCircuit as Record<string, unknown>;
+  
+  return generateProof(
+    circuit,
+    {
+      nullifier: ensureHex(inputs.nullifier),
+      secret: ensureHex(inputs.secret),
+      amount: decimal(inputs.amount),
+      asset: ensureHex(inputs.asset),
+      change_nullifier: ensureHex(inputs.changeNullifier),
+      change_secret: ensureHex(inputs.changeSecret),
+      root: ensureHex(inputs.root),
+      nullifier_hash: ensureHex(inputs.nullifierHash),
+      recipient: ensureHex(inputs.recipientHash),
+      withdraw_amount: decimal(inputs.withdrawAmount),
+      change_commitment: ensureHex(inputs.changeCommitment),
+      path_bits: inputs.pathBits.map(String),
+      path_siblings: inputs.pathSiblings.map(ensureHex),
+    },
+    onProgress,
+  );
+}
+
+/**
+ * Generates multiple withdrawal proofs in parallel, one per note being spent.
+ * Each proof is independent and uses its own witness; they can be proven
+ * concurrently to amortize the total proving time across multiple worker threads.
+ *
+ * Returns an array of { proof, publicInputs } tuples in the same order as the
+ * input array. If any proof generation fails, the entire batch fails.
+ *
+ * The onProgress callback is invoked per-proof, with each call tagged by the
+ * note index (e.g., "note 0: executing...") so the UI can track progress
+ * across the batch.
+ */
+export async function proveWithdrawalBatch(
+  inputsArray: Array<{
+    nullifier: string;
+    secret: string;
+    amount: string;
+    withdrawAmount: string;
+    changeNullifier: string;
+    changeSecret: string;
+    changeCommitment: string;
+    root: string;
+    nullifierHash: string;
+    recipientHash: string;
+    pathSiblings: string[];
+    pathBits: number[];
+  }>,
+  onProgress?: (note: number, stage: ProofStage) => void,
+): Promise<ProofResult[]> {
+  // Generate all proofs in parallel.
+  const proofPromises = inputsArray.map((inputs, idx) =>
+    generateProof(
+      poolCircuit as Record<string, unknown>,
+      {
+        nullifier: ensureHex(inputs.nullifier),
+        secret: ensureHex(inputs.secret),
+        amount: decimal(inputs.amount),
+        change_nullifier: ensureHex(inputs.changeNullifier),
+        change_secret: ensureHex(inputs.changeSecret),
+        root: ensureHex(inputs.root),
+        nullifier_hash: ensureHex(inputs.nullifierHash),
+        recipient: ensureHex(inputs.recipientHash),
+        withdraw_amount: decimal(inputs.withdrawAmount),
+        change_commitment: ensureHex(inputs.changeCommitment),
+        path_bits: inputs.pathBits.map(String),
+        path_siblings: inputs.pathSiblings.map(ensureHex),
+      },
+      onProgress ? (stage) => onProgress(idx, stage) : undefined,
+    ),
+  );
+
+  return Promise.all(proofPromises);
 }
 
 export async function proveCompliance(
-  inputs: ComplianceProofInputs,
+  inputs: {
+    kycPreimage: string;
+    nullifier: string;
+    secret: string;
+    amount: string;
+    asset: string;
+    auditorKey: string;
+    merkleRoot: string;
+    kycHash: string;
+    disclosedAmount: string;
+    pathSiblings: string[];
+    pathBits: number[];
+  },
   onProgress?: (stage: ProofStage) => void,
 ): Promise<ProofResult> {
   return generateProof(
-    COMPLIANCE_CIRCUIT,
-    buildComplianceWitness(inputs),
+    complianceCircuit as Record<string, unknown>,
+    {
+      kyc_preimage: ensureHex(inputs.kycPreimage),
+      nullifier: ensureHex(inputs.nullifier),
+      secret: ensureHex(inputs.secret),
+      amount: decimal(inputs.amount),
+      asset: ensureHex(inputs.asset),
+      auditor_key: ensureHex(inputs.auditorKey),
+      merkle_root: ensureHex(inputs.merkleRoot),
+      kyc_hash: ensureHex(inputs.kycHash),
+      disclosed_amount: decimal(inputs.disclosedAmount),
+      path_bits: inputs.pathBits.map(String),
+      path_siblings: inputs.pathSiblings.map(ensureHex),
+    },
     onProgress,
   );
 }
 
 export async function proveDisclosure(
-  inputs: DisclosureProofInputs,
+  inputs: {
+    kycPreimage: string;
+    nullifier: string;
+    secret: string;
+    amount: string;
+    asset: string;
+    auditorKey: string;
+    merkleRoot: string;
+    kycHash: string;
+    threshold: string;
+    pathSiblings: string[];
+    pathBits: number[];
+  },
   onProgress?: (stage: ProofStage) => void,
 ): Promise<ProofResult> {
   return generateProof(
-    DISCLOSURE_CIRCUIT,
-    buildDisclosureWitness(inputs),
+    disclosureCircuit as Record<string, unknown>,
+    {
+      kyc_preimage: ensureHex(inputs.kycPreimage),
+      nullifier: ensureHex(inputs.nullifier),
+      secret: ensureHex(inputs.secret),
+      amount: decimal(inputs.amount),
+      asset: ensureHex(inputs.asset),
+      auditor_key: ensureHex(inputs.auditorKey),
+      merkle_root: ensureHex(inputs.merkleRoot),
+      kyc_hash: ensureHex(inputs.kycHash),
+      threshold: decimal(inputs.threshold),
+      path_bits: inputs.pathBits.map(String),
+      path_siblings: inputs.pathSiblings.map(ensureHex),
+    },
     onProgress,
   );
+}
+
+/**
+ * Proves a note's `amount` to whoever was handed `viewKey` out of band,
+ * without revealing `nullifier`/`secret` or exposing spend capability. The
+ * witness still needs `nullifier` to reconstruct the note's leaf and walk it
+ * to `merkleRoot`, but the circuit never outputs or constrains it against
+ * anything public — see circuits/view_disclosure/src/main.nr.
+ */
+export async function proveViewDisclosure(
+  inputs: {
+    nullifier: string;
+    secret: string;
+    amount: string;
+    viewKey: string;
+    merkleRoot: string;
+    pathSiblings: string[];
+    pathBits: number[];
+  },
+  onProgress?: (stage: ProofStage) => void,
+): Promise<ProofResult> {
+  return generateProof(
+    viewDisclosureCircuit as Record<string, unknown>,
+    {
+      nullifier: ensureHex(inputs.nullifier),
+      secret: ensureHex(inputs.secret),
+      amount: decimal(inputs.amount),
+      view_key: ensureHex(inputs.viewKey),
+      merkle_root: ensureHex(inputs.merkleRoot),
+      path_bits: inputs.pathBits.map(String),
+      path_siblings: inputs.pathSiblings.map(ensureHex),
+    },
+    onProgress,
+  );
+}
+
+/**
+ * Verifies a view-disclosure proof entirely client-side — no wallet, no
+ * transaction, no pool indexer lookup. Used by the auditor-facing `/audit`
+ * page, where the verifier may have nothing but the proof they were handed.
+ */
+export async function verifyViewDisclosure(
+  proofHex: string,
+  publicInputsHex: string,
+): Promise<boolean> {
+  return verifyProof(
+    viewDisclosureCircuit as Record<string, unknown>,
+    proofHex,
+    publicInputsHex,
+  );
+}
+
+function ensureHex(v: string): string {
+  if (v.startsWith("0x")) return v;
+  return "0x" + v;
+}
+
+/** Normalizes an amount to the plain decimal form Noir reads as a number. */
+function decimal(v: string): string {
+  return BigInt(v).toString(10);
 }

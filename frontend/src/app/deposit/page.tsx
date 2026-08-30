@@ -22,7 +22,7 @@ import {
 } from "@/lib/notes";
 import { saveDeposit } from "@/lib/deposits";
 import { fetchLeafIndex } from "@/lib/sync";
-import { computeCommitment } from "@/lib/poseidon2";
+import { computeCommitment, assetToField } from "@/lib/poseidon2";
 import {
   TOKEN_SYMBOL,
   formatAmount,
@@ -64,16 +64,24 @@ const MAX_NOTE_STROOPS = (BigInt(2) ** BigInt(64) - BigInt(1)).toString();
 async function buildNote(
   poolId: string,
   amountStroops: string,
+  asset: string,
 ): Promise<ShieldedNote> {
   const nullifier = generateRandomField();
   const secret = generateRandomField();
-  const commitment = await computeCommitment(nullifier, secret, amountStroops);
+  const assetField = await assetToField(asset);
+  const commitment = await computeCommitment(
+    nullifier,
+    secret,
+    amountStroops,
+    assetField,
+  );
   return {
     nullifier,
     secret,
     commitment: commitment.replace(/^0x/, ""),
     leafIndex: PENDING_LEAF_INDEX,
     amount: amountStroops,
+    asset,
     spent: false,
     createdAt: Date.now(),
     poolId,
@@ -148,6 +156,11 @@ export default function DepositPage() {
   const [shareOpenKey, setShareOpenKey] = useState<string>("");
   const [amount, setAmount] = useState<string>("");
   const poolId = getPoolId();
+  // The pool can hold notes for several allow-listed SEP-41 assets, but this
+  // page doesn't yet offer an asset picker (see MULTI_ASSET_STATUS.md) — it
+  // deposits into whichever asset this deployment's demo USDC SAC resolves
+  // to, same as before multi-asset support existed.
+  const assetId = getUsdcSacId();
   // New UI state for confirmation step
   const [showConfirm, setShowConfirm] = useState(false);
   const [estimatedFee, setEstimatedFee] = useState<string>("");
@@ -172,7 +185,7 @@ export default function DepositPage() {
    * wallet is prompted.
    */
   async function handleDeposit() {
-    if (!address || !poolId || !amountValid) return;
+    if (!address || !poolId || !amountValid || !assetId) return;
 
     setIsLoading(true);
     setSessionNotes([]);
@@ -200,7 +213,7 @@ export default function DepositPage() {
       // The note's value is hashed into its commitment, so the amount passed to
       // the contract and the amount inside the commitment have to be the same
       // string. Both come from `stroops` for exactly that reason.
-      const note = await buildNote(poolId, stroops);
+      const note = await buildNote(poolId, stroops, assetId);
 
       // Build the transaction (no signing yet)
       const tx = await buildContractCall(
@@ -208,6 +221,7 @@ export default function DepositPage() {
         "deposit",
         [
           StellarSdk.nativeToScVal(address, { type: "address" }),
+          StellarSdk.nativeToScVal(assetId, { type: "address" }),
           StellarSdk.xdr.ScVal.scvBytes(Buffer.from(note.commitment, "hex")),
           StellarSdk.nativeToScVal(BigInt(stroops), { type: "i128" }),
         ],
@@ -364,15 +378,17 @@ export default function DepositPage() {
           fullWidth
           size="lg"
           onClick={handleDeposit}
-          disabled={isLoading || !poolId || !amountValid}
+          disabled={isLoading || !poolId || !assetId || !amountValid}
         >
           {isLoading
             ? "Processing..."
             : !poolId
               ? "Pool not configured"
-              : amountValid
-                ? `Shield ${formatAmount(amountStroops)}`
-                : `Enter an amount`}
+              : !assetId
+                ? "Asset not configured"
+                : amountValid
+                  ? `Shield ${formatAmount(amountStroops)}`
+                  : `Enter an amount`}
         </Button>
 
         {sessionNotes.length > 0 && (

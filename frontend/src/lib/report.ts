@@ -1,5 +1,6 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { POOL_CONTRACT_ID, queryContract } from "./stellar";
+import { computeCommitment, computeNullifierHash, assetToField } from "./poseidon2";
 import { fetchCommitmentsFromChain, lookupNoteTxs } from "./indexer";
 import { type ShieldedNote } from "./notes";
 import { getNetworkLabel } from "./explorer";
@@ -29,13 +30,18 @@ export async function buildComplianceReport(
   const poolId = note.poolId || POOL_CONTRACT_ID;
   if (!poolId) throw new Error("No pool configured for this note.");
 
-  // Re-derive the commitment and nullifier hash from the note's secrets using
-  // the shared @dshield/core logic. The amount is part of the commitment, so
-  // this also checks the note's recorded value against what it actually claims
-  // on-chain: a note whose amount was edited no longer hashes to a leaf the
-  // pool holds, and `integrityOk` fails.
-  const { commitment, nullifierHash, integrityOk } =
-    await computeReportIdentity(note);
+  // Re-derive the commitment and nullifier hash from the note's secrets. The
+  // amount is part of the commitment, so this also checks the note's recorded
+  // value against what it actually claims on-chain: a note whose amount was
+  // edited no longer hashes to a leaf the pool holds, and `integrityOk` fails.
+  const assetField = await assetToField(note.asset);
+  const commitment = await computeCommitment(
+    note.nullifier,
+    note.secret,
+    note.amount,
+    assetField,
+  );
+  const nullifierHash = await computeNullifierHash(note.nullifier);
   const commitmentClean = commitment.replace(/^0x/, "").toLowerCase();
 
   // Deposit confirmation: is the commitment in the pool's authoritative list?

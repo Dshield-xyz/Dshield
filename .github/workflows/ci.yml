@@ -118,6 +118,26 @@ jobs:
           bb verify -s ultra_honk --oracle_hash keccak \
             -k target/vk -p target/proof -i target/public_inputs
 
+      - name: Compile view_disclosure circuit
+        run: |
+          export PATH="$HOME/.nargo/bin:$HOME/.bb:$PATH"
+          cd circuits/view_disclosure && nargo compile
+
+      - name: Generate and verify view_disclosure proof
+        run: |
+          export PATH="$HOME/.nargo/bin:$HOME/.bb:$PATH"
+          cd circuits/view_disclosure
+          nargo execute
+          bb write_vk --scheme ultra_honk --oracle_hash keccak \
+            --bytecode_path target/view_disclosure.json \
+            --output_path target --output_format bytes_and_fields
+          bb prove --scheme ultra_honk --oracle_hash keccak \
+            --bytecode_path target/view_disclosure.json \
+            --witness_path target/view_disclosure.gz \
+            --output_path target --output_format bytes_and_fields
+          bb verify -s ultra_honk --oracle_hash keccak \
+            -k target/vk -p target/proof -i target/public_inputs
+
       - name: Upload circuit artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -129,11 +149,42 @@ jobs:
             circuits/shielded_pool/target/public_inputs
             circuits/compliance/target/vk
             circuits/disclosure/target/vk
+            circuits/view_disclosure/target/vk
+
+  formal-circuits:
+    name: Formal Circuit Checks
+    runs-on: ubuntu-latest
+    needs: [circuits]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Nargo
+        run: |
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
+          export PATH="$HOME/.nargo/bin:$PATH"
+          noirup -v 1.0.0-beta.9
+          nargo --version
+
+      - name: Compile circuits for formal checks
+        run: |
+          export PATH="$HOME/.nargo/bin:$PATH"
+          cd circuits/shielded_pool && nargo compile
+          cd ../compliance && nargo compile
+          cd ../disclosure && nargo compile
+          cd ../hasher && nargo compile
+
+      - name: Verify formal circuit specifications
+        run: bash scripts/verify-circuits.sh --require-target-artifacts --self-test
 
   contracts:
     name: Contract Tests
     runs-on: ubuntu-latest
-    needs: [circuits]
+    needs: [circuits, formal-circuits]
     steps:
       - uses: actions/checkout@v4
 
@@ -273,8 +324,8 @@ jobs:
         working-directory: frontend
         run: pnpm build
 
-  cli:
-    name: CLI
+  indexer-service:
+    name: Indexer Service
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -283,11 +334,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Install Nargo (for hasher circuit)
         run: |
@@ -299,33 +345,34 @@ jobs:
         run: |
           export PATH="$HOME/.nargo/bin:$PATH"
           cd circuits/hasher && nargo compile
-          cp target/hasher.json ../../packages/core/src/circuits/
+          cp target/hasher.json ../../services/indexer/circuits/
 
-      # Root workspace install: brings up @dshield/core and @dshield/cli, and
-      # links the CLI's `workspace:*` dependency on core. The frontend keeps its
-      # own separate install, so this does not touch the app.
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Type check
-        run: pnpm --filter @dshield/core --filter @dshield/cli typecheck
-
-      - name: Unit tests (core + cli)
-        run: pnpm --filter @dshield/core --filter @dshield/cli test
-
-      - name: Smoke test — dshield --help
-        run: node cli/bin/dshield.mjs --help
-
-      - name: Smoke test — dry-run deposit (offline, exercises shared crypto)
+      - name: Build packages/core
+        working-directory: packages/core
         run: |
-          node cli/bin/dshield.mjs --json --home "$RUNNER_TEMP/dshield" \
-            deposit --dry-run --amount 5 | tee deposit.json
-          node cli/bin/dshield.mjs --home "$RUNNER_TEMP/dshield" notes list
+          npm install
+          npm run build
+
+      - name: Test packages/core
+        working-directory: packages/core
+        run: npm test
+
+      - name: Install services/indexer dependencies
+        working-directory: services/indexer
+        run: npm install
+
+      - name: Build services/indexer
+        working-directory: services/indexer
+        run: npm run build
+
+      - name: Test services/indexer
+        working-directory: services/indexer
+        run: npm test
 
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: [contracts, circuits, frontend, lint]
+    needs: [contracts, circuits, formal-circuits, frontend, lint]
     steps:
       - uses: actions/checkout@v4
 
