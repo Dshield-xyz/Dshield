@@ -2021,6 +2021,8 @@ mod tests {
 
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&root_after_first.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2043,6 +2045,8 @@ mod tests {
 
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&current_root.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2073,7 +2077,10 @@ mod tests {
         let client = PoolContractClient::new(&env, &pool_id);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192].copy_from_slice(&asset_id.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
@@ -2092,7 +2099,10 @@ mod tests {
         client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192].copy_from_slice(&asset_id.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
         let bad_proof = Bytes::from_slice(&env, &[0u8; 100]);
 
         let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &bad_proof, &0i128, &0i128, &recipient);
@@ -2180,8 +2190,10 @@ mod tests {
         client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[0] = 0xFF;
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2201,7 +2213,10 @@ mod tests {
         client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192].copy_from_slice(&asset_id.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
         let empty_proof = Bytes::from_slice(&env, &[]);
 
         let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &empty_proof, &0i128, &0i128, &recipient);
@@ -2256,6 +2271,8 @@ mod tests {
         for b in pi[64..96].iter_mut() {
             *b = 0xAA;
         }
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2305,6 +2322,8 @@ mod tests {
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&root.to_array());
         pi[64..96].copy_from_slice(&hash_a.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2336,6 +2355,8 @@ mod tests {
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&root.to_array());
         pi[64..96].copy_from_slice(&correct.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2363,6 +2384,8 @@ mod tests {
         let recipient = <Address as TestAddress>::generate(&env);
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&root.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2503,6 +2526,8 @@ mod tests {
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&client.get_root().unwrap().to_array());
         pi[128..160].copy_from_slice(&existing.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2525,6 +2550,8 @@ mod tests {
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&client.get_root().unwrap().to_array());
         pi[96] = 0x01; // withdraw_amount well above 2^64
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2693,6 +2720,8 @@ mod tests {
         pi[..32].copy_from_slice(&root.to_array());
         pi[32..64].copy_from_slice(&nullifier.to_array());
         pi[64..96].copy_from_slice(&recipient_hash.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2915,7 +2944,10 @@ mod tests {
         client.pause();
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192].copy_from_slice(&asset_id.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
         let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
@@ -3068,6 +3100,8 @@ mod tests {
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&root.to_array());
         pi[64..96].copy_from_slice(&correct.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -3186,14 +3220,16 @@ mod tests {
         (pool_id, depositor, token_id, fee_asset_id)
     }
 
-    fn withdraw_public_inputs(env: &Env, root: &BytesN<32>, recipient: &Address, amount: i128) -> Bytes {
+    fn withdraw_public_inputs(env: &Env, root: &BytesN<32>, recipient: &Address, amount: i128, asset: &Address) -> Bytes {
         let recipient_hash = recipient_hash_from_address(env, recipient).unwrap();
+        let asset_id = asset_id_from_address(env, asset).unwrap();
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&root.to_array());
         pi[64..96].copy_from_slice(&recipient_hash.to_array());
         let mut amount_bytes = [0u8; 32];
         amount_bytes[24..32].copy_from_slice(&(amount as u64).to_be_bytes());
         pi[96..128].copy_from_slice(&amount_bytes);
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         Bytes::from_slice(env, &pi)
     }
 
@@ -3287,7 +3323,7 @@ mod tests {
 
         let recipient = <soroban_sdk::MuxedAddress as TestMuxedAddress>::generate(&env).address();
         fund_account_with_trustline(&env, &recipient, &token_contract);
-        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT);
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let change_index =
@@ -3323,7 +3359,7 @@ mod tests {
         let fee_amount: i128 = 100_000; // 1% of NOTE_AMOUNT, under the 5% cap
         let fee_min_out: i128 = 40_000; // mock router pays out amount_in / 2
 
-        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT);
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         client.withdraw(
@@ -3359,7 +3395,7 @@ mod tests {
         let relayer = <Address as TestAddress>::generate(&env);
         let fee_amount: i128 = 100_000;
 
-        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT);
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         client.withdraw(&recipient, &token_contract.address(), &public_inputs, &proof, &fee_amount, &0i128, &relayer);
@@ -3390,7 +3426,7 @@ mod tests {
         // 2% of NOTE_AMOUNT: exceeds the 1% cap just configured.
         let fee_amount: i128 = NOTE_AMOUNT / 50;
 
-        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT);
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let result =
@@ -3412,7 +3448,7 @@ mod tests {
         let relayer = <Address as TestAddress>::generate(&env);
         let fee_amount = NOTE_AMOUNT + 1;
 
-        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT);
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let result =
@@ -3431,7 +3467,7 @@ mod tests {
         let root = client.get_root().unwrap();
 
         let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
-        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT);
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let result =
@@ -3470,7 +3506,7 @@ mod tests {
         let recipient = <soroban_sdk::MuxedAddress as TestMuxedAddress>::generate(&env).address();
         fund_account_with_trustline(&env, &recipient, &token_id);
         let relayer = <Address as TestAddress>::generate(&env);
-        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT);
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_id.address());
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let result = client.try_withdraw(
