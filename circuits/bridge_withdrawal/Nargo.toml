@@ -1,0 +1,8 @@
+[package]
+name = "bridge_withdrawal"
+type = "bin"
+authors = ["DShield Team"]
+compiler_version = ">=0.38.0"
+
+[dependencies]
+poseidon = { git = "https://github.com/TalDerei/noir-poseidon", tag = "v0.1.3" }
