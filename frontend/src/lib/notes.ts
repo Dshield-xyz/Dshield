@@ -1,4 +1,5 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { computeViewKey } from "./poseidon2";
 
 export interface ShieldedNote {
   nullifier: string;
@@ -410,6 +411,21 @@ export function generateNoteLink(note: ShieldedNote): string {
   const compact = encodeNoteCompact(note);
   const payload = compact ?? serializeNote(note);
   return `${base}/withdraw#note=${encodeURIComponent(payload)}`;
+}
+
+/**
+ * Derives a note's viewing key: a value computable from its `secret` alone
+ * that a note holder can hand to a third party (an auditor, a bookkeeper, a
+ * co-signer) to identify which note a future view-disclosure proof concerns,
+ * without handing over `nullifier` — the piece actually required to spend.
+ *
+ * Deterministic and one-way: the same `secret` always derives the same
+ * viewing key, but the viewing key cannot be inverted back to `secret`, and
+ * by construction never depends on `nullifier` at all. See
+ * docs/THREAT_MODEL.md for the key-separation argument this relies on.
+ */
+export function deriveViewingKey(secret: string): Promise<string> {
+  return computeViewKey(secret);
 }
 
 export function generateRandomField(): string {

@@ -3,6 +3,7 @@ import {
   poseidon2Hash,
   computeCommitment,
   computeNullifierHash,
+  computeViewKey,
   getZeroHashes,
   buildMerkleTree,
   normalizeField,
@@ -106,6 +107,38 @@ describe("computeNullifierHash", () => {
   it("matches the known hash for field value 1234 (0x04d2)", async () => {
     const result = await computeNullifierHash("04d2");
     expect(result).toBe(KNOWN_NULLIFIER_HASH);
+  });
+});
+
+describe("computeViewKey", () => {
+  // Fixture shared with circuits/view_disclosure/Prover.toml: secret=5678
+  // (0x162e) must derive the same view_key the circuit accepts, or every
+  // viewing key computed by the app becomes unprovable.
+  const KNOWN_VIEW_KEY =
+    "0x209a8e46bf9ac6f94eea835478cb1942a8128e8fab0fac130b810abb2dc6f5ff";
+
+  it("matches the Noir circuit's hash_view_key for the shared fixture", async () => {
+    expect(await computeViewKey("162e")).toBe(KNOWN_VIEW_KEY);
+  });
+
+  it("is deterministic", async () => {
+    const a = await computeViewKey("00aabb");
+    const b = await computeViewKey("00aabb");
+    expect(a).toBe(b);
+  });
+
+  it("differs for different secrets", async () => {
+    const a = await computeViewKey("00aabb");
+    const b = await computeViewKey("00ccdd");
+    expect(a).not.toBe(b);
+  });
+
+  it("is independent of any nullifier value: a pure function of secret", async () => {
+    // Same secret, computed with nothing else in scope -- there is no
+    // nullifier parameter to this function at all, which is the point.
+    const a = await computeViewKey("00aabb");
+    const b = await computeViewKey("00aabb");
+    expect(a).toBe(b);
   });
 });
 

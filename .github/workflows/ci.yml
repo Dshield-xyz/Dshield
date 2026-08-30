@@ -118,6 +118,26 @@ jobs:
           bb verify -s ultra_honk --oracle_hash keccak \
             -k target/vk -p target/proof -i target/public_inputs
 
+      - name: Compile view_disclosure circuit
+        run: |
+          export PATH="$HOME/.nargo/bin:$HOME/.bb:$PATH"
+          cd circuits/view_disclosure && nargo compile
+
+      - name: Generate and verify view_disclosure proof
+        run: |
+          export PATH="$HOME/.nargo/bin:$HOME/.bb:$PATH"
+          cd circuits/view_disclosure
+          nargo execute
+          bb write_vk --scheme ultra_honk --oracle_hash keccak \
+            --bytecode_path target/view_disclosure.json \
+            --output_path target --output_format bytes_and_fields
+          bb prove --scheme ultra_honk --oracle_hash keccak \
+            --bytecode_path target/view_disclosure.json \
+            --witness_path target/view_disclosure.gz \
+            --output_path target --output_format bytes_and_fields
+          bb verify -s ultra_honk --oracle_hash keccak \
+            -k target/vk -p target/proof -i target/public_inputs
+
       - name: Upload circuit artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -129,6 +149,7 @@ jobs:
             circuits/shielded_pool/target/public_inputs
             circuits/compliance/target/vk
             circuits/disclosure/target/vk
+            circuits/view_disclosure/target/vk
 
   formal-circuits:
     name: Formal Circuit Checks
