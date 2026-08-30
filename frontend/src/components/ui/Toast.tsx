@@ -47,7 +47,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     const delay =
       resolved === "error" ? 8000 : resolved === "success" ? 5000 : 3500;
     setTimeout(
-      () => setToasts((prev) }> prev.filter((t) => t.id !== id)),
+      () => setToasts((prev) => prev.filter((t) => t.id !== id)),
       delay,
     );
   }, []);
@@ -74,7 +74,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 "border-green-500/40 bg-green-950/85 text-green-200",
               t.tone === "info" &&
                 "border-zinc-700 bg-zinc-900/95 text-zinc-200",
-            )
+            )}
           >
             <span className="leading-relaxed">{t.message}</span>
             <button
@@ -85,14 +85,14 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                   e.preventDefault();
                   dismiss(t.id);
                 }
-              }
+              }}
               aria-label="Dismiss"
               className="focus-ring mt-0.5 shrink-0 rounded opacity-50 transition-opacity hover:opacity-100"
             >
               ✕
             </button>
           </div>
-        ))
+        ))}
       </div>
     </ToastCtx.Provider>
   );
