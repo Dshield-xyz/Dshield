@@ -268,8 +268,18 @@ test-contracts:
 test-frontend:
     cd frontend && pnpm test
 
+# Build the shared tree/RPC package and the standalone indexer service
+build-indexer-service:
+    cd packages/core && npm install && npm run build
+    cd services/indexer && npm install && npm run build
+
+# Run standalone indexer service (and shared package) unit tests
+test-indexer-service: build-indexer-service
+    cd packages/core && npm test
+    cd services/indexer && npm test
+
 # Run all unit tests
-test: test-contracts test-frontend
+test: test-contracts test-frontend test-indexer-service
 
 # Run the formal/symbolic circuit specification harness
 verify-circuits:

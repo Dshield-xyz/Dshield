@@ -34,12 +34,12 @@ pub enum PoolError {
     InvalidAmount = 15,
     Paused = 16,
     NotAuthorized = 17,
-    AssetNotSupported = 18,
-    AssetMismatch = 19,
-    UnsupportedAsset = 20,
-    InvalidFee = 21,
-    DexRouterNotSet = 22,
-    FeeSwapFailed = 23,
+    InvalidFee = 18,
+    DexRouterNotSet = 19,
+    FeeSwapFailed = 20,
+    AssetNotSupported = 21,
+    AssetMismatch = 22,
+    UnsupportedAsset = 23,
 }
 
 #[contractevent(topics = ["deposit"], data_format = "map")]
@@ -1002,7 +1002,7 @@ impl PoolContract {
         if expected_asset != asset_from_proof {
             return Err(PoolError::AssetMismatch);
         }
-        
+
         // Validate the fee carve-out before any state changes or the (expensive)
         // proof verification, so a malformed or over-cap fee fails cheaply.
         // `fee_amount` never adds to what the note pays out -- it is a slice of
@@ -1095,35 +1095,37 @@ impl PoolContract {
         // A zero payout is legitimate: it re-keys a note without paying anything
         // out, which is how a user consolidates or refreshes shielded value. The
         // SAC rejects a zero-value transfer, so skip the call in that case.
-        let recipient_amount = payout - fee_amount;
-        if recipient_amount > 0 {
-            token::Client::new(&env, &asset).transfer(
-                &env.current_contract_address(),
-                &recipient,
-                &recipient_amount,
-            );
-        }
-
-        // Swap the carved-out fee slice for the fee asset (e.g. XLM) and send
-        // it straight to the relayer, so the user's withdrawal never required
-        // them to hold or spend the fee asset themselves. The pool holds the
-        // full `payout` at this point (transferred in at deposit time), so it
-        // can fund the swap directly rather than routing it through the
-        // recipient first.
-        if fee_amount > 0 {
-            let fee_amount_out = swap_fee_for_asset(
-                &env,
-                &asset,
-                fee_amount,
-                fee_min_out,
-                &fee_recipient,
-            )?;
-            FeeSwappedEvent {
-                fee_amount_in: &fee_amount,
-                fee_amount_out: &fee_amount_out,
-                fee_recipient: &fee_recipient,
+        if payout > 0 {
+            let recipient_amount = payout - fee_amount;
+            if recipient_amount > 0 {
+                token::Client::new(&env, &asset).transfer(
+                    &env.current_contract_address(),
+                    &recipient,
+                    &recipient_amount,
+                );
             }
-            .publish(&env);
+
+            // Swap the carved-out fee slice for the fee asset (e.g. XLM) and send
+            // it straight to the relayer, so the user's withdrawal never required
+            // them to hold or spend the fee asset themselves. The pool holds the
+            // full `payout` at this point (transferred in at deposit time), so it
+            // can fund the swap directly rather than routing it through the
+            // recipient first.
+            if fee_amount > 0 {
+                let fee_amount_out = swap_fee_for_asset(
+                    &env,
+                    &asset,
+                    fee_amount,
+                    fee_min_out,
+                    &fee_recipient,
+                )?;
+                FeeSwappedEvent {
+                    fee_amount_in: &fee_amount,
+                    fee_amount_out: &fee_amount_out,
+                    fee_recipient: &fee_recipient,
+                }
+                .publish(&env);
+            }
         }
 
         WithdrawEvent {
@@ -1960,20 +1962,20 @@ mod tests {
         let env1 = Env::default();
         env1.mock_all_auths();
         env1.cost_estimate().budget().reset_unlimited();
-        let (pool1, dep1, tok1) = setup_with_token(&env1);
+        let (pool1, dep1, token1) = setup_with_token(&env1);
         let client1 = PoolContractClient::new(&env1, &pool1);
 
         let env2 = Env::default();
         env2.mock_all_auths();
         env2.cost_estimate().budget().reset_unlimited();
-        let (pool2, dep2, tok2) = setup_with_token(&env2);
+        let (pool2, dep2, token2) = setup_with_token(&env2);
         let client2 = PoolContractClient::new(&env2, &pool2);
 
         let c = dummy_commitment(&env1, 42);
-        client1.deposit(&dep1, &tok1, &c, &NOTE_AMOUNT);
+        client1.deposit(&dep1, &token1, &c, &NOTE_AMOUNT);
 
         let c = dummy_commitment(&env2, 42);
-        client2.deposit(&dep2, &tok2, &c, &NOTE_AMOUNT);
+        client2.deposit(&dep2, &token2, &c, &NOTE_AMOUNT);
 
         assert_eq!(client1.get_root().unwrap(), client2.get_root().unwrap());
     }
@@ -2077,9 +2079,9 @@ mod tests {
         let client = PoolContractClient::new(&env, &pool_id);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
-        pi[160..192].copy_from_slice(&asset_id.to_array());
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
@@ -2192,6 +2194,8 @@ mod tests {
         let recipient = <Address as TestAddress>::generate(&env);
         let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[0] = 0xFF;
         pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
@@ -2267,6 +2271,8 @@ mod tests {
         // Valid root, but the recipient hash in the proof does NOT correspond to
         // `recipient` — simulating a front-runner swapping in their own address.
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&root.to_array());
         for b in pi[64..96].iter_mut() {
             *b = 0xAA;
@@ -2320,6 +2326,8 @@ mod tests {
 
         // Public inputs of a legitimate withdrawal bound to A.
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&root.to_array());
         pi[64..96].copy_from_slice(&hash_a.to_array());
         let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
@@ -2383,6 +2391,8 @@ mod tests {
         // contracts aren't supported by the recipient-binding scheme.
         let recipient = <Address as TestAddress>::generate(&env);
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&root.to_array());
         let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
         pi[160..192].copy_from_slice(&asset_id.to_array());
@@ -2399,6 +2409,21 @@ mod tests {
     // ──────────────────────────────────────────────
     //  Getters / constructor
     // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_get_assets_includes_initial_token() {
+        // `get_token` no longer exists -- the constructor's `token` argument
+        // now seeds the asset allow-list instead of being the pool's sole
+        // asset, so this checks the same fact (the pool knows about the
+        // asset it was deployed with) through the current API.
+        let env = Env::default();
+        let (pool_id, _, token_addr) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let assets = client.get_assets();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets.get(0).unwrap(), token_addr);
+    }
 
     // ──────────────────────────────────────────────
     //  Variable note values
@@ -2524,6 +2549,8 @@ mod tests {
 
         let recipient = <Address as TestAddress>::generate(&env);
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&client.get_root().unwrap().to_array());
         pi[128..160].copy_from_slice(&existing.to_array());
         let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
@@ -2717,6 +2744,8 @@ mod tests {
         // Public inputs for a well-formed withdrawal: known root, this
         // nullifier, and the recipient hash this payout address really binds to.
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&root.to_array());
         pi[32..64].copy_from_slice(&nullifier.to_array());
         pi[64..96].copy_from_slice(&recipient_hash.to_array());
@@ -3098,6 +3127,8 @@ mod tests {
         let correct = recipient_hash_from_address(&env, &recipient).unwrap();
 
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&root.to_array());
         pi[64..96].copy_from_slice(&correct.to_array());
         let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
@@ -3220,7 +3251,13 @@ mod tests {
         (pool_id, depositor, token_id, fee_asset_id)
     }
 
-    fn withdraw_public_inputs(env: &Env, root: &BytesN<32>, recipient: &Address, amount: i128, asset: &Address) -> Bytes {
+    fn withdraw_public_inputs(
+        env: &Env,
+        root: &BytesN<32>,
+        recipient: &Address,
+        amount: i128,
+        asset: &Address,
+    ) -> Bytes {
         let recipient_hash = recipient_hash_from_address(env, recipient).unwrap();
         let asset_id = asset_id_from_address(env, asset).unwrap();
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
@@ -3229,7 +3266,7 @@ mod tests {
         let mut amount_bytes = [0u8; 32];
         amount_bytes[24..32].copy_from_slice(&(amount as u64).to_be_bytes());
         pi[96..128].copy_from_slice(&amount_bytes);
-        pi[160..192].copy_from_slice(&asset_id.to_array());
+        pi[160..192].copy_from_slice(&asset_id_from_address(env, asset).unwrap().to_array());
         Bytes::from_slice(env, &pi)
     }
 

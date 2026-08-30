@@ -8,6 +8,13 @@ const DEV_SECRET_KEY = process.env.NEXT_PUBLIC_DEV_SECRET_KEY || "";
 export const POOL_CONTRACT_ID = process.env.NEXT_PUBLIC_POOL_CONTRACT_ID || "";
 export const COMPLIANCE_CONTRACT_ID = process.env.NEXT_PUBLIC_COMPLIANCE_CONTRACT_ID || "";
 
+// Base URL of a self-hosted standalone indexer (see services/indexer/), used
+// as an optional faster source for Merkle paths instead of scanning RPC
+// events or paging get_commitments_page in-browser. Unset by default: the
+// app works fully without one, falling back to direct RPC scanning. See
+// fetchMerkleProofFromService in ./indexer for the trust model.
+export const INDEXER_SERVICE_URL = process.env.NEXT_PUBLIC_INDEXER_SERVICE_URL || "";
+
 // Test USDC asset wrapped as a Stellar Asset Contract. Classic assets require
 // a trustline before an account can hold them; these let the app establish the
 // trustline and faucet test USDC so any wallet can use the demo.
@@ -223,13 +230,16 @@ export async function quoteFeeSwap(
  * rather than calling `quoteFeeSwap` directly so it reflects the exact
  * config (router, fee asset, flat fee amount) `relay-withdraw` will use.
  */
-export async function fetchWithdrawFeeQuote(poolId: string): Promise<FeeQuote> {
+export async function fetchWithdrawFeeQuote(
+  poolId: string,
+  asset: string,
+): Promise<FeeQuote> {
   const fallback: FeeQuote = { feeAmount: "0", expectedXlmOut: "0", minXlmOut: "0" };
   try {
     const res = await fetch("/api/relay-withdraw-quote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ poolId }),
+      body: JSON.stringify({ poolId, asset }),
     });
     if (!res.ok) return fallback;
     const body = (await res.json().catch(() => null)) as FeeQuote | null;
@@ -250,6 +260,8 @@ export async function relayWithdrawal(params: {
   recipient: string;
   publicInputs: string;
   proof: string;
+  /** SEP-41 token contract address the note being spent is denominated in. */
+  asset: string;
 }): Promise<RelayResult | null> {
   const res = await fetch("/api/relay-withdraw", {
     method: "POST",

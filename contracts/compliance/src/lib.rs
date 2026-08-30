@@ -1172,7 +1172,7 @@ mod tests {
         let commitment = BytesN::from_array(env, &arr);
         dshield_pool::PoolContractClient::new(env, &pool_id)
             .deposit(&depositor, &token_id.address(), &commitment, &note_amount);
-        (pool_id, token_id.address(), note_amount)
+        (pool_id, note_amount)
     }
 
     fn setup_with_pool(env: &Env) -> (Address, Address, Address, i128) {

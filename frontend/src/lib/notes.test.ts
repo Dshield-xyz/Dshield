@@ -17,6 +17,11 @@ import {
   type ShieldedNote,
 } from "./notes";
 
+// A syntactically valid Stellar contract (C...) address, reused everywhere a
+// test needs *some* asset — StrKey en/decoding requires a real checksum, but
+// which contract it names is otherwise irrelevant to what these tests check.
+const TEST_ASSET = "CBQ3EPNIMGLS53U4HHLT4V3HAGJJCLONVXAN2QEREGQZMFQOLK7VF6C7";
+
 function makeNote(overrides: Partial<ShieldedNote> = {}): ShieldedNote {
   return {
     nullifier: "00aabbcc",
@@ -24,7 +29,7 @@ function makeNote(overrides: Partial<ShieldedNote> = {}): ShieldedNote {
     commitment: "abcd1234",
     leafIndex: 0,
     amount: "1000000",
-    asset: "1",
+    asset: TEST_ASSET,
     spent: false,
     createdAt: Date.now(),
     ...overrides,
@@ -181,7 +186,7 @@ describe("generateNoteLink (compact link encoding)", () => {
       commitment: HEX32_C,
       leafIndex: 42,
       amount: "100000000",
-      asset: VALID_ASSET,
+      asset: TEST_ASSET,
       spent: false,
       createdAt: Date.now(),
       poolId: VALID_POOL,
@@ -239,7 +244,7 @@ describe("generateNoteLink (compact link encoding)", () => {
       commitment: "abcd1234",
       leafIndex: 0,
       amount: "1000000",
-      asset: "1",
+      asset: TEST_ASSET,
       spent: false,
       createdAt: Date.now(),
     };
@@ -423,15 +428,23 @@ describe("generateNoteLink without a Buffer global", () => {
     commitment: "deadbeef".repeat(8),
     leafIndex: 42,
     amount: "100000000",
-    asset: "1",
+    asset: TEST_ASSET,
     spent: false,
     createdAt: Date.now(),
   };
 
-  it("uses the compact format and round-trips with no poolId involved", () => {
-    const link = withoutBuffer(() => generateNoteLink(note));
+  it("degrades to the legacy format instead of throwing when asset needs StrKey", () => {
+    // Unlike poolId (optional), asset is always present and always
+    // StrKey-decoded, so compact encoding is unreachable without Buffer for
+    // any real note now. The invariant this test protects is that
+    // generateNoteLink degrades gracefully instead of throwing — not which
+    // format it lands on.
+    let link = "";
+    expect(() => {
+      link = withoutBuffer(() => generateNoteLink(note));
+    }).not.toThrow();
     const payload = decodeURIComponent(link.split("#note=")[1]);
-    expect(payload.startsWith("dS2.")).toBe(true);
+    expect(payload.startsWith("dshield-v1-")).toBe(true);
 
     const restored = withoutBuffer(() => parseNote(payload));
     expect(restored).not.toBeNull();
