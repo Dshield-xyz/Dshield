@@ -6,6 +6,7 @@ import {
   getNotes,
   saveNoteIfNew,
   serializeNotes,
+  deriveViewingKey,
   type ShieldedNote,
 } from "@/lib/notes";
 import { friendlyError } from "@/lib/errors";
@@ -15,17 +16,23 @@ import {
   formatReportText,
   type ComplianceReport,
 } from "@/lib/report";
+import {
+  buildViewDisclosureProof,
+  type ViewDisclosureBundle,
+} from "@/lib/viewDisclosure";
+import type { ProofStage } from "@/lib/prover";
 import { explorerTxUrl, explorerContractUrl } from "@/lib/explorer";
-import { truncateMiddle } from "@/lib/format";
+import { truncateMiddle, formatAmount } from "@/lib/format";
 import { PageShell, PageHeader } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { SelectButton } from "@/components/ui/SelectButton";
+import { ProgressSteps } from "@/components/ui/ProgressSteps";
 import { useToast } from "@/components/ui/Toast";
 import { NoteImport } from "@/components/ui/NoteImport";
 
-type Mode = "generate" | "verify";
+type Mode = "generate" | "verify" | "view-key";
 
 type ReportStatus = "pending" | "loading" | "done" | "error";
 
@@ -48,6 +55,13 @@ export default function CompliancePage() {
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
   const [, refresh] = useReducer((x: number) => x + 1, 0);
+
+  // Viewing-key mode: a single note at a time, plus the proof bundle it
+  // produces for sharing with a chosen verifier.
+  const [viewKeyNote, setViewKeyNote] = useState<ShieldedNote | null>(null);
+  const [viewProofStage, setViewProofStage] = useState<ProofStage | null>(null);
+  const [viewBundle, setViewBundle] = useState<ViewDisclosureBundle | null>(null);
+  const [viewError, setViewError] = useState<string | null>(null);
 
   useEffect(() => {
     syncSpentNotes().then((n) => {
@@ -73,6 +87,39 @@ export default function CompliancePage() {
     setResults([]);
     setSelectedCommitments(new Set());
     setExpandedCommitment(null);
+    setViewKeyNote(null);
+    setViewBundle(null);
+    setViewError(null);
+  }
+
+  async function handleGenerateViewProof() {
+    if (!viewKeyNote) return;
+    setIsLoading(true);
+    setViewError(null);
+    setViewBundle(null);
+    setViewProofStage(null);
+    try {
+      const bundle = await buildViewDisclosureProof(viewKeyNote, setViewProofStage);
+      setViewBundle(bundle);
+    } catch (err) {
+      setViewError(friendlyError(err));
+    } finally {
+      setIsLoading(false);
+      setViewProofStage(null);
+    }
+  }
+
+  function downloadViewBundle() {
+    if (!viewBundle) return;
+    const blob = new Blob([JSON.stringify(viewBundle, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dshield-view-proof-${viewBundle.generatedAt}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   function toggleNote(note: ShieldedNote) {
@@ -186,7 +233,7 @@ export default function CompliancePage() {
       />
 
       {/* Mode toggle */}
-      <fieldset className="mt-8 grid grid-cols-2 gap-2">
+      <fieldset className="mt-8 grid grid-cols-3 gap-2">
         <legend className="sr-only">Report Mode</legend>
         <SelectButton
           selected={mode === "generate"}
@@ -206,9 +253,160 @@ export default function CompliancePage() {
         >
           Verify Reports
         </SelectButton>
+        <SelectButton
+          selected={mode === "view-key"}
+          onClick={() => switchMode("view-key")}
+          disabled={isLoading}
+          className="text-center font-medium"
+          aria-label="Viewing Key mode"
+        >
+          Viewing Key
+        </SelectButton>
       </fieldset>
 
-      <div className="mt-6 space-y-6">
+      {mode === "view-key" && (
+        <div className="mt-6 space-y-6">
+          <Card>
+            <p className="text-sm text-zinc-400">
+              Generate a proof of one note&apos;s amount for a chosen
+              auditor or bookkeeper — without handing them the ability to
+              spend it. Share the viewing key with them first (out of
+              band), then send them the proof bundle below whenever you
+              want to disclose.
+            </p>
+          </Card>
+
+          <Card>
+            <h2 className="text-sm font-medium text-zinc-400">
+              Pick a note ({allNotes.length})
+            </h2>
+            {allNotes.length === 0 ? (
+              <p className="mt-3 text-sm text-zinc-500">
+                No notes on this device yet. Make a deposit, or import a note
+                below.
+              </p>
+            ) : (
+              <div className="mt-3 space-y-2">
+                {allNotes.map((note) => {
+                  const selected = viewKeyNote?.commitment === note.commitment;
+                  return (
+                    <button
+                      key={note.commitment}
+                      onClick={() => {
+                        setViewKeyNote(note);
+                        setViewBundle(null);
+                        setViewError(null);
+                      }}
+                      disabled={isLoading}
+                      aria-pressed={selected}
+                      className={`focus-ring w-full rounded-xl border px-4 py-3 text-left transition-all disabled:pointer-events-none ${
+                        selected
+                          ? "border-brand-500/50 bg-brand-950/30"
+                          : "border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800/40"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="min-w-0 truncate font-mono text-xs text-zinc-300">
+                          {truncateMiddle(note.commitment, 16, 16)}
+                        </span>
+                        <Badge tone={note.spent ? "blue" : "green"}>
+                          {note.spent ? "Withdrawn" : "In pool"}
+                        </Badge>
+                      </div>
+                      <div className="mt-1 text-xs text-zinc-500">
+                        {formatAmount(note.amount)} · Leaf #{note.leafIndex}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+
+          {viewKeyNote && (
+            <Card>
+              <h2 className="text-sm font-medium text-zinc-400">
+                Viewing key
+              </h2>
+              <p className="mt-1 text-xs text-zinc-500">
+                Share this with your chosen verifier out of band (e.g. a
+                secure message) — it cannot be used to spend this note.
+              </p>
+              <ViewKeyDisplay key={viewKeyNote.commitment} note={viewKeyNote} />
+            </Card>
+          )}
+
+          {viewKeyNote && !viewBundle && (
+            <Button
+              fullWidth
+              size="lg"
+              onClick={handleGenerateViewProof}
+              disabled={isLoading}
+            >
+              {isLoading ? "Generating proof…" : "Generate Viewing Proof"}
+            </Button>
+          )}
+
+          {isLoading && viewProofStage && (
+            <ProgressSteps
+              label={
+                viewProofStage === "executing"
+                  ? "Building proof…"
+                  : "Proving…"
+              }
+              steps={["executing", "proving"]}
+              current={viewProofStage}
+            />
+          )}
+
+          {viewError && (
+            <p className="text-sm text-red-400">{viewError}</p>
+          )}
+
+          {viewBundle && (
+            <Card>
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-medium text-zinc-400">
+                  Proof ready
+                </h2>
+                <Badge tone="green">
+                  Discloses {formatAmount(viewBundle.amount)}
+                </Badge>
+              </div>
+              <p className="mt-2 text-xs text-zinc-500">
+                Send this file to your verifier. It reveals only this
+                note&apos;s amount and the viewing key it&apos;s bound to —
+                never the note&apos;s spend secrets.
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button variant="primary" onClick={downloadViewBundle}>
+                  Download proof (.json)
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setViewBundle(null);
+                    setViewError(null);
+                  }}
+                >
+                  Clear
+                </Button>
+              </div>
+            </Card>
+          )}
+
+          <NoteImport
+            disabled={isLoading}
+            title="Or import a Shielded Note"
+            onImport={(notes) => {
+              for (const note of notes) saveNoteIfNew(note);
+              refresh();
+            }}
+          />
+        </div>
+      )}
+
+      <div className={mode === "view-key" ? "hidden" : "mt-6 space-y-6"}>
         {/* Note selection */}
         {mode === "generate" && (
           <Card>
@@ -473,6 +671,44 @@ export default function CompliancePage() {
         )}
       </div>
     </PageShell>
+  );
+}
+
+function ViewKeyDisplay({ note }: { note: ShieldedNote }) {
+  const [viewKey, setViewKey] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let stale = false;
+    deriveViewingKey(note.secret).then((k) => {
+      if (!stale) setViewKey(k);
+    });
+    return () => {
+      stale = true;
+    };
+  }, [note.secret]);
+
+  if (!viewKey) {
+    return <p className="mt-3 text-sm text-zinc-500">Deriving…</p>;
+  }
+
+  return (
+    <div className="mt-3 flex items-center gap-2">
+      <code className="min-w-0 flex-1 truncate rounded-lg bg-zinc-800/80 px-3 py-2 font-mono text-xs text-zinc-300">
+        {viewKey}
+      </code>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          navigator.clipboard.writeText(viewKey);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }}
+      >
+        {copied ? "Copied" : "Copy"}
+      </Button>
+    </div>
   );
 }
 

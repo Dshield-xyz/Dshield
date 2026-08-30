@@ -1,0 +1,11 @@
+[project]
+name = "dshield-asp-sync"
+version = "0.1.0"
+description = "Scheduled OFAC SDN digital-currency address root synchronizer for DShield"
+requires-python = ">=3.11"
+
+[project.scripts]
+asp-sync = "asp_sync.sync:run"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

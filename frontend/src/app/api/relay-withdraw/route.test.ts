@@ -22,6 +22,7 @@ const base = {
   recipient: VALID_G,
   publicInputs: "00",
   proof: "00",
+  asset: VALID_C,
 };
 
 afterEach(() => {
@@ -52,6 +53,12 @@ describe("/api/relay-withdraw validation", () => {
   it("400 when publicInputs/proof are not hex", async () => {
     const POST = await loadRoute("Sxxx-dummy-secret");
     const res = await POST(req({ ...base, publicInputs: "zz", proof: "00" }));
+    expect(res.status).toBe(400);
+  });
+
+  it("400 on an invalid asset id", async () => {
+    const POST = await loadRoute("Sxxx-dummy-secret");
+    const res = await POST(req({ ...base, asset: "not-a-contract" }));
     expect(res.status).toBe(400);
   });
 });
