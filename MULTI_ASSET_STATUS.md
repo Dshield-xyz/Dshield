@@ -63,34 +63,58 @@ This document tracks the implementation of multi-asset support, allowing a singl
 - ✅ `proveCompliance()` updated to take `asset` input
 - ✅ `proveDisclosure()` updated to take `asset` input
 
+## ✅ Also completed (previously listed under Remaining Work)
+
+The initial version of this migration left the contract and its test suite in
+a state that did not compile (two missing braces and an enum discriminant
+collision in `contracts/pool/src/lib.rs`, ~100 test call sites and the
+`Prover.toml` circuit fixtures never updated for the new `asset` parameter),
+and the frontend pages/tests below were still calling the old, pre-asset
+signatures. That has since been fixed so the whole repo builds and tests
+green again:
+
+- `frontend/src/app/deposit/page.tsx`: `buildNote()` takes and hashes `asset`;
+  the `deposit` contract call passes it; the button disables with an
+  "Asset not configured" state if none is available.
+- `frontend/src/app/withdraw/page.tsx`: `buildChangeNote()`, `computeCommitment()`,
+  `proveWithdrawal()`, and the `withdraw` contract call (both the relayed and
+  direct wallet-signed paths) all thread the spent note's `asset` through.
+- `frontend/src/lib/stellar.ts` / the `relay-withdraw*` API routes: resolve the
+  withdrawn asset from the client-supplied `asset` field instead of the
+  now-removed `get_token` view (replaced by the allow-list's `get_assets`).
+- `contracts/pool/src/lib.rs`'s test suite (~100 call sites) and
+  `circuits/{shielded_pool,compliance,disclosure}/Prover.toml` (recomputed
+  `root`/`change_commitment` fixtures with a real `asset` value) now build and
+  pass against the current signatures.
+- `frontend/src/lib/poseidon2.test.ts`, `prover.test.ts`, `notes.test.ts`,
+  `viewDisclosure.test.ts`, `stellar.test.ts` updated for the `asset`
+  parameter/field everywhere it's now required.
+
+None of the above adds an asset **selector** — every one of these call sites
+still resolves to this deployment's single configured USDC SAC
+(`getUsdcSacId()`). What's genuinely still missing is the UI to choose among
+several allow-listed assets; see below.
+
 ## 🚧 Remaining Work
 
 ### Frontend Integration
 
 #### `frontend/src/app/deposit/page.tsx`
 
-- ⏳ **TODO**: Add asset selector dropdown/input
-- ⏳ **TODO**: Update `buildNote()` to accept and include `asset` parameter
-- ⏳ **TODO**: Pass `asset` to `computeCommitment()` when building note
-- ⏳ **TODO**: Pass `asset` to contract `deposit` call
+- ⏳ **TODO**: Add asset selector dropdown/input (currently always deposits into `getUsdcSacId()`)
 - ⏳ **TODO**: Update UI to show which asset is being deposited
-- ⏳ **TODO**: Handle asset validation errors from contract
+- ⏳ **TODO**: Handle asset validation errors from contract (e.g. `AssetNotSupported`) with a friendly message
 
 #### `frontend/src/app/withdraw/page.tsx`
 
 - ⏳ **TODO**: Display asset information for each note in the note list
-- ⏳ **TODO**: Update `buildChangeNote()` to accept and include `asset` parameter
-- ⏳ **TODO**: Pass note's `asset` to `computeCommitment()` when building change note
-- ⏳ **TODO**: Pass note's `asset` to `proveWithdrawal()`
-- ⏳ **TODO**: Pass note's `asset` to contract `withdraw` call
 - ⏳ **TODO**: Update UI to show which asset is being withdrawn
 
 #### `frontend/src/lib/stellar.ts`
 
-- ⏳ **TODO**: Update `buildContractCall()` for deposits to handle per-asset token transfers
-- ⏳ **TODO**: Add `getAssetSacId(asset: Address)` or similar to resolve asset addresses
+- ⏳ **TODO**: Add `getAssetSacId(asset: Address)` or similar to resolve arbitrary asset addresses, not just the demo USDC SAC
 - ⏳ **TODO**: Update trustline and faucet logic to handle multiple assets (if needed)
-- ⏳ **TODO**: Consider adding `getPoolAssets()` to query allow-listed assets from contract
+- ⏳ **TODO**: Consider adding `getPoolAssets()` to query allow-listed assets from contract, to populate an asset selector
 
 ### Testing
 
@@ -105,10 +129,10 @@ This document tracks the implementation of multi-asset support, allowing a singl
 
 #### Frontend Tests
 
-- ⏳ **TODO**: Test note serialization/deserialization with asset field
-- ⏳ **TODO**: Test compact encoding/decoding with asset field
-- ⏳ **TODO**: Test `computeCommitment()` with asset parameter
-- ⏳ **TODO**: Test `assetToField()` conversion
+- ✅ Note serialization/deserialization with asset field (`notes.test.ts`)
+- ✅ Compact encoding/decoding with asset field (`notes.test.ts`)
+- ✅ `computeCommitment()` with asset parameter, including asset-binding (`poseidon2.test.ts`)
+- ⏳ **TODO**: Test `assetToField()` conversion directly
 
 ### Documentation
 

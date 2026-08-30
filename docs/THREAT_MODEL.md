@@ -15,6 +15,11 @@ external audit.
 | Component | Enforced properties | External assumptions |
 | --- | --- | --- |
 | `shielded_pool` circuit | Note membership and opening; nullifier derivation; 64-bit note and withdrawal amounts; `withdraw_amount <= amount`; change commitment for `amount - withdraw_amount`. | Its public recipient field is not derived from a Stellar address. |
+| Pool contract | Known-root check, nullifier uniqueness, recipient-address binding, proof verification, change insertion, token transfer, and timelock-only gating of verifier/admin changes. | The configured verifier and token are trusted deployments. A relayer can censor or delay, but cannot redirect a valid withdrawal. |
+| `compliance` circuit | KYC-preimage knowledge, note ownership, equality of the disclosed and committed amounts, and 64-bit range. | KYC eligibility is an administrative policy decision. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
+| `disclosure` circuit | KYC and note ownership plus `amount >= threshold`, without revealing the note amount. | The threshold's legal meaning is external policy. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
+| Compliance contract | Registered-KYC and approved-pool-root checks, proof verification, administrator authorization for registry changes, and timelock-only gating of admin/disclosure-VK changes. | The administrator is trusted to register correct hashes and pools. The configured timelock is a trusted deployment -- see [Timelock governance](#timelock-governance). |
+| Governance (timelock) contract | Queues a call (target, function, args) with a fixed delay set at deployment; executes only after the delay elapses and only if not cancelled; cancellation is admin-only. | The governance admin is trusted to queue only intended changes and to use cancellation responsibly -- see [Timelock governance](#timelock-governance). |
 | Pool contract | Known-root check, nullifier uniqueness, recipient-address binding, proof verification, change insertion, token transfer, and fee-carve-out bounds (`fee_amount <= payout` and `<= max_fee_bps`). | The configured verifier, token, and DEX router are trusted deployments. A relayer can censor or delay, but cannot redirect a valid withdrawal, and cannot charge a fee above the admin-configured (and hard-capped) `max_fee_bps` -- see [Fee abstraction](#fee-abstraction). |
 | `compliance` circuit | KYC-preimage knowledge, note ownership, equality of the disclosed and committed amounts, and 64-bit range. | KYC eligibility is an administrative policy decision. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
 | `disclosure` circuit | KYC and note ownership plus `amount >= threshold`, without revealing the note amount. | The threshold's legal meaning is external policy. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
@@ -37,9 +42,10 @@ flowchart LR
     Disclosure -->|proof, root, KYC hash, auditor key| Registry[Compliance contract]
     Registry -->|confirm root| Pool
     Registry -->|verify| Verifier
-    Admin[Administrator] -->|KYC hashes, pools, keys| Registry[Compliance contract]
-    Feed[OFAC SDN enhanced XML] -->|validated address set| Sync[Scheduled ASP sync job]
-    Sync -->|admin-signed root rotation| Registry
+    Admin[Administrator] -->|KYC hashes and pools| Registry
+    GovAdmin[Governance admin] -->|queue, cancel| Governance[Governance/timelock contract]
+    Governance -->|execute after delay: set_verifier, admin rotation| Pool
+    Governance -->|execute after delay: propose_admin, set_disclosure_vk| Registry
 ```
 
 The relayer is outside the cryptographic trust boundary. It sees public
@@ -154,6 +160,45 @@ auditor key nobody controls, and nothing on-chain distinguishes a real
 auditor's key from an arbitrary one. Treat `auditor_key` as an opaque tag
 carried through the system, not as an access-control mechanism.
 
+## Timelock governance
+
+Every privileged operation that can change what pool/compliance trust --
+`set_verifier` and admin rotation on the pool, `propose_admin` and
+`set_disclosure_vk` on compliance -- previously took effect the instant the
+admin's transaction confirmed, with no delay or visibility window. A single
+compromised or malicious admin key could swap in a bad verifier contract or
+VK and have it live before any user could react.
+
+These entry points are now gated behind a `contracts/governance` timelock
+instead of a direct `admin.require_auth()`:
+
+1. Pool and compliance are each configured (at construction) with the
+   address of a deployed `GovernanceContract`. Their gated functions call
+   `require_timelock`, which requires that the timelock contract itself is
+   the caller (`timelock.require_auth()`) -- something only true when the
+   call arrives via that contract's own `execute`, never a direct admin
+   transaction.
+2. Changing `set_verifier`, `propose_admin`, or `set_disclosure_vk` requires
+   the governance admin to `queue` the call, wait out a fixed delay set at
+   the governance contract's deployment, then `execute` it. `execute` is
+   callable by anyone once the delay has elapsed, so the change doesn't
+   depend on the admin remembering a second step.
+3. A queued call can be `cancel`led by the governance admin at any time
+   before it executes -- the safety valve if a queued change turns out to be
+   wrong.
+
+This bounds an admin-key compromise (or a bad-faith admin) to: the change is
+visible on-chain for the full delay before it can take effect, and the
+`cancel` path exists as long as the governance admin key itself isn't also
+compromised. `pause`/`unpause` are deliberately **not** gated -- a circuit
+breaker that itself has to wait out a delay before pausing a discovered bug
+defeats the point of a circuit breaker.
+
+The governance admin (who can queue and cancel) and the governance delay are
+themselves trust assumptions this doesn't remove: a queued call is only as
+trustworthy as whoever queued it, and the delay is a visibility window, not
+a veto -- nothing on-chain stops the delay from elapsing and the call
+executing if nobody acts on what they saw queued.
 ## Viewing-key separation
 
 Every note has a spend-capable secret pair, `(nullifier, secret)`, and a
@@ -251,6 +296,9 @@ If the feed or its transport is compromised, a syntactically valid but incorrect
 
 - Verification keys, pool addresses, token addresses, and administrators are
   configured correctly.
+- The governance timelock's delay and admin are configured correctly at
+  deployment, and the governance admin key is not itself compromised -- see
+  [Timelock governance](#timelock-governance).
 - Users protect and retain note secrets, nullifiers, and KYC preimages. This
   is not purely a user-diligence assumption today: the deposit flow persists
   a note to `localStorage` only after `submitTransaction` resolves, with an

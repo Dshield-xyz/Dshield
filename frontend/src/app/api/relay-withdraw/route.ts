@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { checkRateLimit, clientKey } from "@/lib/rateLimit";
-import { quoteFeeSwap, queryContract, DEX_ROUTER_ID, XLM_SAC_ID } from "@/lib/stellar";
+import { quoteFeeSwap, DEX_ROUTER_ID, XLM_SAC_ID } from "@/lib/stellar";
 
 // Server-side relayer: submits a withdrawal on the user's behalf, paying the
 // transaction fee from the relayer account. Because the pool contract binds the
@@ -63,12 +63,14 @@ export async function POST(req: NextRequest) {
   let recipient: string;
   let publicInputs: string;
   let proof: string;
+  let asset: string;
   try {
     const body = await req.json();
     poolId = String(body.poolId || "");
     recipient = String(body.recipient || "");
     publicInputs = String(body.publicInputs || "");
     proof = String(body.proof || "");
+    asset = String(body.asset || "");
   } catch {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
@@ -78,6 +80,9 @@ export async function POST(req: NextRequest) {
   }
   if (!StellarSdk.StrKey.isValidEd25519PublicKey(recipient)) {
     return NextResponse.json({ error: "Invalid recipient address." }, { status: 400 });
+  }
+  if (!isStrKeyContract(asset)) {
+    return NextResponse.json({ error: "Invalid asset id." }, { status: 400 });
   }
   if (!/^[0-9a-fA-F]+$/.test(publicInputs) || !/^[0-9a-fA-F]+$/.test(proof)) {
     return NextResponse.json(
@@ -103,9 +108,7 @@ export async function POST(req: NextRequest) {
     let feeMinOut = "0";
     const feeRecipient = relayer.publicKey();
     if (DEX_ROUTER_ID && XLM_SAC_ID && RELAYER_FEE_STROOPS !== "0") {
-      const tokenVal = await queryContract(poolId, "get_token");
-      const tokenId = tokenVal ? StellarSdk.scValToNative(tokenVal) as string : null;
-      const quote = tokenId ? await quoteFeeSwap(tokenId, RELAYER_FEE_STROOPS) : null;
+      const quote = await quoteFeeSwap(asset, RELAYER_FEE_STROOPS);
       if (quote) {
         feeAmount = quote.feeAmount;
         feeMinOut = quote.minXlmOut;
@@ -120,6 +123,7 @@ export async function POST(req: NextRequest) {
         contract.call(
           "withdraw",
           StellarSdk.nativeToScVal(recipient, { type: "address" }),
+          StellarSdk.nativeToScVal(asset, { type: "address" }),
           StellarSdk.xdr.ScVal.scvBytes(Buffer.from(publicInputs, "hex")),
           StellarSdk.xdr.ScVal.scvBytes(Buffer.from(proof, "hex")),
           StellarSdk.nativeToScVal(BigInt(feeAmount), { type: "i128" }),
