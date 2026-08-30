@@ -17,7 +17,9 @@ const NAV_ITEMS = [
   { href: "/withdraw", label: "Withdraw" },
   { href: "/recurring", label: "Recurring" },
   { href: "/compliance", label: "Compliance" },
+  { href: "/audit", label: "Audit" },
   { href: "/history", label: "History" },
+  { href: "/admin", label: "Governance" },
 ];
 
 interface Balances {

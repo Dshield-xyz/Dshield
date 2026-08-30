@@ -13,10 +13,14 @@ fn hash2(a: Field, b: Field) -> Field {
 /// Note commitment -- must stay byte-for-byte identical to the shielded_pool
 /// circuit's `hash_leaf` (and to the frontend / pool contract), which is why it
 /// is a chain of two-input Poseidon2 hashes rather than one wide hash.
-/// `amount` is bound into the commitment, so a note's value is now something
-/// this circuit can actually prove rather than an unconstrained witness.
-fn hash_leaf(nullifier: Field, secret: Field, amount: Field) -> Field {
-    hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount)
+/// `amount` and `asset` are bound into the commitment, so a note's value and
+/// the asset it is denominated in are now something this circuit can actually
+/// prove rather than unconstrained witnesses. `asset` is a private witness
+/// here: the prover cannot lie about it without breaking Merkle membership
+/// (the real leaf commits to a specific asset), so the disclosed `amount` is
+/// necessarily the value of whatever asset the note actually holds.
+fn hash_leaf(nullifier: Field, secret: Field, amount: Field, asset: Field) -> Field {
+    hash2(hash2(hash2(hash2(LEAF_DOMAIN, nullifier), secret), amount), asset)
 }
 
 fn hash_kyc(kyc_preimage: Field) -> Field {
@@ -62,6 +66,7 @@ pub fn main(
     nullifier: Field,
     secret: Field,
     amount: Field,
+    asset: Field,
     path_siblings: [Field; TREE_DEPTH],
     path_bits: [Field; TREE_DEPTH],
 ) {
@@ -70,8 +75,9 @@ pub fn main(
     assert(computed_kyc == kyc_hash);
 
     // 2. Wallet authorization: user owns a note in the shielded pool, and that
-    //    note is worth exactly `amount` -- the value is bound into the leaf.
-    let leaf = hash_leaf(nullifier, secret, amount);
+    //    note is worth exactly `amount` of `asset` -- both are bound into the
+    //    leaf, so membership can only be proven with the note's real asset.
+    let leaf = hash_leaf(nullifier, secret, amount, asset);
     let computed_root = compute_root(leaf, path_siblings, path_bits);
     assert(computed_root == merkle_root);
 
@@ -86,7 +92,18 @@ pub fn main(
     let amount_u64 = constrain_u64(amount);
     assert(amount_u64 == disclosed_u64);
 
-    // Auditor-scoped binding, so a disclosure produced for one auditor cannot
-    // be replayed as though it were addressed to another.
-    let _disclosure_commitment = Poseidon2::hash([amount, auditor_key, nullifier], 3);
+    // `auditor_key` is a public input, which is enough on its own: a proof is
+    // bound to the exact public-input vector it was generated for, so it
+    // cannot be redirected to a different `auditor_key` after the fact. That
+    // guarantee comes from `auditor_key` being `pub`, not from this hash --
+    // the hash's result is never asserted against anything, so it adds no
+    // constraint. It exists only so `auditor_key` is referenced (otherwise
+    // Noir flags it as an unused parameter).
+    //
+    // What neither this nor `pub` gives you: any proof of `auditor_key`
+    // corresponding to an actually-registered auditor. There is no registry
+    // -- the compliance contract stores KYC hashes, pools, and a disclosure
+    // VK, and nothing else. A prover may set `auditor_key` to any Field
+    // value. See docs/THREAT_MODEL.md.
+    let _auditor_key_referenced = Poseidon2::hash([amount, auditor_key, nullifier], 3);
 }

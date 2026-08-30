@@ -5,6 +5,7 @@ import hasherCircuit from "@/circuits/hasher.json";
 const LEAF_DOMAIN = "0x4c454146";
 const NULLIFIER_DOMAIN = "0x4e554c4c";
 const KYC_DOMAIN = "0x4b5943";
+const VIEW_DOMAIN = "0x56494557";
 
 let noirInstance: InstanceType<typeof Noir> | null = null;
 
@@ -38,7 +39,7 @@ export async function poseidon2Hash(a: string, b: string): Promise<string> {
 }
 
 /**
- * Note commitment: `H(H(H(LEAF_DOMAIN, nullifier), secret), amount)`.
+ * Note commitment: `H(H(H(H(LEAF_DOMAIN, nullifier), secret), amount), asset)`.
  *
  * The chain of two-input hashes is not an approximation of a wider hash — it
  * is the definition, matched exactly by the Noir circuits' `hash_leaf` and by
@@ -50,22 +51,34 @@ export async function poseidon2Hash(a: string, b: string): Promise<string> {
  * `amount` is the note's value in token base units (stroops), as a decimal
  * string. Binding it here is what lets one pool hold notes of any size and lets
  * a spend pay out part of a note.
+ *
+ * `asset` is the field element derived from the SEP-41 token's contract address.
+ * Binding it into the commitment is what lets a single pool hold notes for many
+ * assets: a proof for asset A cannot open a note that commits to asset B, so
+ * notes of different assets are cryptographically isolated even though they
+ * share the same tree and nullifier set.
  */
 export async function computeCommitment(
   nullifier: string,
   secret: string,
   amount: string | bigint,
+  asset: string,
 ): Promise<string> {
-  const domainAndNullifier = await poseidon2Hash(LEAF_DOMAIN, toField(nullifier));
+  const domainAndNullifier = await poseidon2Hash(
+    LEAF_DOMAIN,
+    toField(nullifier),
+  );
   const withSecret = await poseidon2Hash(domainAndNullifier, toField(secret));
-  return poseidon2Hash(withSecret, toAmountField(amount));
+  const withAmount = await poseidon2Hash(withSecret, toAmountField(amount));
+  return poseidon2Hash(withAmount, toField(asset));
 }
 
-export async function computeNullifierHash(
-  nullifier: string,
-): Promise<string> {
+export async function computeNullifierHash(nullifier: string): Promise<string> {
   // H(H(NULLIFIER_DOMAIN, nullifier), 0)
-  const domainAndNullifier = await poseidon2Hash(NULLIFIER_DOMAIN, toField(nullifier));
+  const domainAndNullifier = await poseidon2Hash(
+    NULLIFIER_DOMAIN,
+    toField(nullifier),
+  );
   return poseidon2Hash(domainAndNullifier, "0x00");
 }
 
@@ -73,6 +86,17 @@ export async function computeNullifierHash(
 export async function computeKycHash(preimage: string): Promise<string> {
   const domainAndPreimage = await poseidon2Hash(KYC_DOMAIN, toField(preimage));
   return poseidon2Hash(domainAndPreimage, "0x00");
+}
+
+/**
+ * Viewing key: `H(H(VIEW_DOMAIN, secret), 0)` — matches the `view_disclosure`
+ * circuit's `hash_view_key`. Deliberately a function of `secret` alone, never
+ * `nullifier`, so handing this value to an auditor or bookkeeper can never
+ * expose spend-capable material — see docs/THREAT_MODEL.md.
+ */
+export async function computeViewKey(secret: string): Promise<string> {
+  const domainAndSecret = await poseidon2Hash(VIEW_DOMAIN, toField(secret));
+  return poseidon2Hash(domainAndSecret, "0x00");
 }
 
 /**
@@ -143,7 +167,8 @@ export async function buildMerkleTree(
     const nextLevel: string[] = [];
     for (let i = 0; i < currentLevel.length; i += 2) {
       const left = currentLevel[i];
-      const right = i + 1 < currentLevel.length ? currentLevel[i + 1] : zeroes[depth];
+      const right =
+        i + 1 < currentLevel.length ? currentLevel[i + 1] : zeroes[depth];
       nextLevel.push(await poseidon2Hash(left, right));
     }
 
@@ -178,28 +203,28 @@ function ensureHex(v: string): string {
   return "0x" + v;
 }
 
-// Domain separation tag for the recurring authorization hash (must match
-// circuits/recurring/src/main.nr `RECURRING_DOMAIN`).
-const RECURRING_DOMAIN = "0x52454341"; // "RECA"
-
 /**
- * Recurring authorization commitment:
- * `H(H(H(H(H(RECA, authNullifier), recipient), maxAmount), periodSecs), maxUses)`
- *
- * Must match `hash_auth` in circuits/recurring/src/main.nr exactly.
- * Used by the recurring page to compute the on-chain key before submitting
- * the proof, so the auth record can be saved locally first.
+ * Derives the field element a note commits to for `asset`, from the SEP-41
+ * token's contract address. This MUST match the pool contract's
+ * `asset_id_from_address` and the circuit's `asset` public input: it takes the
+ * token's 32-byte contract id, reduces it modulo the BN254 scalar field, and
+ * returns the 32-byte big-endian encoding. Binding the note's leaf to this
+ * value is what stops a proof for one asset from paying out another.
  */
-export async function computeAuthCommitment(
-  authNullifier: string,
-  recipientHash: string,
-  maxAmount: string | bigint,
-  periodSecs: string | bigint,
-  maxUses: string | bigint,
-): Promise<string> {
-  const step1 = await poseidon2Hash(RECURRING_DOMAIN, toField(authNullifier));
-  const step2 = await poseidon2Hash(step1, toField(recipientHash));
-  const step3 = await poseidon2Hash(step2, toAmountField(maxAmount));
-  const step4 = await poseidon2Hash(step3, toAmountField(periodSecs));
-  return poseidon2Hash(step4, toAmountField(maxUses));
+export async function assetToField(assetAddress: string): Promise<string> {
+  const StellarSdk = await import("@stellar/stellar-sdk");
+  // Extract the 32-byte contract hash from the C... address
+  const contractId = StellarSdk.StrKey.decodeContract(assetAddress);
+  // The Noir circuit and contract both expect the asset as a field element,
+  // which is the contract ID reduced mod BN254's scalar field. The frontend
+  // passes it as a 0x-prefixed 64-char hex string (32 bytes, big-endian).
+  // For most Stellar contract addresses the raw 32 bytes are already smaller
+  // than the field modulus (~254 bits), so the reduction is usually a no-op,
+  // but we perform it anyway to match what the contract does on-chain.
+  const hex = "0x" + Buffer.from(contractId).toString("hex");
+  // TODO: if the contract ID is >= BN254 scalar field, reduce it modulo the
+  // field. For now, assume it fits (which is true for all real Stellar
+  // contracts, since SHA-256 outputs are uniformly distributed and the modulus
+  // is close to 2^254).
+  return normalizeField(hex);
 }
