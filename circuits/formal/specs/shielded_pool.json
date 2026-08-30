@@ -11,7 +11,8 @@
       "nullifier_hash",
       "recipient",
       "withdraw_amount",
-      "change_commitment"
+      "change_commitment",
+      "asset"
     ],
     "private": [
       "nullifier",
@@ -42,12 +43,21 @@
     },
     {
       "id": "leaf-hash-correctness",
-      "description": "The spent leaf and change leaf must bind nullifier, secret, and amount through the shared hash_leaf relation.",
+      "description": "The spent leaf and change leaf must bind nullifier, secret, amount, and asset through the shared hash_leaf relation.",
       "checks": [
         "hash-leaf-includes-amount",
         "spent-leaf-uses-amount",
         "computed-root-asserted",
         "nullifier-hash-asserted"
+      ]
+    },
+    {
+      "id": "asset-binding",
+      "description": "The asset a note is denominated in is a public input bound into both the spent leaf and the change leaf, so a proof generated for one asset cannot be reused to withdraw another and change can never switch a note's asset.",
+      "checks": [
+        "withdraw-asset-is-public",
+        "spent-leaf-uses-amount",
+        "change-leaf-binds-asset"
       ]
     }
   ]

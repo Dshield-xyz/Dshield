@@ -24,6 +24,7 @@ function makeNote(overrides: Partial<ShieldedNote> = {}): ShieldedNote {
     commitment: "abcd1234",
     leafIndex: 0,
     amount: "1000000",
+    asset: "1",
     spent: false,
     createdAt: Date.now(),
     ...overrides,
@@ -171,6 +172,8 @@ describe("generateNoteLink (compact link encoding)", () => {
   const HEX32_C = "deadbeef".repeat(8);
   const VALID_POOL = "CBQ3EPNIMGLS53U4HHLT4V3HAGJJCLONVXAN2QEREGQZMFQOLK7VF6C7";
 
+  const VALID_ASSET = "CBQ3EPNIMGLS53U4HHLT4V3HAGJJCLONVXAN2QEREGQZMFQOLK7VF6C7";
+
   function fullNote(overrides: Partial<ShieldedNote> = {}): ShieldedNote {
     return {
       nullifier: HEX32_A,
@@ -178,6 +181,7 @@ describe("generateNoteLink (compact link encoding)", () => {
       commitment: HEX32_C,
       leafIndex: 42,
       amount: "100000000",
+      asset: VALID_ASSET,
       spent: false,
       createdAt: Date.now(),
       poolId: VALID_POOL,
@@ -235,6 +239,7 @@ describe("generateNoteLink (compact link encoding)", () => {
       commitment: "abcd1234",
       leafIndex: 0,
       amount: "1000000",
+      asset: "1",
       spent: false,
       createdAt: Date.now(),
     };
@@ -418,6 +423,7 @@ describe("generateNoteLink without a Buffer global", () => {
     commitment: "deadbeef".repeat(8),
     leafIndex: 42,
     amount: "100000000",
+    asset: "1",
     spent: false,
     createdAt: Date.now(),
   };

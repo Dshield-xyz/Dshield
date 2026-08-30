@@ -1,8 +1,9 @@
-merkle_root = "0x176489737d67d5817447af20de4fd7a4bf3e1b10f633feef0ecb44a4767e53da"
+merkle_root = "0x232dd1db48f2fe8821d914fbf26a9b672078a3be18e7f3e471372fff73aab836"
 view_key = "0x209a8e46bf9ac6f94eea835478cb1942a8128e8fab0fac130b810abb2dc6f5ff"
 amount = "1000000"
 nullifier = "1234"
 secret = "5678"
+asset = "1"
 path_bits = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 path_siblings = [
     "0x0000000000000000000000000000000000000000000000000000000000000000",

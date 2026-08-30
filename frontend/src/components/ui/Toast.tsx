@@ -23,7 +23,7 @@ interface ToastContextValue {
 
 const ToastCtx = createContext<ToastContextValue>({ toast: () => {} });
 
-function inferTone(message: string): Tone {
+export function inferTone(message: string): Tone {
   if (message.startsWith("Error")) return "error";
   if (
     message.includes("successful") ||
@@ -67,7 +67,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           <div
             key={t.id}
             className={cn(
-              "flex animate-[fade-up_0.3s_cubic-bezier(0.16,1,0.3,1)_both] items-start justify-between gap-3 rounded-xl border px-4 py-3 text-sm shadow-xl backdrop-blur-sm",
+              "flex animate-[fade-up_0.3s_cubic-bezier(0.16,1,0.3,1)_both] items-start justify-between gap-3 rounded-xl border px-4 py-3 text-sm shadow-xl with-backdrop-blur-sm",
               t.tone === "error" &&
                 "border-red-500/40 bg-red-950/90 text-red-200",
               t.tone === "success" &&

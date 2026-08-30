@@ -1148,7 +1148,7 @@ mod tests {
     //  at VerificationFailed — that's the signal the gate let it through.
     // ──────────────────────────────────────────────
 
-    fn setup_pool(env: &Env) -> (Address, i128) {
+    fn setup_pool(env: &Env) -> (Address, Address, i128) {
         use dshield_pool::PoolContract;
         use soroban_sdk::token::StellarAssetClient;
 
@@ -1171,13 +1171,13 @@ mod tests {
         arr[0] = 7;
         let commitment = BytesN::from_array(env, &arr);
         dshield_pool::PoolContractClient::new(env, &pool_id)
-            .deposit(&depositor, &commitment, &note_amount);
-        (pool_id, note_amount)
+            .deposit(&depositor, &token_id.address(), &commitment, &note_amount);
+        (pool_id, token_id.address(), note_amount)
     }
 
     fn setup_with_pool(env: &Env) -> (Address, Address, Address, i128) {
         let admin = <Address as TestAddress>::generate(env);
-        let (pool_id, deposit_amount) = setup_pool(env);
+        let (pool_id, _token_addr, deposit_amount) = setup_pool(env);
         let mut pools = soroban_sdk::Vec::new(env);
         pools.push_back(pool_id.clone());
         let contract_id: Address = env.register(
