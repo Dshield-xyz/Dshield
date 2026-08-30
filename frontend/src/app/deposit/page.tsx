@@ -413,7 +413,7 @@ export default function DepositPage() {
         <Button
           fullWidth
           size="lg"
-          onClick={handleDeposit}
+          onClick={() => void handleDeposit()}
           disabled={isLoading || !poolId || !amountValid}
         >
           {isLoading
