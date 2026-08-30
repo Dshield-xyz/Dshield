@@ -7,6 +7,19 @@ import type { ProverWorkerRequest, ProverWorkerResponse } from "./prover.worker"
 
 export type { ProofResult, ProofStage };
 
+// ──────────────────────────────────────────────────────────────────────────
+// CIRCUIT VERSIONING
+// ──────────────────────────────────────────────────────────────────────────
+// When a new incompatible circuit version is deployed:
+// 1. Import the new circuit JSON (e.g., poolCircuitV2 from circuitV2.json)
+// 2. Add a helper: getPoolCircuitForVersion(version: number)
+// 3. Use: const circuit = getPoolCircuitForVersion(note.version)
+// 4. Pass note.version to the pool contract for verify_proof_for_version call
+//
+// For now, version 1 is the only version. This comment serves as a template
+// for future circuit upgrades.
+// ──────────────────────────────────────────────────────────────────────────
+
 let worker: Worker | null = null;
 let nextRequestId = 0;
 
@@ -87,6 +100,10 @@ async function generateProof(
  * would read a `0x`-prefixed amount as a different number than the contract's
  * big-endian byte decoding does, and the payout would silently disagree with
  * what the note is worth.
+ *
+ * The `noteVersion` parameter specifies which circuit version to use for proof
+ * generation. For now, only version 1 is available, but this supports future
+ * backward-compatible note retrieval from old versions.
  */
 export async function proveWithdrawal(
   inputs: {
@@ -103,11 +120,16 @@ export async function proveWithdrawal(
     recipientHash: string;
     pathSiblings: string[];
     pathBits: number[];
+    noteVersion?: number;
   },
   onProgress?: (stage: ProofStage) => void,
 ): Promise<ProofResult> {
+  // For now, all versions use the same circuit (v1).
+  // This will be extended when incompatible versions ship.
+  const circuit = poolCircuit as Record<string, unknown>;
+  
   return generateProof(
-    poolCircuit as Record<string, unknown>,
+    circuit,
     {
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
