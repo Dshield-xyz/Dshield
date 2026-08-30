@@ -1,0 +1,46 @@
+name: ASP root sync
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      COMPLIANCE_CONTRACT_ID: ${{ secrets.COMPLIANCE_CONTRACT_ID }}
+      STELLAR_ADMIN_SECRET: ${{ secrets.STELLAR_ADMIN_SECRET }}
+      STELLAR_SOURCE: asp-sync
+      STELLAR_NETWORK: testnet
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test ASP synchronizer
+        working-directory: services/asp-sync
+        run: PYTHONPATH=. python3 -m unittest discover -s tests -v
+
+      - name: Install Stellar CLI
+        run: |
+          curl -sSfL "https://github.com/stellar/stellar-cli/releases/download/v27.0.0/stellar-cli-27.0.0-x86_64-unknown-linux-gnu.tar.gz" \
+            | sudo tar xz -C /usr/local/bin
+          stellar --version
+
+      - name: Provision sync signer
+        run: |
+          test -n "$COMPLIANCE_CONTRACT_ID"
+          test -n "$STELLAR_ADMIN_SECRET"
+          stellar keys add "$STELLAR_SOURCE" --secret-key "$STELLAR_ADMIN_SECRET"
+
+      - name: Compute and submit ASP root
+        working-directory: services/asp-sync
+        run: PYTHONPATH=. python3 -m asp_sync.sync

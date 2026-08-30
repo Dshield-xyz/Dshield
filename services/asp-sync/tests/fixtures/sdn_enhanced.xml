@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdnList>
+  <sdnEntry>
+    <idList>
+      <id ID_Type="Digital Currency Address"> 0xABC123 </id>
+      <id ID_Type="Passport">ignored</id>
+    </idList>
+  </sdnEntry>
+  <sdnEntry>
+    <idList>
+      <id ID_Type="Virtual Currency Address">bc1qExample</id>
+    </idList>
+  </sdnEntry>
+</sdnList>

@@ -284,6 +284,14 @@ successful spend. All withdrawals must use the same authoritative pool state.
 The hasher is a compatibility primitive. Security properties such as domain
 separation and note structure come from how callers chain its hashes.
 
+## ASP root synchronization
+
+The scheduled job is a new trust component, not part of the zero-knowledge proof. It obtains the OFAC SDN enhanced XML, extracts only digital-currency identifiers, and applies the documented canonicalization and SHA-256 tree construction in `services/asp-sync/README.md`. The compliance contract authorizes the rotation with its administrator and emits `asp_root_rotated` after storing the root, allowing operations to audit the submitted value.
+
+The job fails closed when the feed is unavailable, malformed, too large, empty, contains an invalid identifier, or produces an unexpected pinned root. In each case it exits before submitting a transaction, so the last accepted root remains on-chain. A stale feed therefore causes stale enforcement rather than an untrusted empty or partial set; monitoring must alert on missed scheduled runs and feed age. The design does not guarantee freshness during an outage.
+
+If the feed or its transport is compromised, a syntactically valid but incorrect set could produce a valid root. The signer and workflow cannot distinguish a forged feed from a genuine one without an independent source, hash pin, or human review. Repository administrators must protect `STELLAR_ADMIN_SECRET`, restrict workflow changes, review CLI updates, and optionally set `EXPECTED_ASP_ROOT` when operating from a separately attested snapshot. Root rotations are auditable through the contract event but are not reversible automatically; recovery requires a subsequent authenticated rotation.
+
 ## Residual assumptions
 
 - Verification keys, pool addresses, token addresses, and administrators are
