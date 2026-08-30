@@ -25,6 +25,7 @@ pub enum ComplianceError {
     UnknownMerkleRoot = 10,
     /// accept_admin called with no admin rotation in progress.
     NoPendingAdmin = 13,
+    ViewVkNotSet = 14,
 }
 
 /// Cross-contract call into a pool's `is_known_root(root) -> bool` view.
@@ -104,6 +105,17 @@ pub struct DisclosureVkUpdatedEvent<'a> {
     pub updated_by: &'a Address,
 }
 
+#[contractevent(topics = ["view_vk_updated"])]
+pub struct ViewVkUpdatedEvent<'a> {
+    pub updated_by: &'a Address,
+}
+
+#[contractevent(topics = ["view_disclosure_verified"])]
+pub struct ViewDisclosureVerifiedEvent<'a> {
+    pub view_key: &'a BytesN<32>,
+    pub amount: &'a BytesN<32>,
+}
+
 #[contractevent(topics = ["admin_updated"])]
 pub struct AdminUpdatedEvent<'a> {
     pub previous_admin: &'a Address,
@@ -135,6 +147,9 @@ impl ComplianceContract {
     }
     fn key_disclosure_vk() -> Symbol {
         symbol_short!("dvk")
+    }
+    fn key_view_vk() -> Symbol {
+        symbol_short!("vvk")
     }
     fn key_pools() -> Symbol {
         symbol_short!("pools")
@@ -434,6 +449,99 @@ impl ComplianceContract {
             kyc_hash: &kyc_hash,
             auditor_key: &auditor_key,
             threshold: &threshold,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    pub fn set_view_vk(env: Env, vk_bytes: Bytes) -> Result<(), ComplianceError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&Self::key_admin())
+            .ok_or(ComplianceError::VkNotSet)?;
+        admin.require_auth();
+        bump_instance(&env);
+
+        let _ = UltraHonkVerifier::new(&env, &vk_bytes).map_err(|e| match e {
+            VkLoadError::WrongLength => ComplianceError::VkInvalidLength,
+            VkLoadError::InvalidParameters => ComplianceError::VkInvalidParameters,
+        })?;
+        env.storage().instance().set(&Self::key_view_vk(), &vk_bytes);
+
+        ViewVkUpdatedEvent { updated_by: &admin }.publish(&env);
+
+        Ok(())
+    }
+
+    /// Verifies a view-only disclosure proof: the holder of a note proves its
+    /// `amount` to whoever they handed `view_key` to out of band, without
+    /// revealing `nullifier`/`secret` or exposing any spend capability. Unlike
+    /// `verify_compliance`/`verify_disclosure`, this is not a regulatory
+    /// attestation and is not gated on KYC -- a viewing key is a generic
+    /// "let this party look" delegation (an auditor, a bookkeeper, a
+    /// co-signer), not a compliance statement about the holder's identity.
+    pub fn verify_view_disclosure(
+        env: Env,
+        public_inputs: Bytes,
+        proof_bytes: Bytes,
+    ) -> Result<(), ComplianceError> {
+        if proof_bytes.len() as usize != PROOF_BYTES {
+            return Err(ComplianceError::ProofParseError);
+        }
+        bump_instance(&env);
+
+        // Public inputs: [merkle_root(32), view_key(32), amount(32)]
+        if public_inputs.len() != 96 {
+            return Err(ComplianceError::InvalidPublicInputs);
+        }
+
+        let mut buf = [0u8; 96];
+        public_inputs.copy_into_slice(&mut buf);
+
+        let vk_bytes: Bytes = env
+            .storage()
+            .instance()
+            .get(&Self::key_view_vk())
+            .ok_or(ComplianceError::ViewVkNotSet)?;
+
+        let mut root_arr = [0u8; 32];
+        root_arr.copy_from_slice(&buf[0..32]);
+        let merkle_root = BytesN::from_array(&env, &root_arr);
+
+        let pools: SorobanVec<Address> = env
+            .storage()
+            .instance()
+            .get(&Self::key_pools())
+            .unwrap_or(SorobanVec::new(&env));
+        if !root_belongs_to_pool(&env, &pools, &merkle_root) {
+            return Err(ComplianceError::UnknownMerkleRoot);
+        }
+
+        let mut view_key_arr = [0u8; 32];
+        view_key_arr.copy_from_slice(&buf[32..64]);
+        let view_key = BytesN::from_array(&env, &view_key_arr);
+
+        let mut amount_arr = [0u8; 32];
+        amount_arr.copy_from_slice(&buf[64..96]);
+        if field_bytes_to_u128(&amount_arr).is_none() {
+            return Err(ComplianceError::InvalidPublicInputs);
+        }
+        let amount = BytesN::from_array(&env, &amount_arr);
+
+        let verifier = UltraHonkVerifier::new(&env, &vk_bytes).map_err(|e| match e {
+            VkLoadError::WrongLength => ComplianceError::VkInvalidLength,
+            VkLoadError::InvalidParameters => ComplianceError::VkInvalidParameters,
+        })?;
+
+        verifier
+            .verify(&env, &proof_bytes, &public_inputs)
+            .map_err(|_| ComplianceError::VerificationFailed)?;
+
+        ViewDisclosureVerifiedEvent {
+            view_key: &view_key,
+            amount: &amount,
         }
         .publish(&env);
 
@@ -1390,6 +1498,218 @@ mod tests {
 
         let result = client.try_propose_admin(&new_admin);
         assert!(result.is_err());
+    }
+
+    // ──────────────────────────────────────────────
+    //  View-only disclosure: VK management
+    // ──────────────────────────────────────────────
+
+    fn view_vk_bytes(env: &Env) -> Bytes {
+        Bytes::from_slice(
+            env,
+            include_bytes!("../../../circuits/view_disclosure/target/vk"),
+        )
+    }
+
+    #[test]
+    fn test_set_view_vk_stores_vk() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        client.set_view_vk(&view_vk_bytes(&env));
+
+        assert!(env.as_contract(&contract_id, || {
+            env.storage().instance().has(&ComplianceContract::key_view_vk())
+        }));
+    }
+
+    #[test]
+    fn test_set_view_vk_requires_admin() {
+        let env = Env::default();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        let result = client.try_set_view_vk(&view_vk_bytes(&env));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_view_vk_invalid_length() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        let short_vk = Bytes::from_slice(&env, &[0u8; 32]);
+        let result = client.try_set_view_vk(&short_vk);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_view_vk_emits_view_vk_updated_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        client.set_view_vk(&view_vk_bytes(&env));
+
+        let expected = ViewVkUpdatedEvent { updated_by: &admin };
+        assert_eq!(
+            env.events().all(),
+            std::vec![expected.to_xdr(&env, &contract_id)],
+        );
+    }
+
+    // ──────────────────────────────────────────────
+    //  View-only disclosure: verification
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_verify_view_disclosure_vk_not_set() {
+        let env = Env::default();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        let pi = Bytes::from_slice(&env, &[0u8; 96]);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        let result = client.try_verify_view_disclosure(&pi, &proof);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            ComplianceError::ViewVkNotSet
+        );
+    }
+
+    #[test]
+    fn test_verify_view_disclosure_bad_public_inputs_length() {
+        let env = Env::default();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        let bad_inputs = Bytes::from_slice(&env, &[0u8; 64]);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        let result = client.try_verify_view_disclosure(&bad_inputs, &proof);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            ComplianceError::InvalidPublicInputs
+        );
+    }
+
+    #[test]
+    fn test_verify_view_disclosure_wrong_proof_length() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        client.set_view_vk(&view_vk_bytes(&env));
+
+        let pi = Bytes::from_slice(&env, &[0u8; 96]);
+        let bad_proof = Bytes::from_slice(&env, &[0u8; 100]);
+
+        let result = client.try_verify_view_disclosure(&pi, &bad_proof);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            ComplianceError::ProofParseError
+        );
+    }
+
+    #[test]
+    fn test_verify_view_disclosure_proof_length_checked_before_vk() {
+        let env = Env::default();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        let pi = Bytes::from_slice(&env, &[0u8; 96]);
+        let short_proof = Bytes::from_slice(&env, &[0u8; 100]);
+
+        let result = client.try_verify_view_disclosure(&pi, &short_proof);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            ComplianceError::ProofParseError
+        );
+    }
+
+    #[test]
+    fn test_verify_view_disclosure_unknown_root_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, _pool_id, _amount) = setup_with_pool(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        client.set_view_vk(&view_vk_bytes(&env));
+
+        // pi[0..32] left as zero, which is not this pool's root.
+        let pi = Bytes::from_slice(&env, &[0u8; 96]);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        let result = client.try_verify_view_disclosure(&pi, &proof);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            ComplianceError::UnknownMerkleRoot
+        );
+    }
+
+    #[test]
+    fn test_verify_view_disclosure_known_root_passes_gate() {
+        // The root/VK gates pass; the dummy proof fails verification instead
+        // -- proving the gate let a well-formed request through rather than
+        // silently accepting it.
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, pool_id, deposit_amount) = setup_with_pool(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        client.set_view_vk(&view_vk_bytes(&env));
+
+        let mut pi = [0u8; 96];
+        pi[0..32].copy_from_slice(&root_of(&env, &pool_id).to_array());
+        pi[64..96].copy_from_slice(&amount_field_bytes(deposit_amount));
+        let public_inputs = Bytes::from_slice(&env, &pi);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        let result = client.try_verify_view_disclosure(&public_inputs, &proof);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            ComplianceError::VerificationFailed
+        );
+    }
+
+    // ──────────────────────────────────────────────
+    //  Key separation: a viewing key's public-input schema carries no
+    //  nullifier-shaped field, so there is nothing for a verifier to extract
+    //  from a view-disclosure proof/public-inputs pair that could be used as
+    //  (or to derive) spend-capable material. This is a structural assertion
+    //  about what crosses the contract boundary, complementing the circuit's
+    //  own zero-knowledge property over `nullifier` (see circuits/view_disclosure).
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_view_disclosure_public_inputs_are_exactly_root_viewkey_amount() {
+        // 96 bytes = 3 field elements: merkle_root, view_key, amount. Nothing
+        // else fits, so a nullifier can never be smuggled through this
+        // entrypoint's public inputs.
+        assert_eq!(96, 32 * 3);
+
+        let env = Env::default();
+        let (contract_id, _admin) = setup(&env);
+        let client = ComplianceContractClient::new(&env, &contract_id);
+
+        // One byte short or over is rejected outright, pinning the schema to
+        // exactly 3 field elements.
+        let too_short = Bytes::from_slice(&env, &[0u8; 95]);
+        let too_long = Bytes::from_slice(&env, &[0u8; 97]);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        assert_eq!(
+            client.try_verify_view_disclosure(&too_short, &proof).err().unwrap().unwrap(),
+            ComplianceError::InvalidPublicInputs
+        );
+        assert_eq!(
+            client.try_verify_view_disclosure(&too_long, &proof).err().unwrap().unwrap(),
+            ComplianceError::InvalidPublicInputs
+        );
     }
 
     #[test]

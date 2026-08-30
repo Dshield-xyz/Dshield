@@ -37,7 +37,7 @@ Run `just --list` for the full set of available recipes (build, deploy, demo, cl
 
 ## Where things live
 
-- `circuits/` — Noir circuits (`shielded_pool`, `compliance`, `disclosure`, `hasher`), compiled with Barretenberg's UltraHonk (keccak transform).
+- `circuits/` — Noir circuits (`shielded_pool`, `compliance`, `disclosure`, `view_disclosure`, `hasher`), compiled with Barretenberg's UltraHonk (keccak transform).
 - `contracts/` — Soroban contracts in Rust: `pool` (deposits/withdrawals/nullifiers), `verifier` (BN254/UltraHonk proof verification), `compliance` (KYC registry + disclosure proof verification).
 - `frontend/` — Next.js wallet UI, including the client-side prover.
 - `scripts/`, `tests/e2e.sh` — demo and end-to-end scripts driven by the `justfile`.
