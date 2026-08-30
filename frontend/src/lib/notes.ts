@@ -420,3 +420,125 @@ export function generateRandomField(): string {
     .join("");
   return "00" + hex;
 }
+
+// ── Recurring authorization types and storage ─────────────────────────────────
+
+/**
+ * A pre-authorized recurring withdrawal record, stored locally alongside the
+ * change note that was re-shielded during `authorize_recurring`.
+ *
+ * `authCommitment` is the on-chain key; it is the Poseidon2 hash of all policy
+ * parameters (see circuits/recurring/src/main.nr `hash_auth`).
+ *
+ * `authNullifier` is the private secret that was hashed into `authCommitment`;
+ * it must be kept safe — losing it means losing the ability to revoke.
+ */
+export interface RecurringAuth {
+  /** On-chain auth commitment (hex, 32 bytes). */
+  authCommitment: string;
+  /** Private auth nullifier — used to revoke. */
+  authNullifier: string;
+  /** Recipient Stellar address. */
+  recipient: string;
+  /** Max tokens per occurrence (base units, decimal string). */
+  maxAmount: string;
+  /** Minimum seconds between occurrences. */
+  periodSecs: number;
+  /** Total occurrences authorized. */
+  maxUses: number;
+  /** Change note commitment re-shielded during setup. */
+  changeCommitment: string;
+  /** Pool contract ID. */
+  poolId: string;
+  /** Unix timestamp of creation (ms). */
+  createdAt: number;
+  /** True if the user has submitted a revocation. */
+  revoked: boolean;
+}
+
+const RECURRING_STORAGE_KEY = "dshield_recurring_auths";
+const RECURRING_LOCK_KEY = "dshield_recurring_lock";
+
+async function acquireRecurringLock(): Promise<() => void> {
+  const lockId = Date.now().toString() + Math.random().toString(36);
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const currentLock = localStorage.getItem(RECURRING_LOCK_KEY);
+    if (!currentLock) {
+      const lockData = JSON.stringify({ id: lockId, timestamp: Date.now() });
+      localStorage.setItem(RECURRING_LOCK_KEY, lockData);
+      const verify = localStorage.getItem(RECURRING_LOCK_KEY);
+      if (verify) {
+        try {
+          const parsed = JSON.parse(verify);
+          if (parsed.id === lockId) {
+            return () => {
+              const cur = localStorage.getItem(RECURRING_LOCK_KEY);
+              if (cur) {
+                try {
+                  if (JSON.parse(cur).id === lockId) {
+                    localStorage.removeItem(RECURRING_LOCK_KEY);
+                  }
+                } catch {
+                  localStorage.removeItem(RECURRING_LOCK_KEY);
+                }
+              }
+            };
+          }
+        } catch { /* retry */ }
+      }
+    } else {
+      try {
+        const lockData = JSON.parse(currentLock);
+        if (lockData.timestamp && Date.now() - lockData.timestamp > LOCK_TIMEOUT_MS) {
+          localStorage.removeItem(RECURRING_LOCK_KEY);
+        }
+      } catch { /* ignore */ }
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error("Failed to acquire recurring auth storage lock");
+}
+
+async function withRecurringLock<T>(fn: () => T): Promise<T> {
+  const release = await acquireRecurringLock();
+  try {
+    return fn();
+  } finally {
+    release();
+  }
+}
+
+export function getRecurringAuths(): RecurringAuth[] {
+  if (typeof window === "undefined") return [];
+  const raw = localStorage.getItem(RECURRING_STORAGE_KEY);
+  if (!raw) return [];
+  return JSON.parse(raw) as RecurringAuth[];
+}
+
+export async function saveRecurringAuth(auth: RecurringAuth): Promise<void> {
+  return withRecurringLock(() => {
+    const auths = getRecurringAuths();
+    const idx = auths.findIndex((a) => a.authCommitment === auth.authCommitment);
+    if (idx >= 0) {
+      auths[idx] = auth;
+    } else {
+      auths.push(auth);
+    }
+    localStorage.setItem(RECURRING_STORAGE_KEY, JSON.stringify(auths));
+  });
+}
+
+export async function markRecurringAuthRevoked(authCommitment: string): Promise<void> {
+  return withRecurringLock(() => {
+    const auths = getRecurringAuths();
+    const updated = auths.map((a) =>
+      a.authCommitment === authCommitment ? { ...a, revoked: true } : a,
+    );
+    localStorage.setItem(RECURRING_STORAGE_KEY, JSON.stringify(updated));
+  });
+}
+
+export function getActiveRecurringAuths(): RecurringAuth[] {
+  return getRecurringAuths().filter((a) => !a.revoked);
+}

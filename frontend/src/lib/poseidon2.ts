@@ -177,3 +177,29 @@ function ensureHex(v: string): string {
   if (v.startsWith("0x")) return v;
   return "0x" + v;
 }
+
+// Domain separation tag for the recurring authorization hash (must match
+// circuits/recurring/src/main.nr `RECURRING_DOMAIN`).
+const RECURRING_DOMAIN = "0x52454341"; // "RECA"
+
+/**
+ * Recurring authorization commitment:
+ * `H(H(H(H(H(RECA, authNullifier), recipient), maxAmount), periodSecs), maxUses)`
+ *
+ * Must match `hash_auth` in circuits/recurring/src/main.nr exactly.
+ * Used by the recurring page to compute the on-chain key before submitting
+ * the proof, so the auth record can be saved locally first.
+ */
+export async function computeAuthCommitment(
+  authNullifier: string,
+  recipientHash: string,
+  maxAmount: string | bigint,
+  periodSecs: string | bigint,
+  maxUses: string | bigint,
+): Promise<string> {
+  const step1 = await poseidon2Hash(RECURRING_DOMAIN, toField(authNullifier));
+  const step2 = await poseidon2Hash(step1, toField(recipientHash));
+  const step3 = await poseidon2Hash(step2, toAmountField(maxAmount));
+  const step4 = await poseidon2Hash(step3, toAmountField(periodSecs));
+  return poseidon2Hash(step4, toAmountField(maxUses));
+}

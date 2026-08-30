@@ -15,6 +15,7 @@ import { getRpcServer, queryContract, getUsdcSacId } from "@/lib/stellar";
 const NAV_ITEMS = [
   { href: "/deposit", label: "Deposit" },
   { href: "/withdraw", label: "Withdraw" },
+  { href: "/recurring", label: "Recurring" },
   { href: "/compliance", label: "Compliance" },
   { href: "/history", label: "History" },
 ];
