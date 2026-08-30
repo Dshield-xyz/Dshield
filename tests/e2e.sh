@@ -164,10 +164,8 @@ section "Contract state tests"
 IDX=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local -- get_next_index 2>&1 | tail -1)
 [[ "$IDX" == "0" ]] && ok "get_next_index == 0" || err "get_next_index" "expected 0, got $IDX"
 
-TOKEN_CHECK=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local -- get_token 2>&1 | tail -1)
-TOKEN_CHECK="${TOKEN_CHECK%\"}"
-TOKEN_CHECK="${TOKEN_CHECK#\"}"
-[[ "$TOKEN_CHECK" == "$TOKEN_ID" ]] && ok "get_token == pool token" || err "get_token" "expected $TOKEN_ID, got $TOKEN_CHECK"
+TOKEN_SUPPORTED=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local -- is_asset_supported --asset "$TOKEN_ID" 2>&1 | tail -1)
+[[ "$TOKEN_SUPPORTED" == "true" ]] && ok "Token is supported by pool" || err "is_asset_supported" "expected true, got $TOKEN_SUPPORTED"
 
 # ─── Test: deposit ───
 section "Deposit test"
