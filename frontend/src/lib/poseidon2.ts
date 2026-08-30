@@ -5,6 +5,7 @@ import hasherCircuit from "@/circuits/hasher.json";
 const LEAF_DOMAIN = "0x4c454146";
 const NULLIFIER_DOMAIN = "0x4e554c4c";
 const KYC_DOMAIN = "0x4b5943";
+const VIEW_DOMAIN = "0x56494557";
 
 let noirInstance: InstanceType<typeof Noir> | null = null;
 
@@ -73,6 +74,17 @@ export async function computeNullifierHash(
 export async function computeKycHash(preimage: string): Promise<string> {
   const domainAndPreimage = await poseidon2Hash(KYC_DOMAIN, toField(preimage));
   return poseidon2Hash(domainAndPreimage, "0x00");
+}
+
+/**
+ * Viewing key: `H(H(VIEW_DOMAIN, secret), 0)` — matches the `view_disclosure`
+ * circuit's `hash_view_key`. Deliberately a function of `secret` alone, never
+ * `nullifier`, so handing this value to an auditor or bookkeeper can never
+ * expose spend-capable material — see docs/THREAT_MODEL.md.
+ */
+export async function computeViewKey(secret: string): Promise<string> {
+  const domainAndSecret = await poseidon2Hash(VIEW_DOMAIN, toField(secret));
+  return poseidon2Hash(domainAndSecret, "0x00");
 }
 
 /**

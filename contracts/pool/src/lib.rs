@@ -34,6 +34,9 @@ pub enum PoolError {
     InvalidAmount = 15,
     Paused = 16,
     NotAuthorized = 17,
+    InvalidFee = 18,
+    DexRouterNotSet = 19,
+    FeeSwapFailed = 20,
 }
 
 #[contractevent(topics = ["deposit"], data_format = "map")]
@@ -63,6 +66,22 @@ pub struct VerifierUpdatedEvent<'a> {
     pub previous_verifier: &'a Address,
     pub new_verifier: &'a Address,
     pub updated_by: &'a Address,
+}
+
+#[contractevent(topics = ["dex_router_updated"])]
+pub struct DexRouterUpdatedEvent<'a> {
+    pub new_router: &'a Address,
+    pub updated_by: &'a Address,
+}
+
+/// Emitted whenever a withdrawal carves a relayer fee out of the payout and
+/// swaps it for the fee asset, so off-chain observers (and the frontend) can
+/// audit what a relayer actually charged versus what it quoted.
+#[contractevent(topics = ["fee_swapped"], data_format = "map")]
+pub struct FeeSwappedEvent<'a> {
+    pub fee_amount_in: &'a i128,
+    pub fee_amount_out: &'a i128,
+    pub fee_recipient: &'a Address,
 }
 
 fn key_commitment_prefix() -> Symbol {
@@ -101,6 +120,15 @@ fn key_root_history_index() -> Symbol {
 fn key_commitment_by_index_prefix() -> Symbol {
     symbol_short!("cmi")
 }
+fn key_dex_router() -> Symbol {
+    symbol_short!("dexrtr")
+}
+fn key_fee_asset() -> Symbol {
+    symbol_short!("feeast")
+}
+fn key_max_fee_bps() -> Symbol {
+    symbol_short!("maxfee")
+}
 
 const TREE_DEPTH: u32 = 20;
 // The withdrawal circuit exposes five field elements; see parse_public_inputs.
@@ -125,6 +153,17 @@ const MAX_BATCH_SIZE: u32 = 15;
 // Maximum number of commitments to return in a single page query to avoid
 // exceeding Soroban's per-transaction CPU/footprint limits.
 const MAX_PAGE_SIZE: u32 = 100;
+
+// Hard ceiling on the relayer fee a withdrawal can carve out of the payout,
+// expressed in basis points of `withdraw_amount`. This bounds the damage an
+// untrustworthy relayer can do by overstating its fee: even if it sets
+// `max_fee_bps` (admin-configurable, see set_max_fee_bps) to the ceiling and
+// then charges the maximum every time, a user never loses more than 5% of a
+// withdrawal to fee abstraction. The circuit does not know about fees at all
+// -- this is a contract-only carve-out of the already-proof-committed
+// `withdraw_amount` (see docs/THREAT_MODEL.md).
+const MAX_FEE_BPS_CEILING: u32 = 500; // 5%
+const BPS_DENOMINATOR: i128 = 10_000;
 
 // Storage TTL management. Commitments, the commitment-by-index map, and
 // nullifiers grow without bound (one entry per deposit/withdrawal), so they
@@ -271,6 +310,85 @@ fn load_token(env: &Env) -> Result<Address, PoolError> {
         .instance()
         .get(&key_token())
         .ok_or(PoolError::TokenNotSet)
+}
+
+/// Swaps `amount_in` of the pool's token for the configured fee asset (e.g.
+/// native XLM) via a Soroswap-router-compatible contract, sending the output
+/// straight to `fee_recipient`. This is how a relayer recovers its Soroban
+/// resource-fee cost without the withdrawing user ever needing to hold the
+/// fee asset themselves.
+///
+/// The router call follows Soroswap's `swap_exact_tokens_for_tokens` shape:
+/// `(amount_in, amount_out_min, path, to, deadline)`, plus the pool's own
+/// address so the router knows who approved it (Soroban has no implicit
+/// caller identity to pull from). `amount_out_min` is the caller-supplied
+/// slippage floor -- the relayer's own quote from
+/// `frontend/src/lib/stellar.ts`, echoed back here so the swap can't be
+/// sandwiched into a worse rate than what the user was shown before signing.
+/// A swap path must exist and have liquidity for this to succeed; see the
+/// DEX-path liveness assumption in docs/THREAT_MODEL.md.
+fn swap_fee_for_asset(
+    env: &Env,
+    token_in: &Address,
+    amount_in: i128,
+    amount_out_min: i128,
+    fee_recipient: &Address,
+) -> Result<i128, PoolError> {
+    let router: Address = env
+        .storage()
+        .instance()
+        .get(&key_dex_router())
+        .ok_or(PoolError::DexRouterNotSet)?;
+    let fee_asset: Address = env
+        .storage()
+        .instance()
+        .get(&key_fee_asset())
+        .ok_or(PoolError::DexRouterNotSet)?;
+
+    // The router pulls `amount_in` from the pool via `transfer_from`, so the
+    // pool must approve it first. A short-lived, exact-amount approval (one
+    // ledger past the swap deadline) rather than an open-ended allowance,
+    // so a router bug or malicious router can never pull more than this one
+    // fee slice, now or later.
+    let contract_addr = env.current_contract_address();
+    let expiration_ledger = env.ledger().sequence().saturating_add(1);
+    token::Client::new(env, token_in).approve(
+        &contract_addr,
+        &router,
+        &amount_in,
+        &expiration_ledger,
+    );
+
+    let mut path: SorobanVec<Address> = SorobanVec::new(env);
+    path.push_back(token_in.clone());
+    path.push_back(fee_asset);
+
+    let deadline: u64 = env.ledger().timestamp().saturating_add(300);
+
+    // Soroban has no implicit "msg.sender": since the router pulls the input
+    // asset via `transfer_from`, it needs the source address explicitly
+    // rather than inferring it from the invoking contract. We pass the pool's
+    // own address as the sixth argument; the pool already approved the router
+    // for exactly `amount_in` above, so this cannot be used to pull more than
+    // that one fee slice.
+    let mut args: SorobanVec<Val> = SorobanVec::new(env);
+    args.push_back(amount_in.into_val(env));
+    args.push_back(amount_out_min.into_val(env));
+    args.push_back(path.into_val(env));
+    args.push_back(fee_recipient.into_val(env));
+    args.push_back(deadline.into_val(env));
+    args.push_back(contract_addr.into_val(env));
+
+    let amounts: SorobanVec<i128> = env
+        .try_invoke_contract::<SorobanVec<i128>, InvokeError>(
+            &router,
+            &Symbol::new(env, "swap_exact_tokens_for_tokens"),
+            args,
+        )
+        .map_err(|_| PoolError::FeeSwapFailed)?
+        .map_err(|_| PoolError::FeeSwapFailed)?;
+
+    amounts.last().ok_or(PoolError::FeeSwapFailed)
 }
 
 /// Notes carry their own value, so any positive amount up to the circuit's
@@ -469,6 +587,62 @@ impl PoolContract {
         Ok(())
     }
 
+    /// Admin-gated: configures the Soroswap-compatible router and the fee
+    /// asset (e.g. the native XLM SAC) that withdrawal fees are swapped into.
+    /// Both must be set before `withdraw` can be called with a nonzero fee.
+    pub fn set_dex_router(
+        env: Env,
+        router: Address,
+        fee_asset: Address,
+    ) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+
+        env.storage().instance().set(&key_dex_router(), &router);
+        env.storage().instance().set(&key_fee_asset(), &fee_asset);
+
+        DexRouterUpdatedEvent {
+            new_router: &router,
+            updated_by: &admin,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Admin-gated: caps the fee a withdrawal may carve out of the payout, in
+    /// basis points of `withdraw_amount`. Capped at `MAX_FEE_BPS_CEILING`
+    /// regardless of what the admin sets, so a compromised admin key cannot
+    /// turn fee abstraction into an unbounded drain.
+    pub fn set_max_fee_bps(env: Env, max_fee_bps: u32) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+
+        if max_fee_bps > MAX_FEE_BPS_CEILING {
+            return Err(PoolError::InvalidFee);
+        }
+        env.storage().instance().set(&key_max_fee_bps(), &max_fee_bps);
+        Ok(())
+    }
+
+    pub fn get_max_fee_bps(env: Env) -> u32 {
+        env.storage().instance().get(&key_max_fee_bps()).unwrap_or(0)
+    }
+
+    pub fn get_dex_router(env: Env) -> Option<Address> {
+        env.storage().instance().get(&key_dex_router())
+    }
+
     /// Shields `amount` behind `commitment`, which must be
     /// `H(H(H(LEAF_DOMAIN, nullifier), secret), amount)` for the same `amount`
     /// -- the contract cannot check that (the commitment is opaque to it), but
@@ -609,11 +783,25 @@ impl PoolContract {
     /// user can keep spending slices of a balance indefinitely.
     ///
     /// Returns the leaf index the change note landed on.
+    ///
+    /// `fee_amount` lets a relayer recover its Soroban resource-fee cost
+    /// without the withdrawing user ever needing to hold XLM: it is carved out
+    /// of the proof-committed `withdraw_amount` (never added on top of it),
+    /// capped by `max_fee_bps` (see `set_max_fee_bps`), and swapped through
+    /// the configured DEX router into the fee asset, sent to `fee_recipient`.
+    /// `fee_min_out` is the relayer's own quote (from the frontend's
+    /// conversion-rate helper) echoed back as a slippage floor, so the on-chain
+    /// swap can't clear at a worse rate than what the user was shown before
+    /// signing. Pass `fee_amount = 0` (and any `fee_recipient`) to withdraw
+    /// exactly as before, with no fee carved out.
     pub fn withdraw(
         env: Env,
         recipient: Address,
         public_inputs: Bytes,
         proof_bytes: Bytes,
+        fee_amount: i128,
+        fee_min_out: i128,
+        fee_recipient: Address,
     ) -> Result<u32, PoolError> {
         if proof_bytes.len() as usize != PROOF_BYTES {
             return Err(PoolError::VerificationFailed);
@@ -628,6 +816,33 @@ impl PoolContract {
         let recipient_from_proof = BytesN::from_array(&env, &inputs.recipient_hash);
         let change_commitment = BytesN::from_array(&env, &inputs.change_commitment);
         let payout = amount_from_field(&inputs.withdraw_amount)?;
+
+        // Validate the fee carve-out before any state changes or the (expensive)
+        // proof verification, so a malformed or over-cap fee fails cheaply.
+        // `fee_amount` never adds to what the note pays out -- it is a slice of
+        // `payout` redirected to the relayer, capped independently of what the
+        // relayer claims so an overcharging relayer is bounded by MAX_FEE_BPS_CEILING
+        // (via `max_fee_bps`), not by its own say-so.
+        if fee_amount < 0 || fee_min_out < 0 {
+            return Err(PoolError::InvalidFee);
+        }
+        if fee_amount > payout {
+            return Err(PoolError::InvalidFee);
+        }
+        if fee_amount > 0 {
+            let max_fee_bps: u32 = env
+                .storage()
+                .instance()
+                .get(&key_max_fee_bps())
+                .unwrap_or(0);
+            let cap = payout
+                .saturating_mul(max_fee_bps as i128)
+                .checked_div(BPS_DENOMINATOR)
+                .unwrap_or(0);
+            if fee_amount > cap {
+                return Err(PoolError::InvalidFee);
+            }
+        }
 
         let nf_key = (key_nullifier_prefix(), nf_from_proof.clone());
         if env.storage().persistent().has(&nf_key) {
@@ -696,12 +911,35 @@ impl PoolContract {
         // A zero payout is legitimate: it re-keys a note without paying anything
         // out, which is how a user consolidates or refreshes shielded value. The
         // SAC rejects a zero-value transfer, so skip the call in that case.
-        if payout > 0 {
+        let recipient_amount = payout - fee_amount;
+        if recipient_amount > 0 {
             token::Client::new(&env, &token_addr).transfer(
                 &env.current_contract_address(),
                 &recipient,
-                &payout,
+                &recipient_amount,
             );
+        }
+
+        // Swap the carved-out fee slice for the fee asset (e.g. XLM) and send
+        // it straight to the relayer, so the user's withdrawal never required
+        // them to hold or spend the fee asset themselves. The pool holds the
+        // full `payout` at this point (transferred in at deposit time), so it
+        // can fund the swap directly rather than routing it through the
+        // recipient first.
+        if fee_amount > 0 {
+            let fee_amount_out = swap_fee_for_asset(
+                &env,
+                &token_addr,
+                fee_amount,
+                fee_min_out,
+                &fee_recipient,
+            )?;
+            FeeSwappedEvent {
+                fee_amount_in: &fee_amount,
+                fee_amount_out: &fee_amount_out,
+                fee_recipient: &fee_recipient,
+            }
+            .publish(&env);
         }
 
         WithdrawEvent {
@@ -999,7 +1237,7 @@ impl PoolContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as TestAddress, Events},
+        testutils::{Address as TestAddress, Events, MuxedAddress as TestMuxedAddress},
         token::StellarAssetClient,
         token::TokenClient,
         Address, Env, Event,
@@ -1794,7 +2032,7 @@ mod tests {
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_ne!(result.err().unwrap().unwrap(), PoolError::RootMismatch);
     }
 
@@ -1816,7 +2054,7 @@ mod tests {
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         // Should pass root check, fail at proof verification
         assert_ne!(result.err().unwrap().unwrap(), PoolError::RootMismatch);
     }
@@ -1845,7 +2083,7 @@ mod tests {
         let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::RootNotSet);
     }
 
@@ -1864,7 +2102,7 @@ mod tests {
         let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
         let bad_proof = Bytes::from_slice(&env, &[0u8; 100]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &bad_proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &bad_proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::VerificationFailed
@@ -1886,7 +2124,7 @@ mod tests {
         let bad_inputs = Bytes::from_slice(&env, &[0u8; 32]);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &bad_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &bad_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -1908,7 +2146,7 @@ mod tests {
         let empty_inputs = Bytes::from_slice(&env, &[]);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &empty_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &empty_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -1930,7 +2168,7 @@ mod tests {
         let big_inputs = Bytes::from_slice(&env, &[0u8; 128]);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &big_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &big_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -1954,7 +2192,7 @@ mod tests {
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::RootMismatch);
     }
 
@@ -1973,7 +2211,7 @@ mod tests {
         let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
         let empty_proof = Bytes::from_slice(&env, &[]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &empty_proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &empty_proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::VerificationFailed
@@ -2074,7 +2312,7 @@ mod tests {
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         // Submitted with B as the payout address: rejected before verification.
-        let result = client.try_withdraw(&recipient_b, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient_b, &public_inputs, &proof, &0i128, &0i128, &recipient_b);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::RecipientMismatch,
@@ -2104,7 +2342,7 @@ mod tests {
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         // Recipient binding passes; the (dummy) proof fails verification instead.
         assert_ne!(result.err().unwrap().unwrap(), PoolError::RecipientMismatch);
     }
@@ -2128,7 +2366,7 @@ mod tests {
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::UnsupportedRecipient
@@ -2283,7 +2521,7 @@ mod tests {
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::CommitmentExists);
     }
 
@@ -2305,7 +2543,7 @@ mod tests {
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -2476,7 +2714,7 @@ mod tests {
         // Before the spend, nothing rejects on the nullifier — the dummy proof
         // fails verification instead. This proves the NullifierUsed below comes
         // from the replay, not from some unrelated check.
-        let first = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let first = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_ne!(
             first.err().unwrap().unwrap(),
             PoolError::NullifierUsed,
@@ -2492,7 +2730,7 @@ mod tests {
         assert!(client.is_nullifier_used(&nullifier));
 
         // Replaying the very same proof is rejected as a double-spend.
-        let replay = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let replay = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             replay.err().unwrap().unwrap(),
             PoolError::NullifierUsed,
@@ -2697,7 +2935,7 @@ mod tests {
         let recipient = <Address as TestAddress>::generate(&env);
         let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
     }
 
@@ -2851,7 +3089,7 @@ mod tests {
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::VerificationFailed

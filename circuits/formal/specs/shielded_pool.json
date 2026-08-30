@@ -1,0 +1,54 @@
+{
+  "circuit": "shielded_pool",
+  "source_path": "circuits/shielded_pool/src/main.nr",
+  "artifact_candidates": [
+    "circuits/shielded_pool/target/shielded_pool.json",
+    "frontend/src/circuits/shielded_pool.json"
+  ],
+  "abi": {
+    "public": [
+      "root",
+      "nullifier_hash",
+      "recipient",
+      "withdraw_amount",
+      "change_commitment"
+    ],
+    "private": [
+      "nullifier",
+      "secret",
+      "amount",
+      "change_nullifier",
+      "change_secret",
+      "path_siblings",
+      "path_bits"
+    ],
+    "arrays": {
+      "path_siblings": 20,
+      "path_bits": 20
+    }
+  },
+  "properties": [
+    {
+      "id": "value-conservation",
+      "description": "A valid spend must prove amount and withdraw_amount are 64-bit values, withdraw_amount <= amount, and the new change commitment carries amount - withdraw_amount.",
+      "checks": [
+        "u64-round-trip-range",
+        "withdraw-amount-u64-witness",
+        "amount-u64-witness",
+        "withdraw-lte-amount",
+        "change-is-amount-minus-withdraw",
+        "change-commitment-uses-change"
+      ]
+    },
+    {
+      "id": "leaf-hash-correctness",
+      "description": "The spent leaf and change leaf must bind nullifier, secret, and amount through the shared hash_leaf relation.",
+      "checks": [
+        "hash-leaf-includes-amount",
+        "spent-leaf-uses-amount",
+        "computed-root-asserted",
+        "nullifier-hash-asserted"
+      ]
+    }
+  ]
+}
