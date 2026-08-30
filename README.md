@@ -6,6 +6,10 @@
 
 DShield is a consumer-grade shielded stablecoin wallet built on Stellar that enables private USDC payments using Zero-Knowledge Proofs (ZKPs).
 
+## Fiat onboarding (SEP-24)
+
+When `NEXT_PUBLIC_SEP24_HOME_DOMAIN` is configured, Deposit includes **Buy & shield**. It discovers the anchor through SEP-1, opens its SEP-24 interactive payment/KYC flow, polls its transaction status, and prepares the existing shield transaction after the asset reaches the connected wallet. The anchor is a separate trust boundary: it sees the fiat/KYC relationship and can reject or refund payments; DShield never receives that data and only shields funds already in the wallet.
+
 Users can send and receive funds without publicly exposing transaction amounts, balances, or payment history while retaining the ability to selectively disclose information when required for compliance, auditing, or regulatory reporting.
 
 Built for **Stellar Hacks: Real-World ZK**, DShield demonstrates how privacy and compliance can coexist in modern financial systems.
@@ -211,7 +215,7 @@ A full **deposit → relayed withdraw** loop has been executed on testnet: the p
 **Prerequisites:** Rust + `wasm32v1-none`, [`stellar` CLI](https://developers.stellar.org/docs/tools/cli), [Noir (`nargo`)](https://noir-lang.org/docs) + Barretenberg (`bb`), Node + `pnpm`, [`just`](https://github.com/casey/just). Run `just setup` to check.
 
 ```bash
-# Run all tests (Rust contracts + frontend) — 145 contract + 134 frontend tests
+# Run all tests (Rust contracts + frontend) — 170 contract + 154 frontend tests
 just test
 
 # Local: start a quickstart network, fund accounts, deploy everything,
@@ -228,7 +232,7 @@ cp frontend/.env.local.example frontend/.env.local
 cd frontend && pnpm install && pnpm dev   # http://localhost:3000
 ```
 
-`just deploy` provisions the verifier, the shielded pool, a test-USDC asset, a compliance contract, plus a **faucet issuer** and a **relayer** account, and writes the matching `frontend/.env.local`.
+`just deploy` provisions the verifier, a governance (timelock) contract, the shielded pool, a test-USDC asset, a compliance contract, plus a **faucet issuer** and a **relayer** account, and writes the matching `frontend/.env.local`. See [scripts/rotate-timelocked.sh](scripts/rotate-timelocked.sh) for queuing a timelocked verifier/admin/disclosure-VK change after deployment, and the app's **Governance** page for tracking and executing/cancelling queued changes.
 
 ---
 
@@ -257,6 +261,7 @@ Three properties hold the system together (each enforced on-chain and covered by
 3. **Double-spend prevention** — each withdrawal consumes a nullifier stored in persistent storage; replaying a proof fails with `NullifierUsed`. Locked by `test_replaying_consumed_nullifier_returns_nullifier_used`, which replays a proof whose nullifier has already been consumed and asserts `NullifierUsed`.
 4. **Value conservation** — a note's value is committed inside its leaf, and the circuit range-constrains both the note value and the payout to 64 bits before asserting `payout <= amount` and deriving `change = amount - payout`. The range check is what makes the subtraction safe: a bare `as u64` in Noir truncates without constraining, so an unconstrained `amount` near the field modulus would wrap to a small number and mint value from nothing. The contract re-checks the range when decoding the payout from the public inputs (`amount_from_field`), so a hand-crafted field element is rejected rather than truncated. Locked by `test_amount_from_field_rejects_out_of_range` and the circuit's own `constrain_u64`.
 5. **Trustless tree reconstruction** — clients rebuild the withdrawal Merkle tree from the pool contract's own commitment storage, not by scanning deposit events (which depend on RPC event retention and can go missing). `get_commitments_page(start, limit)` returns leaves in order for a bounded range (capped on-chain at `MAX_PAGE_SIZE = 100` leaves per call regardless of the requested `limit`), and the frontend (`fetchCommitmentsFromChain`) pages through it until a short page signals the end. The older `get_commitments()` (no pagination) still exists for small/local pools, but reads every leaf in one call and will hit Soroban's per-transaction CPU/footprint limits well before a pool nears `MAX_LEAVES = 2^20` — prefer the paginated view for anything beyond a demo pool.
+6. **Timelocked admin changes** — verifier rotation and admin rotation on the pool, and admin rotation and disclosure-VK rotation on compliance, are gated behind `contracts/governance`: an admin must queue the change, wait out a fixed delay, then execute it (or cancel it before that). No instant, undelayed admin action can swap a verifier or VK — see [Timelock governance](docs/THREAT_MODEL.md#timelock-governance). Locked by `test_governance_execute_rotates_pool_verifier`, `test_governance_cancel_prevents_pool_verifier_change`, and the governance crate's own queue/execute/cancel tests.
 
 Unbounded data (commitments, nullifiers) lives in **persistent storage** with TTL extension, so the size-capped instance entry doesn't grow with usage.
 

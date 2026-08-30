@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 soroban-sdk = { workspace = true, features = ["alloc"] }
 ultrahonk_soroban_verifier = { git = "https://github.com/yugocabrio/rs-soroban-ultrahonk", rev = "661db07200f890b1bd9a7349ed787c70a706dd12", default-features = false }
+dshield-governance-auth = { path = "../governance-auth" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils", "alloc"] }

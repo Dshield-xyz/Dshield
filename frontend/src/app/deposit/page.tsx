@@ -22,7 +22,7 @@ import {
 } from "@/lib/notes";
 import { saveDeposit } from "@/lib/deposits";
 import { fetchLeafIndex } from "@/lib/sync";
-import { computeCommitment } from "@/lib/poseidon2";
+import { computeCommitment, assetToField } from "@/lib/poseidon2";
 import {
   TOKEN_SYMBOL,
   formatAmount,
@@ -30,6 +30,7 @@ import {
   usdcToStroops,
 } from "@/lib/format";
 import { friendlyError } from "@/lib/errors";
+import { createInteractiveDeposit, getSep24Transaction, SEP24_COMPLETE_STATUSES, SEP24_FAILURE_STATUSES } from "@/lib/sep24";
 import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -64,16 +65,24 @@ const MAX_NOTE_STROOPS = (BigInt(2) ** BigInt(64) - BigInt(1)).toString();
 async function buildNote(
   poolId: string,
   amountStroops: string,
+  asset: string,
 ): Promise<ShieldedNote> {
   const nullifier = generateRandomField();
   const secret = generateRandomField();
-  const commitment = await computeCommitment(nullifier, secret, amountStroops);
+  const assetField = await assetToField(asset);
+  const commitment = await computeCommitment(
+    nullifier,
+    secret,
+    amountStroops,
+    assetField,
+  );
   return {
     nullifier,
     secret,
     commitment: commitment.replace(/^0x/, ""),
     leafIndex: PENDING_LEAF_INDEX,
     amount: amountStroops,
+    asset,
     spent: false,
     createdAt: Date.now(),
     poolId,
@@ -148,6 +157,11 @@ export default function DepositPage() {
   const [shareOpenKey, setShareOpenKey] = useState<string>("");
   const [amount, setAmount] = useState<string>("");
   const poolId = getPoolId();
+  // The pool can hold notes for several allow-listed SEP-41 assets, but this
+  // page doesn't yet offer an asset picker (see MULTI_ASSET_STATUS.md) — it
+  // deposits into whichever asset this deployment's demo USDC SAC resolves
+  // to, same as before multi-asset support existed.
+  const assetId = getUsdcSacId();
   // New UI state for confirmation step
   const [showConfirm, setShowConfirm] = useState(false);
   const [estimatedFee, setEstimatedFee] = useState<string>("");
@@ -159,6 +173,9 @@ export default function DepositPage() {
   // Amount as of the moment the transaction was built. `amount` is cleared
   // before the user confirms, so the modal can't read it directly.
   const [confirmStroops, setConfirmStroops] = useState<string>("0");
+  const [onRampStatus, setOnRampStatus] = useState<string>("");
+  const onRampDomain = process.env.NEXT_PUBLIC_SEP24_HOME_DOMAIN || "";
+  const onRampAsset = process.env.NEXT_PUBLIC_SEP24_ASSET_CODE || TOKEN_SYMBOL;
 
   const amountStroops = usdcToStroops(amount);
   const amountTooLarge = BigInt(amountStroops) > BigInt(MAX_NOTE_STROOPS);
@@ -172,11 +189,11 @@ export default function DepositPage() {
    * wallet is prompted.
    */
   async function handleDeposit() {
-    if (!address || !poolId || !amountValid) return;
+    if (!address || !poolId || !amountValid || !assetId) return;
 
     setIsLoading(true);
     setSessionNotes([]);
-    const stroops = amountStroops;
+    const stroops = depositStroops;
 
     try {
       // --- Pre-sign setup (trustline, faucet) ---
@@ -190,6 +207,9 @@ export default function DepositPage() {
         const balance = balVal
           ? BigInt(StellarSdk.scValToNative(balVal) as string | number)
           : BigInt(0);
+        if (balance < BigInt(stroops) && skipTopUp) {
+          throw new Error("Insufficient funds after the on-ramp completed.");
+        }
         if (balance < BigInt(stroops)) {
           toast("Topping up your wallet with test USDC…");
           await faucetUsdc(address, BigInt(stroops) * BigInt(2) - balance);
@@ -200,7 +220,7 @@ export default function DepositPage() {
       // The note's value is hashed into its commitment, so the amount passed to
       // the contract and the amount inside the commitment have to be the same
       // string. Both come from `stroops` for exactly that reason.
-      const note = await buildNote(poolId, stroops);
+      const note = await buildNote(poolId, stroops, assetId);
 
       // Build the transaction (no signing yet)
       const tx = await buildContractCall(
@@ -208,6 +228,7 @@ export default function DepositPage() {
         "deposit",
         [
           StellarSdk.nativeToScVal(address, { type: "address" }),
+          StellarSdk.nativeToScVal(assetId, { type: "address" }),
           StellarSdk.xdr.ScVal.scvBytes(Buffer.from(note.commitment, "hex")),
           StellarSdk.nativeToScVal(BigInt(stroops), { type: "i128" }),
         ],
@@ -225,6 +246,39 @@ export default function DepositPage() {
     } finally {
       setIsLoading(false);
       setAmount("");
+    }
+  }
+
+  async function startOnRamp() {
+    if (!address || !onRampDomain) return;
+    setIsLoading(true);
+    try {
+      setOnRampStatus("Opening secure on-ramp…");
+      const callbackUrl = `${window.location.origin}/api/sep24-callback`;
+      const session = await createInteractiveDeposit({ homeDomain: onRampDomain, assetCode: onRampAsset, account: address, callbackUrl });
+      window.open(session.url, "dshield-sep24", "noopener,noreferrer");
+      setOnRampStatus("Complete payment and verification in the on-ramp window. Waiting for funds…");
+      const poll = async () => {
+        try {
+          const transaction = await getSep24Transaction({ homeDomain: onRampDomain, id: session.id });
+          const status = transaction.status.toLowerCase();
+          if (SEP24_COMPLETE_STATUSES.has(status)) {
+            const received = transaction.amount_out ?? transaction.amount_in;
+            if (!received || Number(received) <= 0) throw new Error("The on-ramp completed without a usable deposit amount.");
+            setOnRampStatus("Funds received — preparing your shielded note…");
+            await handleDeposit(received, true);
+            setOnRampStatus("");
+            return;
+          }
+          if (SEP24_FAILURE_STATUSES.has(status)) throw new Error(`On-ramp deposit ${status}.`);
+          window.setTimeout(() => void poll(), 5000);
+        } catch (err) {
+          setOnRampStatus(""); setIsLoading(false); toast(friendlyError(err), "error");
+        }
+      };
+      window.setTimeout(() => void poll(), 3000);
+    } catch (err) {
+      setOnRampStatus(""); setIsLoading(false); toast(friendlyError(err), "error");
     }
   }
 
@@ -306,6 +360,15 @@ export default function DepositPage() {
       />
 
       <Card className="mt-8">
+        {onRampDomain && (
+          <div className="mb-6 rounded-xl border border-brand-500/30 bg-brand-500/5 p-4">
+            <h3 className="text-sm font-semibold text-zinc-200">New here? Buy &amp; shield</h3>
+            <p className="mt-1 text-sm text-zinc-400">Pay with fiat through our configured on-ramp, then sign one transaction to shield the {onRampAsset} delivered to this wallet.</p>
+            <p className="mt-2 text-xs text-zinc-500">The on-ramp is an independent provider: it handles payment and KYC, while DShield only creates your private note after funds reach your wallet.</p>
+            <Button className="mt-4" variant="outline" onClick={startOnRamp} disabled={isLoading}>Buy {onRampAsset} &amp; shield</Button>
+            {onRampStatus && <p className="mt-3 text-sm text-brand-300" role="status">{onRampStatus}</p>}
+          </div>
+        )}
         <div className="mb-6">
           <h3 className="text-sm font-medium text-zinc-400">How it works</h3>
           <ol className="mt-3 space-y-2 text-sm text-zinc-500">
@@ -364,15 +427,17 @@ export default function DepositPage() {
           fullWidth
           size="lg"
           onClick={handleDeposit}
-          disabled={isLoading || !poolId || !amountValid}
+          disabled={isLoading || !poolId || !assetId || !amountValid}
         >
           {isLoading
             ? "Processing..."
             : !poolId
               ? "Pool not configured"
-              : amountValid
-                ? `Shield ${formatAmount(amountStroops)}`
-                : `Enter an amount`}
+              : !assetId
+                ? "Asset not configured"
+                : amountValid
+                  ? `Shield ${formatAmount(amountStroops)}`
+                  : `Enter an amount`}
         </Button>
 
         {sessionNotes.length > 0 && (

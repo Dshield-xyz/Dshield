@@ -46,3 +46,34 @@ export async function runProof(
     await backend.destroy();
   }
 }
+
+/**
+ * Verifies a proof entirely client-side, against the same circuit bytecode
+ * `runProof` used to generate it. Lets a verifier (an auditor who was handed
+ * a view-disclosure proof out of band) check it with no wallet, no gas, and
+ * no trust in whoever relays it — only the circuit's own math.
+ *
+ * `proofHex`/`publicInputsHex` are the same hex encoding `runProof` returns:
+ * `publicInputsHex` is the public inputs packed back-to-back as 32-byte (64
+ * hex char) chunks with no separators, so it is split back into individual
+ * field elements here.
+ */
+export async function verifyProof(
+  circuit: Record<string, unknown>,
+  proofHex: string,
+  publicInputsHex: string,
+): Promise<boolean> {
+  const backend = new UltraHonkBackend(
+    (circuit as { bytecode: string }).bytecode,
+  );
+  try {
+    const proof = Uint8Array.from(Buffer.from(proofHex, "hex"));
+    const publicInputs: string[] = [];
+    for (let i = 0; i < publicInputsHex.length; i += 64) {
+      publicInputs.push("0x" + publicInputsHex.slice(i, i + 64));
+    }
+    return await backend.verifyProof({ proof, publicInputs }, { keccak: true });
+  } finally {
+    await backend.destroy();
+  }
+}

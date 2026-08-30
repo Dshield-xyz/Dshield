@@ -43,6 +43,9 @@ build-circuits:
     @echo "Building disclosure circuit..."
     cd circuits/disclosure && nargo compile
     cd circuits/disclosure && bb write_vk --scheme ultra_honk --oracle_hash keccak --bytecode_path target/disclosure.json --output_path target --output_format bytes_and_fields
+    @echo "Building view_disclosure circuit..."
+    cd circuits/view_disclosure && nargo compile
+    cd circuits/view_disclosure && bb write_vk --scheme ultra_honk --oracle_hash keccak --bytecode_path target/view_disclosure.json --output_path target --output_format bytes_and_fields
     @echo "All circuits built."
 
 # Generate a test proof from the shielded_pool circuit
@@ -77,6 +80,17 @@ verify-compliance:
 verify-disclosure:
     cd circuits/disclosure && bb verify -s ultra_honk --oracle_hash keccak -k target/vk -p target/proof -i target/public_inputs
     @echo "Disclosure proof verified."
+
+# Generate a test proof from the view_disclosure circuit
+prove-view-disclosure:
+    cd circuits/view_disclosure && nargo execute
+    cd circuits/view_disclosure && bb prove --scheme ultra_honk --oracle_hash keccak --bytecode_path target/view_disclosure.json --witness_path target/view_disclosure.gz --output_path target --output_format bytes_and_fields
+    @echo "View-disclosure proof generated."
+
+# Verify view_disclosure proof locally (off-chain)
+verify-view-disclosure:
+    cd circuits/view_disclosure && bb verify -s ultra_honk --oracle_hash keccak -k target/vk -p target/proof -i target/public_inputs
+    @echo "View-disclosure proof verified."
 
 # Build Soroban contract WASM binaries
 build-contracts:
@@ -132,6 +146,21 @@ deploy network="local": build
     echo "Verifier deployed: $VERIFIER_ID"
     echo "$VERIFIER_ID" > .verifier_id
 
+    echo "Deploying governance (timelock) contract..."
+    # Delay before a queued verifier/admin/VK change becomes executable. Short
+    # on local so the demo doesn't have to wait a day; a real deployment
+    # should use something like 86400 (1 day) or longer.
+    TIMELOCK_DELAY="${TIMELOCK_DELAY:-60}"
+    GOVERNANCE_ID=$(stellar contract deploy \
+        --wasm target/wasm32v1-none/release/dshield_governance.wasm \
+        --source alice \
+        --network "$NETWORK" \
+        -- \
+        --admin "$ALICE_ADDR" \
+        --delay_seconds "$TIMELOCK_DELAY")
+    echo "Governance deployed: $GOVERNANCE_ID (delay: ${TIMELOCK_DELAY}s)"
+    echo "$GOVERNANCE_ID" > .governance_id
+
     echo "Deploying USDC test token..."
     # Use a SEPARATE issuer so the deployer (alice) is a normal holder. A SAC
     # cannot mint to its own issuer ("operation invalid on issuer"), so alice
@@ -162,7 +191,7 @@ deploy network="local": build
     POOL_ID=$(stellar contract deploy \
         --wasm target/wasm32v1-none/release/dshield_pool.wasm \
         --source alice --network "$NETWORK" \
-        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --admin "$ALICE_ADDR")
+        -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --admin "$ALICE_ADDR" --timelock "$GOVERNANCE_ID")
     echo "Pool: $POOL_ID"
 
     echo "$POOL_ID" > .pool_id
@@ -181,14 +210,23 @@ deploy network="local": build
         -- \
         --vk_bytes-file-path circuits/compliance/target/vk \
         --admin "$ADMIN_ADDR" \
-        --pools "[\"$POOL_ID\"]")
+        --pools "[\"$POOL_ID\"]" \
+        --timelock "$GOVERNANCE_ID")
     echo "Compliance deployed: $COMPLIANCE_ID"
     echo "$COMPLIANCE_ID" > .compliance_id
 
-    echo "Setting disclosure VK on compliance contract..."
-    stellar contract invoke --id "$COMPLIANCE_ID" --source alice --network "$NETWORK" --send=yes \
-        -- set_disclosure_vk --vk_bytes-file-path circuits/disclosure/target/vk >/dev/null
+    echo "Setting disclosure VK on compliance contract (via timelock)..."
+    # set_disclosure_vk is gated behind governance now: queue, wait out the
+    # delay, then execute. See scripts/rotate-timelocked.sh for the same flow
+    # used to change the verifier or rotate admins after deployment.
+    bash scripts/rotate-timelocked.sh "$NETWORK" "$GOVERNANCE_ID" "$COMPLIANCE_ID" \
+        set_disclosure_vk --vk_bytes-file-path circuits/disclosure/target/vk
     echo "Disclosure VK set."
+
+    echo "Setting view-disclosure VK on compliance contract..."
+    stellar contract invoke --id "$COMPLIANCE_ID" --source alice --network "$NETWORK" --send=yes \
+        -- set_view_vk --vk_bytes-file-path circuits/view_disclosure/target/vk >/dev/null
+    echo "View-disclosure VK set."
 
     echo "Writing frontend/.env.local..."
     # Use alice as the dev wallet so the app deposits from the account that
@@ -221,6 +259,7 @@ deploy network="local": build
     KYC_ADMIN_API_KEY=$KYC_ADMIN_API_KEY
     NEXT_PUBLIC_POOL_CONTRACT_ID=$POOL_ID
     NEXT_PUBLIC_COMPLIANCE_CONTRACT_ID=$COMPLIANCE_ID
+    NEXT_PUBLIC_GOVERNANCE_CONTRACT_ID=$GOVERNANCE_ID
     EOF
     # Strip the leading indentation the recipe block adds.
     sed -i 's/^    //' frontend/.env.local
@@ -249,8 +288,18 @@ test-contracts:
 test-frontend:
     cd frontend && pnpm test
 
+# Build the shared tree/RPC package and the standalone indexer service
+build-indexer-service:
+    cd packages/core && npm install && npm run build
+    cd services/indexer && npm install && npm run build
+
+# Run standalone indexer service (and shared package) unit tests
+test-indexer-service: build-indexer-service
+    cd packages/core && npm test
+    cd services/indexer && npm test
+
 # Run all unit tests
-test: test-contracts test-frontend
+test: test-contracts test-frontend test-indexer-service
 
 # Run the formal/symbolic circuit specification harness
 verify-circuits:
@@ -263,6 +312,6 @@ test-e2e:
 # Clean up artifacts and containers
 clean:
     stellar container stop stellar-local 2>/dev/null || true
-    rm -f .verifier_id .pool_id .compliance_id
+    rm -f .verifier_id .pool_id .compliance_id .governance_id
     rm -rf circuits/shielded_pool/target circuits/compliance/target circuits/disclosure/target
     @echo "Cleaned."

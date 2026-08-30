@@ -1,0 +1,19 @@
+# Root workspace for the non-frontend Node packages: the shared @dshield/core
+# library and the `dshield` CLI that consumes it. The Next.js app in `frontend/`
+# is intentionally NOT a member — it keeps its own pnpm workspace + lockfile
+# (frontend/pnpm-workspace.yaml) and consumes @dshield/core from source via a
+# `link:` dependency + transpilePackages. Keeping the two installs separate means
+# adding the CLI does not disturb the app's dependency tree or CI install steps.
+packages:
+  - "packages/*"
+  - "cli"
+
+# esbuild backs tsx (the CLI's runtime); its postinstall fetches the platform
+# binary, so it must be allowed to run or `dshield` can't start.
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+
+onlyBuiltDependencies:
+  - esbuild
+  - msgpackr-extract

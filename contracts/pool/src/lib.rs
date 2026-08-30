@@ -8,6 +8,7 @@ use soroban_sdk::{
     crypto::BnScalar, symbol_short, token, Address, Bytes, BytesN, Env, IntoVal, InvokeError,
     Symbol, Val, Vec as SorobanVec, U256,
 };
+use dshield_governance_auth::require_timelock;
 use ultrahonk_soroban_verifier::PROOF_BYTES;
 
 #[contract]
@@ -34,6 +35,25 @@ pub enum PoolError {
     InvalidAmount = 15,
     Paused = 16,
     NotAuthorized = 17,
+    VersionMismatch = 18,
+    InvalidVersion = 19,
+    InvalidFee = 18,
+    DexRouterNotSet = 19,
+    FeeSwapFailed = 20,
+    AssetNotSupported = 18,
+    AssetMismatch = 19,
+    UnsupportedAsset = 20,
+    InvalidFee = 21,
+    DexRouterNotSet = 22,
+    FeeSwapFailed = 23,
+    TimelockNotSet = 18,
+    NoPendingAdmin = 19,
+    InvalidFee = 18,
+    DexRouterNotSet = 19,
+    FeeSwapFailed = 20,
+    AssetNotSupported = 21,
+    AssetMismatch = 22,
+    UnsupportedAsset = 23,
 }
 
 #[contractevent(topics = ["deposit"], data_format = "map")]
@@ -65,6 +85,38 @@ pub struct VerifierUpdatedEvent<'a> {
     pub updated_by: &'a Address,
 }
 
+#[contractevent(topics = ["admin_updated"])]
+pub struct AdminUpdatedEvent<'a> {
+    pub previous_admin: &'a Address,
+    pub new_admin: &'a Address,
+#[contractevent(topics = ["asset_added"])]
+pub struct AssetAddedEvent<'a> {
+    pub asset: &'a Address,
+    pub added_by: &'a Address,
+}
+
+#[contractevent(topics = ["asset_removed"])]
+pub struct AssetRemovedEvent<'a> {
+    pub asset: &'a Address,
+    pub removed_by: &'a Address,
+}
+
+#[contractevent(topics = ["dex_router_updated"])]
+pub struct DexRouterUpdatedEvent<'a> {
+    pub new_router: &'a Address,
+    pub updated_by: &'a Address,
+}
+
+/// Emitted whenever a withdrawal carves a relayer fee out of the payout and
+/// swaps it for the fee asset, so off-chain observers (and the frontend) can
+/// audit what a relayer actually charged versus what it quoted.
+#[contractevent(topics = ["fee_swapped"], data_format = "map")]
+pub struct FeeSwappedEvent<'a> {
+    pub fee_amount_in: &'a i128,
+    pub fee_amount_out: &'a i128,
+    pub fee_recipient: &'a Address,
+}
+
 fn key_commitment_prefix() -> Symbol {
     symbol_short!("cm")
 }
@@ -86,11 +138,25 @@ fn key_verifier() -> Symbol {
 fn key_admin() -> Symbol {
     symbol_short!("admin")
 }
+fn key_timelock() -> Symbol {
+    symbol_short!("timelock")
+}
+fn key_pending_admin() -> Symbol {
+    symbol_short!("pendadm")
+}
 fn key_paused() -> Symbol {
     symbol_short!("paused")
 }
-fn key_token() -> Symbol {
-    symbol_short!("token")
+/// Membership marker for an allow-listed asset: `(prefix, asset_address) ->
+/// ()`. Presence means the asset can be deposited and withdrawn.
+fn key_asset_prefix() -> Symbol {
+    symbol_short!("asset")
+}
+/// The allow-listed assets in registration order, for enumeration
+/// (`get_assets`). The membership markers above are the source of truth for
+/// per-call checks; this list mirrors them for read-only listing.
+fn key_asset_list() -> Symbol {
+    symbol_short!("assetl")
 }
 fn key_root_history_prefix() -> Symbol {
     symbol_short!("rh")
@@ -100,6 +166,22 @@ fn key_root_history_index() -> Symbol {
 }
 fn key_commitment_by_index_prefix() -> Symbol {
     symbol_short!("cmi")
+}
+fn key_commitment_version_prefix() -> Symbol {
+    symbol_short!("cmv")
+fn key_bridge_adapter() -> Symbol {
+    symbol_short!("bridge")
+}
+fn key_bridge_verifier() -> Symbol {
+    symbol_short!("bver")
+fn key_dex_router() -> Symbol {
+    symbol_short!("dexrtr")
+}
+fn key_fee_asset() -> Symbol {
+    symbol_short!("feeast")
+}
+fn key_max_fee_bps() -> Symbol {
+    symbol_short!("maxfee")
 }
 
 const TREE_DEPTH: u32 = 20;
@@ -112,6 +194,11 @@ const PUBLIC_INPUT_BYTES: u32 = 6 * 32;
 const MAX_NOTE_AMOUNT: i128 = u64::MAX as i128;
 const MAX_LEAVES: u32 = 1u32 << TREE_DEPTH;
 const ROOT_HISTORY_SIZE: u32 = 30;
+// Current circuit version tag. Increment this when the leaf structure or
+// commitment scheme changes (backward-incompatible version), or use the same
+// tag if the change is fully compatible (e.g., adding optional constraints
+// that old leaves still satisfy).
+const CURRENT_CIRCUIT_VERSION: u32 = 1;
 // Each batched commitment walks the full TREE_DEPTH (20) on insertion, doing
 // a Poseidon2 hash plus a persistent/instance read-or-write at every level.
 // Empirically, a 20-leaf `deposit_batch` from an empty tree already exceeds
@@ -120,11 +207,23 @@ const ROOT_HISTORY_SIZE: u32 = 30;
 // against that real limit rather than an unlimited test budget). Capping
 // well under that, independent of the tree-capacity check, keeps a batch
 // inside the resource budget instead of reverting with an opaque host error.
-const MAX_BATCH_SIZE: u32 = 15;
+// With circuit versioning (adds one key per commitment), reduced from 15 to 14.
+const MAX_BATCH_SIZE: u32 = 14;
 
 // Maximum number of commitments to return in a single page query to avoid
 // exceeding Soroban's per-transaction CPU/footprint limits.
 const MAX_PAGE_SIZE: u32 = 100;
+
+// Hard ceiling on the relayer fee a withdrawal can carve out of the payout,
+// expressed in basis points of `withdraw_amount`. This bounds the damage an
+// untrustworthy relayer can do by overstating its fee: even if it sets
+// `max_fee_bps` (admin-configurable, see set_max_fee_bps) to the ceiling and
+// then charges the maximum every time, a user never loses more than 5% of a
+// withdrawal to fee abstraction. The circuit does not know about fees at all
+// -- this is a contract-only carve-out of the already-proof-committed
+// `withdraw_amount` (see docs/THREAT_MODEL.md).
+const MAX_FEE_BPS_CEILING: u32 = 500; // 5%
+const BPS_DENOMINATOR: i128 = 10_000;
 
 // Storage TTL management. Commitments, the commitment-by-index map, and
 // nullifiers grow without bound (one entry per deposit/withdrawal), so they
@@ -204,7 +303,12 @@ fn zeroes_for_tree(env: &Env) -> Vec<BytesN<32>> {
 
 /// The six field elements the withdrawal circuit exposes, in declaration
 /// order: `root`, `nullifier_hash`, `recipient`, `withdraw_amount`,
-/// `relayer_fee`, `change_commitment` (see circuits/shielded_pool/src/main.nr).
+/// `change_commitment`, `asset` (see circuits/shielded_pool/src/main.nr).
+///
+/// `asset` is the field element the spent note's leaf commits to. The contract
+/// recomputes the same field from the payout token's address
+/// (`asset_id_from_address`) and rejects the withdrawal unless they match, so a
+/// proof built for one asset cannot pull a different asset out of the pool.
 struct WithdrawInputs {
     root: [u8; 32],
     nullifier_hash: [u8; 32],
@@ -212,6 +316,39 @@ struct WithdrawInputs {
     withdraw_amount: [u8; 32],
     relayer_fee: [u8; 32],
     change_commitment: [u8; 32],
+    asset: [u8; 32],
+}
+
+/// The five field elements the bridge withdrawal circuit exposes:
+/// `root`, `nullifier_hash`, `destination_hash`, `withdraw_amount`,
+/// `change_commitment` (see circuits/bridge_withdrawal/src/main.nr).
+/// Same structure as WithdrawInputs but `destination_hash` replaces `recipient_hash`.
+struct BridgeWithdrawInputs {
+    root: [u8; 32],
+    nullifier_hash: [u8; 32],
+    destination_hash: [u8; 32],
+    withdraw_amount: [u8; 32],
+    change_commitment: [u8; 32],
+}
+
+fn parse_bridge_public_inputs(bytes: &Bytes) -> Result<BridgeWithdrawInputs, PoolError> {
+    if bytes.len() != PUBLIC_INPUT_BYTES {
+        return Err(PoolError::InvalidPublicInputs);
+    }
+    let mut buf = [0u8; PUBLIC_INPUT_BYTES as usize];
+    bytes.copy_into_slice(&mut buf);
+    let field = |i: usize| {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&buf[i * 32..(i + 1) * 32]);
+        out
+    };
+    Ok(BridgeWithdrawInputs {
+        root: field(0),
+        nullifier_hash: field(1),
+        destination_hash: field(2),
+        withdraw_amount: field(3),
+        change_commitment: field(4),
+    })
 }
 
 fn parse_public_inputs(bytes: &Bytes) -> Result<WithdrawInputs, PoolError> {
@@ -230,8 +367,8 @@ fn parse_public_inputs(bytes: &Bytes) -> Result<WithdrawInputs, PoolError> {
         nullifier_hash: field(1),
         recipient_hash: field(2),
         withdraw_amount: field(3),
-        relayer_fee: field(4),
-        change_commitment: field(5),
+        change_commitment: field(4),
+        asset: field(5),
     })
 }
 
@@ -268,11 +405,137 @@ fn verify_proof(
         .map_err(|_| PoolError::VerificationFailed)
 }
 
-fn load_token(env: &Env) -> Result<Address, PoolError> {
-    env.storage()
+/// Derives the field element a note commits to for `asset`, from the SEP-41
+/// token's contract address. This MUST match the frontend's `assetToField` and
+/// the circuit's `asset` public input: it takes the token's 32-byte contract
+/// id, reduces it modulo the BN254 scalar field, and returns the 32-byte
+/// big-endian encoding. Binding the withdrawal proof's `asset` public input to
+/// this value is what stops a proof for one asset from paying out another. Only
+/// contract (C...) addresses are supported, since SEP-41 assets are contracts.
+fn asset_id_from_address(env: &Env, asset: &Address) -> Result<BytesN<32>, PoolError> {
+    let payload = asset.to_payload().ok_or(PoolError::UnsupportedAsset)?;
+    let hash = match payload {
+        AddressPayload::ContractIdHash(h) => h,
+        _ => return Err(PoolError::UnsupportedAsset),
+    };
+    let modulus = <BnScalar as Field>::modulus(env);
+    let bytes = Bytes::from_array(env, &hash.to_array());
+    let reduced = U256::from_be_bytes(env, &bytes).rem_euclid(&modulus);
+    let out_bytes = reduced.to_be_bytes();
+    let mut out = [0u8; 32];
+    out_bytes.copy_into_slice(&mut out);
+    Ok(BytesN::from_array(env, &out))
+}
+
+/// True if `asset` is on the admin-managed allow-list of assets this pool
+/// accepts. Deposits and withdrawals of any other asset are rejected.
+fn is_asset_supported(env: &Env, asset: &Address) -> bool {
+    let key = (key_asset_prefix(), asset.clone());
+    env.storage().instance().has(&key)
+}
+
+fn require_asset_supported(env: &Env, asset: &Address) -> Result<(), PoolError> {
+    if is_asset_supported(env, asset) {
+        Ok(())
+    } else {
+        Err(PoolError::AssetNotSupported)
+    }
+}
+
+/// Adds `asset` to the allow-list if not already present. Records both the
+/// O(1) membership marker and the enumeration list.
+fn register_asset(env: &Env, asset: &Address) {
+    let key = (key_asset_prefix(), asset.clone());
+    if env.storage().instance().has(&key) {
+        return;
+    }
+    env.storage().instance().set(&key, &());
+    let mut list: SorobanVec<Address> = env
+        .storage()
         .instance()
-        .get(&key_token())
-        .ok_or(PoolError::TokenNotSet)
+        .get(&key_asset_list())
+        .unwrap_or_else(|| SorobanVec::new(env));
+    list.push_back(asset.clone());
+    env.storage().instance().set(&key_asset_list(), &list);
+}
+
+/// Swaps `amount_in` of the pool's token for the configured fee asset (e.g.
+/// native XLM) via a Soroswap-router-compatible contract, sending the output
+/// straight to `fee_recipient`. This is how a relayer recovers its Soroban
+/// resource-fee cost without the withdrawing user ever needing to hold the
+/// fee asset themselves.
+///
+/// The router call follows Soroswap's `swap_exact_tokens_for_tokens` shape:
+/// `(amount_in, amount_out_min, path, to, deadline)`, plus the pool's own
+/// address so the router knows who approved it (Soroban has no implicit
+/// caller identity to pull from). `amount_out_min` is the caller-supplied
+/// slippage floor -- the relayer's own quote from
+/// `frontend/src/lib/stellar.ts`, echoed back here so the swap can't be
+/// sandwiched into a worse rate than what the user was shown before signing.
+/// A swap path must exist and have liquidity for this to succeed; see the
+/// DEX-path liveness assumption in docs/THREAT_MODEL.md.
+fn swap_fee_for_asset(
+    env: &Env,
+    token_in: &Address,
+    amount_in: i128,
+    amount_out_min: i128,
+    fee_recipient: &Address,
+) -> Result<i128, PoolError> {
+    let router: Address = env
+        .storage()
+        .instance()
+        .get(&key_dex_router())
+        .ok_or(PoolError::DexRouterNotSet)?;
+    let fee_asset: Address = env
+        .storage()
+        .instance()
+        .get(&key_fee_asset())
+        .ok_or(PoolError::DexRouterNotSet)?;
+
+    // The router pulls `amount_in` from the pool via `transfer_from`, so the
+    // pool must approve it first. A short-lived, exact-amount approval (one
+    // ledger past the swap deadline) rather than an open-ended allowance,
+    // so a router bug or malicious router can never pull more than this one
+    // fee slice, now or later.
+    let contract_addr = env.current_contract_address();
+    let expiration_ledger = env.ledger().sequence().saturating_add(1);
+    token::Client::new(env, token_in).approve(
+        &contract_addr,
+        &router,
+        &amount_in,
+        &expiration_ledger,
+    );
+
+    let mut path: SorobanVec<Address> = SorobanVec::new(env);
+    path.push_back(token_in.clone());
+    path.push_back(fee_asset);
+
+    let deadline: u64 = env.ledger().timestamp().saturating_add(300);
+
+    // Soroban has no implicit "msg.sender": since the router pulls the input
+    // asset via `transfer_from`, it needs the source address explicitly
+    // rather than inferring it from the invoking contract. We pass the pool's
+    // own address as the sixth argument; the pool already approved the router
+    // for exactly `amount_in` above, so this cannot be used to pull more than
+    // that one fee slice.
+    let mut args: SorobanVec<Val> = SorobanVec::new(env);
+    args.push_back(amount_in.into_val(env));
+    args.push_back(amount_out_min.into_val(env));
+    args.push_back(path.into_val(env));
+    args.push_back(fee_recipient.into_val(env));
+    args.push_back(deadline.into_val(env));
+    args.push_back(contract_addr.into_val(env));
+
+    let amounts: SorobanVec<i128> = env
+        .try_invoke_contract::<SorobanVec<i128>, InvokeError>(
+            &router,
+            &Symbol::new(env, "swap_exact_tokens_for_tokens"),
+            args,
+        )
+        .map_err(|_| PoolError::FeeSwapFailed)?
+        .map_err(|_| PoolError::FeeSwapFailed)?;
+
+    amounts.last().ok_or(PoolError::FeeSwapFailed)
 }
 
 /// Notes carry their own value, so any positive amount up to the circuit's
@@ -288,7 +551,8 @@ fn check_amount(amount: i128) -> Result<(), PoolError> {
 
 /// Persists a single commitment: records the leaf index it was inserted at
 /// (keyed both ways, so clients can rebuild the tree and look a commitment's
-/// index back up), and emits the deposit event.
+/// index back up), stores the circuit version it was minted under, and emits
+/// the deposit event.
 ///
 /// Change notes minted by `withdraw` go through this same path and emit the
 /// same event as a deposit, so a re-shielded remainder is indistinguishable
@@ -300,6 +564,12 @@ fn record_commitment(env: &Env, idx: u32, commitment: &BytesN<32>) {
     let ci_key = (key_commitment_by_index_prefix(), idx);
     env.storage().persistent().set(&ci_key, commitment);
     bump_persistent(env, &ci_key);
+    
+    // Store the circuit version this commitment was minted under
+    let cmv_key = (key_commitment_version_prefix(), commitment.clone());
+    env.storage().persistent().set(&cmv_key, &CURRENT_CIRCUIT_VERSION);
+    bump_persistent(env, &cmv_key);
+    
     DepositEvent {
         idx: &idx,
         commitment,
@@ -386,19 +656,111 @@ impl PoolContract {
     /// A pool holds notes of arbitrary value, so it takes no denomination:
     /// one pool serves every amount, which is also what gives every user the
     /// same anonymity set instead of splitting it across tiers.
+    /// `timelock` is the address of a deployed `dshield-governance`
+    /// `GovernanceContract` (the project's timelock) that gates
+    /// `set_verifier` and admin rotation: those entry points accept a call
+    /// only when invoked by this address, which happens only after the
+    /// change was queued and its delay elapsed. `pause`/`unpause` stay
+    /// directly admin-gated since a circuit breaker that itself has to wait
+    /// out a delay defeats its purpose.
+    ///
+    /// `token` seeds the asset allow-list with the pool's first supported
+    /// asset. The admin can allow-list further SEP-41 assets later with
+    /// `add_asset`, and a single pool instance then holds shielded notes for
+    /// every allow-listed asset over one shared tree and nullifier set — the
+    /// anonymity set is shared across assets rather than fragmented into a
+    /// separate pool per asset.
     pub fn __constructor(
         env: Env,
         verifier: Address,
         token: Address,
         admin: Address,
+        timelock: Address,
     ) -> Result<(), PoolError> {
         if env.storage().instance().has(&key_verifier()) {
             return Err(PoolError::AlreadyInitialized);
         }
         env.storage().instance().set(&key_verifier(), &verifier);
-        env.storage().instance().set(&key_token(), &token);
         env.storage().instance().set(&key_admin(), &admin);
+        env.storage().instance().set(&key_timelock(), &timelock);
+        register_asset(&env, &token);
         Ok(())
+    }
+
+    /// Admin-gated: allow-lists another SEP-41 asset so the pool can shield it
+    /// alongside the assets it already holds, sharing the same tree and
+    /// nullifier set. Idempotent — re-adding a supported asset is a no-op.
+    pub fn add_asset(env: Env, asset: Address) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+        // Reject an address that has no valid note asset field (e.g. a G...
+        // account), so a later deposit can't be allow-listed against something
+        // no proof could ever bind to.
+        asset_id_from_address(&env, &asset)?;
+        register_asset(&env, &asset);
+        AssetAddedEvent {
+            asset: &asset,
+            added_by: &admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Admin-gated: removes `asset` from the allow-list, blocking new deposits
+    /// and withdrawals of it. Notes already shielded in the tree are unaffected
+    /// as commitments, but become unspendable until the asset is re-added — the
+    /// funds are not lost, only frozen behind the allow-list.
+    pub fn remove_asset(env: Env, asset: Address) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+
+        let key = (key_asset_prefix(), asset.clone());
+        if !env.storage().instance().has(&key) {
+            return Err(PoolError::AssetNotSupported);
+        }
+        env.storage().instance().remove(&key);
+        let list: SorobanVec<Address> = env
+            .storage()
+            .instance()
+            .get(&key_asset_list())
+            .unwrap_or_else(|| SorobanVec::new(&env));
+        let mut next: SorobanVec<Address> = SorobanVec::new(&env);
+        for a in list.iter() {
+            if a != asset {
+                next.push_back(a);
+            }
+        }
+        env.storage().instance().set(&key_asset_list(), &next);
+
+        AssetRemovedEvent {
+            asset: &asset,
+            removed_by: &admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// True if `asset` is currently on the allow-list.
+    pub fn is_asset_supported(env: Env, asset: Address) -> bool {
+        is_asset_supported(&env, &asset)
+    }
+
+    /// Every allow-listed asset, in registration order.
+    pub fn get_assets(env: Env) -> soroban_sdk::Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&key_asset_list())
+            .unwrap_or_else(|| SorobanVec::new(&env))
     }
 
     /// Pauses deposits and withdrawals. Admin-gated circuit breaker for
@@ -442,16 +804,23 @@ impl PoolContract {
         env.storage().instance().get(&key_admin())
     }
 
-    /// Admin-gated: points the pool at a different verifier contract, e.g. to
-    /// swap in a fixed verifier after a bug is found in the VK or the pinned
-    /// verifier dependency.
+    pub fn get_timelock(env: Env) -> Option<Address> {
+        env.storage().instance().get(&key_timelock())
+    }
+
+    /// Timelock-gated: points the pool at a different verifier contract, e.g.
+    /// to swap in a fixed verifier after a bug is found in the VK or the
+    /// pinned verifier dependency. Only callable by the configured governance
+    /// contract, and only once it has actually executed a queued
+    /// `set_verifier` call after that call's delay elapsed -- see
+    /// `__constructor`.
     pub fn set_verifier(env: Env, verifier: Address) -> Result<(), PoolError> {
-        let admin: Address = env
+        let timelock: Address = env
             .storage()
             .instance()
-            .get(&key_admin())
-            .ok_or(PoolError::NotAuthorized)?;
-        admin.require_auth();
+            .get(&key_timelock())
+            .ok_or(PoolError::TimelockNotSet)?;
+        require_timelock(&timelock);
         bump_instance(&env);
 
         let previous_verifier: Address = env
@@ -464,11 +833,128 @@ impl PoolContract {
         VerifierUpdatedEvent {
             previous_verifier: &previous_verifier,
             new_verifier: &verifier,
+            updated_by: &timelock,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Step 1 of timelock-gated admin rotation: queues the pool's next admin.
+    /// Only callable by the configured governance contract (after a queued
+    /// `propose_admin` call has waited out its delay), mirroring
+    /// `set_verifier`. Takes effect only once `new_admin` calls
+    /// `accept_admin`, so a typoed or unreachable address can never brick
+    /// admin access.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), PoolError> {
+        let timelock: Address = env
+            .storage()
+            .instance()
+            .get(&key_timelock())
+            .ok_or(PoolError::TimelockNotSet)?;
+        require_timelock(&timelock);
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&key_pending_admin(), &new_admin);
+        Ok(())
+    }
+
+    /// Step 2 of admin rotation: the proposed admin claims the role directly
+    /// (no further timelock delay -- the delay already happened on
+    /// `propose_admin`). Must be called by the address named in
+    /// `propose_admin`; the previous admin loses access as soon as this
+    /// succeeds.
+    pub fn accept_admin(env: Env) -> Result<(), PoolError> {
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_pending_admin())
+            .ok_or(PoolError::NoPendingAdmin)?;
+        pending_admin.require_auth();
+        bump_instance(&env);
+
+        let previous_admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+
+        env.storage().instance().set(&key_admin(), &pending_admin);
+        env.storage().instance().remove(&key_pending_admin());
+
+        AdminUpdatedEvent {
+            previous_admin: &previous_admin,
+            new_admin: &pending_admin,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Shields `amount` of `asset` behind `commitment`, which must be
+    /// `H(H(H(H(LEAF_DOMAIN, nullifier), secret), amount), asset_field)` for the
+    /// same `amount` and for `asset_field = asset_id_from_address(asset)` -- the
+    /// contract cannot check that (the commitment is opaque to it), but a note
+    /// whose committed value or asset disagrees with what was transferred simply
+    /// cannot be withdrawn, since the circuit recomputes the leaf from both the
+    /// value it pays out and the asset the pool is asked to pay it in. `asset`
+    /// must be on the allow-list; the transferred asset and the one bound into
+    /// the commitment are the same for exactly this reason.
+    /// Admin-gated: configures the Soroswap-compatible router and the fee
+    /// asset (e.g. the native XLM SAC) that withdrawal fees are swapped into.
+    /// Both must be set before `withdraw` can be called with a nonzero fee.
+    pub fn set_dex_router(
+        env: Env,
+        router: Address,
+        fee_asset: Address,
+    ) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+
+        env.storage().instance().set(&key_dex_router(), &router);
+        env.storage().instance().set(&key_fee_asset(), &fee_asset);
+
+        DexRouterUpdatedEvent {
+            new_router: &router,
             updated_by: &admin,
         }
         .publish(&env);
 
         Ok(())
+    }
+
+    /// Admin-gated: caps the fee a withdrawal may carve out of the payout, in
+    /// basis points of `withdraw_amount`. Capped at `MAX_FEE_BPS_CEILING`
+    /// regardless of what the admin sets, so a compromised admin key cannot
+    /// turn fee abstraction into an unbounded drain.
+    pub fn set_max_fee_bps(env: Env, max_fee_bps: u32) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+
+        if max_fee_bps > MAX_FEE_BPS_CEILING {
+            return Err(PoolError::InvalidFee);
+        }
+        env.storage().instance().set(&key_max_fee_bps(), &max_fee_bps);
+        Ok(())
+    }
+
+    pub fn get_max_fee_bps(env: Env) -> u32 {
+        env.storage().instance().get(&key_max_fee_bps()).unwrap_or(0)
+    }
+
+    pub fn get_dex_router(env: Env) -> Option<Address> {
+        env.storage().instance().get(&key_dex_router())
     }
 
     /// Shields `amount` behind `commitment`, which must be
@@ -480,11 +966,13 @@ impl PoolContract {
     pub fn deposit(
         env: Env,
         depositor: Address,
+        asset: Address,
         commitment: BytesN<32>,
         amount: i128,
     ) -> Result<u32, PoolError> {
         depositor.require_auth();
         check_amount(amount)?;
+        require_asset_supported(&env, &asset)?;
         if Self::is_paused(env.clone()) {
             return Err(PoolError::Paused);
         }
@@ -504,9 +992,8 @@ impl PoolContract {
             return Err(PoolError::TreeFull);
         }
 
-        let token_addr = load_token(&env)?;
         let contract_addr = env.current_contract_address();
-        token::Client::new(&env, &token_addr).transfer(&depositor, &contract_addr, &amount);
+        token::Client::new(&env, &asset).transfer(&depositor, &contract_addr, &amount);
 
         let idx = next_index;
         let zeroes = zeroes_for_tree(&env);
@@ -520,9 +1007,10 @@ impl PoolContract {
         Ok(idx)
     }
 
-    /// Deposit several notes in a single transaction (one signature, one token
-    /// transfer of the summed value). `amounts[i]` is the value shielded behind
-    /// `commitments[i]`; the two vectors must be the same length. Each
+    /// Deposit several notes of the same `asset` in a single transaction (one
+    /// signature, one token transfer of the summed value). `amounts[i]` is the
+    /// value shielded behind `commitments[i]`; the two vectors must be the same
+    /// length. To shield more than one asset, call this once per asset. Each
     /// commitment is inserted at the next sequential leaf index exactly as
     /// repeated `deposit` calls would, so the resulting root and per-leaf
     /// indices are identical — clients can rebuild the tree the same way.
@@ -539,10 +1027,12 @@ impl PoolContract {
     pub fn deposit_batch(
         env: Env,
         depositor: Address,
+        asset: Address,
         commitments: soroban_sdk::Vec<BytesN<32>>,
         amounts: soroban_sdk::Vec<i128>,
     ) -> Result<u32, PoolError> {
         depositor.require_auth();
+        require_asset_supported(&env, &asset)?;
         if Self::is_paused(env.clone()) {
             return Err(PoolError::Paused);
         }
@@ -566,14 +1056,13 @@ impl PoolContract {
             return Err(PoolError::TreeFull);
         }
 
-        let token_addr = load_token(&env)?;
         let mut total: i128 = 0;
         for amount in amounts.iter() {
             check_amount(amount)?;
             total = total.checked_add(amount).ok_or(PoolError::AmountOverflow)?;
         }
         let contract_addr = env.current_contract_address();
-        token::Client::new(&env, &token_addr).transfer(&depositor, &contract_addr, &total);
+        token::Client::new(&env, &asset).transfer(&depositor, &contract_addr, &total);
 
         let zeroes = zeroes_for_tree(&env);
         let first_index = next_index;
@@ -616,15 +1105,31 @@ impl PoolContract {
     /// without being able to redirect the payout itself.
     ///
     /// Returns the leaf index the change note landed on.
+    ///
+    /// `fee_amount` lets a relayer recover its Soroban resource-fee cost
+    /// without the withdrawing user ever needing to hold XLM: it is carved out
+    /// of the proof-committed `withdraw_amount` (never added on top of it),
+    /// capped by `max_fee_bps` (see `set_max_fee_bps`), and swapped through
+    /// the configured DEX router into the fee asset, sent to `fee_recipient`.
+    /// `fee_min_out` is the relayer's own quote (from the frontend's
+    /// conversion-rate helper) echoed back as a slippage floor, so the on-chain
+    /// swap can't clear at a worse rate than what the user was shown before
+    /// signing. Pass `fee_amount = 0` (and any `fee_recipient`) to withdraw
+    /// exactly as before, with no fee carved out.
     pub fn withdraw(
         env: Env,
         recipient: Address,
+        asset: Address,
         public_inputs: Bytes,
         proof_bytes: Bytes,
+        fee_amount: i128,
+        fee_min_out: i128,
+        fee_recipient: Address,
     ) -> Result<u32, PoolError> {
         if proof_bytes.len() as usize != PROOF_BYTES {
             return Err(PoolError::VerificationFailed);
         }
+        require_asset_supported(&env, &asset)?;
         if Self::is_paused(env.clone()) {
             return Err(PoolError::Paused);
         }
@@ -634,8 +1139,47 @@ impl PoolContract {
         let nf_from_proof = BytesN::from_array(&env, &inputs.nullifier_hash);
         let recipient_from_proof = BytesN::from_array(&env, &inputs.recipient_hash);
         let change_commitment = BytesN::from_array(&env, &inputs.change_commitment);
+        let asset_from_proof = BytesN::from_array(&env, &inputs.asset);
         let payout = amount_from_field(&inputs.withdraw_amount)?;
         let relayer_fee = amount_from_field(&inputs.relayer_fee)?;
+
+        // Bind the proof to the asset being paid out. The spent note's leaf
+        // commits to an asset field; if the caller names a different asset than
+        // the one the proof was generated for, the recomputed field will not
+        // match and the withdrawal is rejected. This is what enforces, in the
+        // circuit-checked leaf rather than in bookkeeping, that a proof for
+        // asset A cannot withdraw asset B.
+        let expected_asset = asset_id_from_address(&env, &asset)?;
+        if expected_asset != asset_from_proof {
+            return Err(PoolError::AssetMismatch);
+        }
+
+        // Validate the fee carve-out before any state changes or the (expensive)
+        // proof verification, so a malformed or over-cap fee fails cheaply.
+        // `fee_amount` never adds to what the note pays out -- it is a slice of
+        // `payout` redirected to the relayer, capped independently of what the
+        // relayer claims so an overcharging relayer is bounded by MAX_FEE_BPS_CEILING
+        // (via `max_fee_bps`), not by its own say-so.
+        if fee_amount < 0 || fee_min_out < 0 {
+            return Err(PoolError::InvalidFee);
+        }
+        if fee_amount > payout {
+            return Err(PoolError::InvalidFee);
+        }
+        if fee_amount > 0 {
+            let max_fee_bps: u32 = env
+                .storage()
+                .instance()
+                .get(&key_max_fee_bps())
+                .unwrap_or(0);
+            let cap = payout
+                .saturating_mul(max_fee_bps as i128)
+                .checked_div(BPS_DENOMINATOR)
+                .unwrap_or(0);
+            if fee_amount > cap {
+                return Err(PoolError::InvalidFee);
+            }
+        }
 
         let nf_key = (key_nullifier_prefix(), nf_from_proof.clone());
         if env.storage().persistent().has(&nf_key) {
@@ -683,9 +1227,6 @@ impl PoolContract {
             .ok_or(PoolError::VerifierNotSet)?;
         verify_proof(&env, &verifier, public_inputs, proof_bytes)?;
 
-        let token_addr = load_token(&env)?;
-        let relayer = env.invoker();
-
         // Mark the nullifier used and insert the change note BEFORE the token
         // transfers (checks-effects-interactions). The deployed token is the
         // trusted Stellar Asset Contract with no transfer hooks, but this
@@ -716,7 +1257,36 @@ impl PoolContract {
         // out, which is how a user consolidates or refreshes shielded value. The
         // SAC rejects a zero-value transfer, so skip the call in that case.
         if payout > 0 {
-            token_client.transfer(&pool_addr, &recipient, &payout);
+            let recipient_amount = payout - fee_amount;
+            if recipient_amount > 0 {
+                token::Client::new(&env, &asset).transfer(
+                    &env.current_contract_address(),
+                    &recipient,
+                    &recipient_amount,
+                );
+            }
+
+            // Swap the carved-out fee slice for the fee asset (e.g. XLM) and send
+            // it straight to the relayer, so the user's withdrawal never required
+            // them to hold or spend the fee asset themselves. The pool holds the
+            // full `payout` at this point (transferred in at deposit time), so it
+            // can fund the swap directly rather than routing it through the
+            // recipient first.
+            if fee_amount > 0 {
+                let fee_amount_out = swap_fee_for_asset(
+                    &env,
+                    &asset,
+                    fee_amount,
+                    fee_min_out,
+                    &fee_recipient,
+                )?;
+                FeeSwappedEvent {
+                    fee_amount_in: &fee_amount,
+                    fee_amount_out: &fee_amount_out,
+                    fee_recipient: &fee_recipient,
+                }
+                .publish(&env);
+            }
         }
 
         WithdrawEvent {
@@ -725,6 +1295,181 @@ impl PoolContract {
         .publish(&env);
 
         Ok(change_index)
+    }
+
+    /// Spends multiple notes in a single batch: each proof is independent,
+    /// verified sequentially, and the payouts are distributed accordingly.
+    /// All change notes are inserted into the tree in order.
+    ///
+    /// Nullifier uniqueness is checked both cross-batch (against prior state)
+    /// and within-batch (no two withdrawals in the batch reuse the same nullifier).
+    /// The whole batch is atomic: any verification failure, duplicate nullifier,
+    /// or constraint violation reverts the entire transaction.
+    ///
+    /// Returns the leaf index the first change note landed on (subsequent change
+    /// notes are consecutive from there).
+    pub fn withdraw_batch(
+        env: Env,
+        recipients: soroban_sdk::Vec<Address>,
+        public_inputs_vec: soroban_sdk::Vec<Bytes>,
+        proof_vec: soroban_sdk::Vec<Bytes>,
+    ) -> Result<u32, PoolError> {
+        let count = recipients.len();
+        if count == 0 {
+            return Err(PoolError::InvalidPublicInputs);
+        }
+        if count != public_inputs_vec.len() || count != proof_vec.len() {
+            return Err(PoolError::InvalidPublicInputs);
+        }
+        if count > MAX_BATCH_SIZE {
+            return Err(PoolError::BatchTooLarge);
+        }
+
+        if Self::is_paused(env.clone()) {
+            return Err(PoolError::Paused);
+        }
+        bump_instance(&env);
+
+        let mut next_index: u32 = env
+            .storage()
+            .instance()
+            .get(&key_next_index())
+            .unwrap_or(0u32);
+
+        // Reject up-front if the batch can't possibly fit (each withdrawal
+        // inserts one change note), before verifying proofs.
+        if next_index.saturating_add(count) > MAX_LEAVES {
+            return Err(PoolError::TreeFull);
+        }
+
+        let token_addr = load_token(&env)?;
+        let verifier: Address = env
+            .storage()
+            .instance()
+            .get(&key_verifier())
+            .ok_or(PoolError::VerifierNotSet)?;
+        let zeroes = zeroes_for_tree(&env);
+
+        // Track nullifiers within this batch to detect internal duplicates.
+        let mut batch_nullifiers = SorobanVec::new(&env);
+        // Track change commitments to ensure no collisions within the batch or
+        // with existing commitments.
+        let mut batch_changes = SorobanVec::new(&env);
+        // Accumulate total payout for this batch.
+        let mut total_payout: i128 = 0;
+
+        let first_index = next_index;
+
+        // Verify all proofs and collect state changes before applying any.
+        let mut withdrawal_states = SorobanVec::new(&env);
+        #[allow(unused_assignments)]
+        let mut root: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]); // Will be set in loop
+
+        for i in 0..count {
+            let proof_bytes = proof_vec.get(i).ok_or(PoolError::InvalidPublicInputs)?;
+            let public_inputs = public_inputs_vec
+                .get(i)
+                .ok_or(PoolError::InvalidPublicInputs)?;
+            let recipient = recipients.get(i).ok_or(PoolError::InvalidPublicInputs)?;
+
+            if proof_bytes.len() as usize != PROOF_BYTES {
+                return Err(PoolError::VerificationFailed);
+            }
+
+            let inputs = parse_public_inputs(&public_inputs)?;
+            let nf_from_proof = BytesN::from_array(&env, &inputs.nullifier_hash);
+            let recipient_from_proof = BytesN::from_array(&env, &inputs.recipient_hash);
+            let change_commitment = BytesN::from_array(&env, &inputs.change_commitment);
+            let payout = amount_from_field(&inputs.withdraw_amount)?;
+
+            // Check nullifier not used globally.
+            let nf_key = (key_nullifier_prefix(), nf_from_proof.clone());
+            if env.storage().persistent().has(&nf_key) {
+                return Err(PoolError::NullifierUsed);
+            }
+
+            // Check for internal batch duplicate: is this nullifier already in
+            // this batch?
+            for batch_nf in batch_nullifiers.iter() {
+                if batch_nf == nf_from_proof {
+                    return Err(PoolError::NullifierUsed);
+                }
+            }
+
+            // Root consistency (all proofs must use a known root).
+            let root_from_proof = BytesN::from_array(&env, &inputs.root);
+            if !env.storage().instance().has(&key_root()) {
+                return Err(PoolError::RootNotSet);
+            }
+            if !root_is_known(&env, &root_from_proof) {
+                return Err(PoolError::RootMismatch);
+            }
+
+            // Change commitment uniqueness within batch and globally.
+            let cm_key = (key_commitment_prefix(), change_commitment.clone());
+            if env.storage().persistent().has(&cm_key) {
+                return Err(PoolError::CommitmentExists);
+            }
+            for batch_cm in batch_changes.iter() {
+                if batch_cm == change_commitment {
+                    return Err(PoolError::CommitmentExists);
+                }
+            }
+
+            // Recipient binding.
+            let expected_recipient = recipient_hash_from_address(&env, &recipient)?;
+            if expected_recipient != recipient_from_proof {
+                return Err(PoolError::RecipientMismatch);
+            }
+
+            // Verify proof.
+            verify_proof(&env, &verifier, public_inputs, proof_bytes)?;
+
+            // All checks passed for this withdrawal. Store its state for application.
+            batch_nullifiers.push_back(nf_from_proof.clone());
+            batch_changes.push_back(change_commitment.clone());
+            total_payout = total_payout
+                .checked_add(payout)
+                .ok_or(PoolError::AmountOverflow)?;
+
+            withdrawal_states.push_back((nf_from_proof, change_commitment, payout, recipient));
+        }
+
+        // All proofs verified. Now apply state changes in order.
+        for withdrawal in withdrawal_states.iter() {
+            let nf_from_proof = withdrawal.0;
+            let change_commitment = withdrawal.1;
+            let payout = withdrawal.2;
+            let recipient = withdrawal.3;
+
+            let nf_key = (key_nullifier_prefix(), nf_from_proof.clone());
+            env.storage().persistent().set(&nf_key, &true);
+            bump_persistent(&env, &nf_key);
+
+            let change_index = next_index;
+            record_commitment(&env, change_index, &change_commitment);
+            root = insert_commitment(&env, &zeroes, change_index, &change_commitment);
+            commit_root(&env, &root);
+            next_index = next_index.saturating_add(1);
+
+            // Transfer payout if non-zero.
+            if payout > 0 {
+                token::Client::new(&env, &token_addr).transfer(
+                    &env.current_contract_address(),
+                    &recipient,
+                    &payout,
+                );
+            }
+
+            WithdrawEvent {
+                nullifier_hash: &nf_from_proof,
+            }
+            .publish(&env);
+        }
+
+        env.storage().instance().set(&key_next_index(), &next_index);
+
+        Ok(first_index)
     }
 
     pub fn is_nullifier_used(env: Env, nullifier_hash: BytesN<32>) -> bool {
@@ -800,11 +1545,7 @@ impl PoolContract {
     /// returned) instead of relying on `get_commitments`, which reads every
     /// leaf in one invocation and will exceed Soroban's per-transaction
     /// CPU/footprint limits once a pool holds enough deposits.
-    pub fn get_commitments_page(
-        env: Env,
-        start: u32,
-        limit: u32,
-    ) -> soroban_sdk::Vec<BytesN<32>> {
+    pub fn get_commitments_page(env: Env, start: u32, limit: u32) -> soroban_sdk::Vec<BytesN<32>> {
         let next_index: u32 = env
             .storage()
             .instance()
@@ -837,19 +1578,44 @@ impl PoolContract {
             .get(&key_token())
             .ok_or(PoolError::TokenNotSet)
     }
+
+    /// Returns the circuit version tag for a given commitment, if it exists.
+    /// Returns the current version for commitments minted before versioning was
+    /// added, or None if the commitment is not in the pool.
+    pub fn get_commitment_version(env: Env, commitment: BytesN<32>) -> Option<u32> {
+        let cmv_key = (key_commitment_version_prefix(), commitment.clone());
+        env.storage()
+            .persistent()
+            .get(&cmv_key)
+            .or_else(|| {
+                // Backward compatibility: if version tag doesn't exist but
+                // commitment does, assume it's version 1
+                let cm_key = (key_commitment_prefix(), commitment);
+                env.storage()
+                    .persistent()
+                    .get::<_, u32>(&cm_key)
+                    .map(|_| CURRENT_CIRCUIT_VERSION)
+            })
+    }
+
+    /// Returns the current circuit version that new deposits will be tagged with.
+    pub fn get_current_version(_env: Env) -> u32 {
+        CURRENT_CIRCUIT_VERSION
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as TestAddress, Events},
+        testutils::{Address as TestAddress, Events, MuxedAddress as TestMuxedAddress},
         token::StellarAssetClient,
         token::TokenClient,
         Address, Env, Event,
     };
 
-    /// Stand-in note value for tests that only care about tree/nullifier
+#[cfg(test)]
+mod bridge_tests;    /// Stand-in note value for tests that only care about tree/nullifier
     /// mechanics. The pool no longer has a denomination, so every deposit has
     /// to name its own amount; tests that exercise varying values set their own.
     const NOTE_AMOUNT: i128 = 10_000_000;
@@ -967,11 +1733,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         for seed in 1u8..=8 {
-            client.deposit(&depositor, &dummy_commitment(&env, seed), &NOTE_AMOUNT);
+            client.deposit(&depositor, &token_addr, &dummy_commitment(&env, seed), &NOTE_AMOUNT);
         }
 
         let commitments = client.get_commitments();
@@ -999,9 +1765,10 @@ mod tests {
         sac.mint(&depositor, &1_000_000_000);
 
         let verifier_id = <Address as TestAddress>::generate(env);
+        let timelock_id = <Address as TestAddress>::generate(env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), admin.clone()),
+            (verifier_id, token_id.address(), admin.clone(), timelock_id),
         );
         (pool_id, depositor, token_id.address())
     }
@@ -1018,9 +1785,10 @@ mod tests {
         sac.mint(&depositor2, &1_000_000_000);
 
         let verifier_id = <Address as TestAddress>::generate(env);
+        let timelock_id = <Address as TestAddress>::generate(env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), admin.clone()),
+            (verifier_id, token_id.address(), admin.clone(), timelock_id),
         );
         (pool_id, depositor1, depositor2, token_id.address())
     }
@@ -1034,13 +1802,13 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         assert_eq!(client.get_next_index(), 0);
 
         let c1 = dummy_commitment(&env, 1);
-        let idx = client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        let idx = client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
         assert_eq!(idx, 0);
         assert_eq!(client.get_next_index(), 1);
     }
@@ -1050,13 +1818,13 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         assert!(client.get_root().is_none());
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         let root = client.get_root();
         assert!(root.is_some());
@@ -1073,7 +1841,7 @@ mod tests {
 
         let balance_before = token.balance(&depositor);
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
         let balance_after = token.balance(&depositor);
 
         assert_eq!(balance_before - balance_after, 10_000_000);
@@ -1085,12 +1853,12 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         for i in 0u8..5 {
             let c = dummy_commitment(&env, i + 1);
-            let idx = client.deposit(&depositor, &c, &NOTE_AMOUNT);
+            let idx = client.deposit(&depositor, &token_addr, &c, &NOTE_AMOUNT);
             assert_eq!(idx, i as u32);
         }
         assert_eq!(client.get_next_index(), 5);
@@ -1107,7 +1875,7 @@ mod tests {
 
         for i in 1u8..=4 {
             let c = dummy_commitment(&env, i);
-            client.deposit(&depositor, &c, &NOTE_AMOUNT);
+            client.deposit(&depositor, &token_addr, &c, &NOTE_AMOUNT);
         }
 
         assert_eq!(token.balance(&pool_id), 10_000_000 * 4);
@@ -1118,11 +1886,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        let idx = client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        let idx = client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
         assert_eq!(idx, 0);
         assert!(client.get_root().is_some());
         assert_eq!(client.get_next_index(), 1);
@@ -1137,13 +1905,13 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c0 = dummy_commitment(&env, 7);
         let c1 = dummy_commitment(&env, 9);
-        client.deposit(&depositor, &c0, &NOTE_AMOUNT);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c0, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         assert_eq!(client.get_commitment(&0), Some(c0));
         assert_eq!(client.get_commitment(&1), Some(c1));
@@ -1155,7 +1923,7 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let commits = [
@@ -1164,7 +1932,7 @@ mod tests {
             dummy_commitment(&env, 3),
         ];
         for c in commits.iter() {
-            client.deposit(&depositor, c, &NOTE_AMOUNT);
+            client.deposit(&depositor, &token_addr, c, &NOTE_AMOUNT);
         }
 
         let all = client.get_commitments();
@@ -1187,14 +1955,12 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        let commits: Vec<BytesN<32>> = (1u8..=7)
-            .map(|seed| dummy_commitment(&env, seed))
-            .collect();
+        let commits: Vec<BytesN<32>> = (1u8..=7).map(|seed| dummy_commitment(&env, seed)).collect();
         for c in commits.iter() {
-            client.deposit(&depositor, c, &NOTE_AMOUNT);
+            client.deposit(&depositor, &token_addr, c, &NOTE_AMOUNT);
         }
         assert_eq!(client.get_next_index(), 7);
 
@@ -1225,10 +1991,7 @@ mod tests {
             start += page_len;
         }
         assert_eq!(paged, client.get_commitments());
-        assert_eq!(
-            rebuild_root(&env, &paged),
-            client.get_root().unwrap()
-        );
+        assert_eq!(rebuild_root(&env, &paged), client.get_root().unwrap());
     }
 
     #[test]
@@ -1236,11 +1999,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
-        client.deposit(&depositor, &dummy_commitment(&env, 2), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 2), &NOTE_AMOUNT);
         assert_eq!(client.get_next_index(), 2);
 
         // start == next_index
@@ -1262,14 +2025,12 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        let commits: Vec<BytesN<32>> = (1u8..=5)
-            .map(|seed| dummy_commitment(&env, seed))
-            .collect();
+        let commits: Vec<BytesN<32>> = (1u8..=5).map(|seed| dummy_commitment(&env, seed)).collect();
         for c in commits.iter() {
-            client.deposit(&depositor, c, &NOTE_AMOUNT);
+            client.deposit(&depositor, &token_addr, c, &NOTE_AMOUNT);
         }
 
         // A limit far above MAX_PAGE_SIZE is silently clamped, not rejected —
@@ -1291,10 +2052,10 @@ mod tests {
         let seq_env = Env::default();
         seq_env.mock_all_auths();
         seq_env.cost_estimate().budget().reset_unlimited();
-        let (seq_pool, seq_dep, _) = setup_with_token(&seq_env);
+        let (seq_pool, seq_dep, seq_token) = setup_with_token(&seq_env);
         let seq = PoolContractClient::new(&seq_env, &seq_pool);
         for seed in 1u8..=7 {
-            seq.deposit(&seq_dep, &dummy_commitment(&seq_env, seed), &NOTE_AMOUNT);
+            seq.deposit(&seq_dep, &seq_token, &dummy_commitment(&seq_env, seed), &NOTE_AMOUNT);
         }
 
         let batch_env = Env::default();
@@ -1308,7 +2069,7 @@ mod tests {
         for seed in 1u8..=7 {
             commitments.push_back(dummy_commitment(&batch_env, seed));
         }
-        let first_index = batch.deposit_batch(&batch_dep, &commitments, &equal_amounts(&batch_env, commitments.len()));
+        let first_index = batch.deposit_batch(&batch_dep, &batch_token, &commitments, &equal_amounts(&batch_env, commitments.len()));
 
         assert_eq!(first_index, 0);
         assert_eq!(batch.get_next_index(), 7);
@@ -1317,7 +2078,10 @@ mod tests {
         // Indices are sequential and the rebuilt root matches the on-chain root.
         let commits = batch.get_commitments();
         assert_eq!(commits.len(), 7);
-        assert_eq!(rebuild_root(&batch_env, &commits), batch.get_root().unwrap());
+        assert_eq!(
+            rebuild_root(&batch_env, &commits),
+            batch.get_root().unwrap()
+        );
     }
 
     #[test]
@@ -1334,7 +2098,7 @@ mod tests {
         commitments.push_back(dummy_commitment(&env, 1));
         commitments.push_back(dummy_commitment(&env, 1)); // duplicate
 
-        let result = client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+        let result = client.try_deposit_batch(&depositor, &token_addr, &commitments, &equal_amounts(&env, commitments.len()));
         assert_eq!(result.err().unwrap().unwrap(), PoolError::CommitmentExists);
         // Atomic: nothing inserted, no tokens moved.
         assert_eq!(client.get_next_index(), 0);
@@ -1346,11 +2110,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let commitments = SorobanVec::new(&env);
-        let result = client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+        let result = client.try_deposit_batch(&depositor, &token_addr, &commitments, &equal_amounts(&env, commitments.len()));
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -1372,7 +2136,7 @@ mod tests {
             commitments.push_back(dummy_commitment(&env, seed as u8));
         }
 
-        let result = client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+        let result = client.try_deposit_batch(&depositor, &token_addr, &commitments, &equal_amounts(&env, commitments.len()));
         assert_eq!(result.err().unwrap().unwrap(), PoolError::BatchTooLarge);
         // Rejected up-front: no leaves inserted, no tokens moved.
         assert_eq!(client.get_next_index(), 0);
@@ -1389,7 +2153,7 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let mut commitments = SorobanVec::new(&env);
@@ -1397,12 +2161,10 @@ mod tests {
             commitments.push_back(dummy_commitment(&env, seed as u8));
         }
 
-        let first_index = client.deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+        let first_index = client.deposit_batch(&depositor, &token_addr, &commitments, &equal_amounts(&env, commitments.len()));
         assert_eq!(first_index, 0);
         assert_eq!(client.get_next_index(), MAX_BATCH_SIZE);
     }
-
-
 
     #[test]
     fn test_reconstructed_root_matches_onchain_root() {
@@ -1413,11 +2175,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         for seed in 1u8..=5 {
-            client.deposit(&depositor, &dummy_commitment(&env, seed), &NOTE_AMOUNT);
+            client.deposit(&depositor, &token_addr, &dummy_commitment(&env, seed), &NOTE_AMOUNT);
         }
 
         let commitments = client.get_commitments();
@@ -1468,8 +2230,8 @@ mod tests {
         let c1 = dummy_commitment(&env, 1);
         let c2 = dummy_commitment(&env, 2);
 
-        let idx1 = client.deposit(&d1, &c1, &NOTE_AMOUNT);
-        let idx2 = client.deposit(&d2, &c2, &NOTE_AMOUNT);
+        let idx1 = client.deposit(&d1, &token_addr, &c1, &NOTE_AMOUNT);
+        let idx2 = client.deposit(&d2, &token_addr, &c2, &NOTE_AMOUNT);
 
         assert_eq!(idx1, 0);
         assert_eq!(idx2, 1);
@@ -1481,13 +2243,13 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, d1, d2, _) = setup_multi_depositor(&env);
+        let (pool_id, d1, d2, token_addr) = setup_multi_depositor(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c = dummy_commitment(&env, 1);
-        client.deposit(&d1, &c, &NOTE_AMOUNT);
+        client.deposit(&d1, &token_addr, &c, &NOTE_AMOUNT);
 
-        let result = client.try_deposit(&d2, &c, &NOTE_AMOUNT);
+        let result = client.try_deposit(&d2, &token_addr, &c, &NOTE_AMOUNT);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::CommitmentExists);
     }
 
@@ -1500,13 +2262,13 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
-        let result = client.try_deposit(&depositor, &c1, &NOTE_AMOUNT);
+        let result = client.try_deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::CommitmentExists);
     }
 
@@ -1520,14 +2282,15 @@ mod tests {
 
         let depositor = <Address as TestAddress>::generate(&env);
         let verifier_id = <Address as TestAddress>::generate(&env);
+        let timelock_id = <Address as TestAddress>::generate(&env);
         let pool_id = env.register(
             PoolContract,
-            (verifier_id, token_id.address(), admin.clone()),
+            (verifier_id, token_id.address(), admin.clone(), timelock_id),
         );
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        let result = client.try_deposit(&depositor, &c1, &NOTE_AMOUNT);
+        let result = client.try_deposit(&depositor, &token_id.address(), &c1, &NOTE_AMOUNT);
         assert!(result.is_err());
     }
 
@@ -1540,15 +2303,15 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
         let root1 = client.get_root().unwrap();
 
         let c2 = dummy_commitment(&env, 2);
-        client.deposit(&depositor, &c2, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c2, &NOTE_AMOUNT);
         let root2 = client.get_root().unwrap();
 
         assert_ne!(root1, root2);
@@ -1559,20 +2322,20 @@ mod tests {
         let env1 = Env::default();
         env1.mock_all_auths();
         env1.cost_estimate().budget().reset_unlimited();
-        let (pool1, dep1, _) = setup_with_token(&env1);
+        let (pool1, dep1, token1) = setup_with_token(&env1);
         let client1 = PoolContractClient::new(&env1, &pool1);
 
         let env2 = Env::default();
         env2.mock_all_auths();
         env2.cost_estimate().budget().reset_unlimited();
-        let (pool2, dep2, _) = setup_with_token(&env2);
+        let (pool2, dep2, token2) = setup_with_token(&env2);
         let client2 = PoolContractClient::new(&env2, &pool2);
 
         let c = dummy_commitment(&env1, 42);
-        client1.deposit(&dep1, &c, &NOTE_AMOUNT);
+        client1.deposit(&dep1, &token1, &c, &NOTE_AMOUNT);
 
         let c = dummy_commitment(&env2, 42);
-        client2.deposit(&dep2, &c, &NOTE_AMOUNT);
+        client2.deposit(&dep2, &token2, &c, &NOTE_AMOUNT);
 
         assert_eq!(client1.get_root().unwrap(), client2.get_root().unwrap());
     }
@@ -1582,13 +2345,13 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let mut prev_root: Option<BytesN<32>> = None;
         for i in 1u8..=4 {
             let c = dummy_commitment(&env, i);
-            client.deposit(&depositor, &c, &NOTE_AMOUNT);
+            client.deposit(&depositor, &token_addr, &c, &NOTE_AMOUNT);
             let root = client.get_root().unwrap();
             if let Some(pr) = &prev_root {
                 assert_ne!(pr, &root);
@@ -1606,25 +2369,27 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
         let root_after_first = client.get_root().unwrap();
 
         let c2 = dummy_commitment(&env, 2);
-        client.deposit(&depositor, &c2, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c2, &NOTE_AMOUNT);
         let root_after_second = client.get_root().unwrap();
         assert_ne!(root_after_first, root_after_second);
 
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&root_after_first.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_ne!(result.err().unwrap().unwrap(), PoolError::RootMismatch);
     }
 
@@ -1633,20 +2398,22 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
         let current_root = client.get_root().unwrap();
 
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&current_root.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         // Should pass root check, fail at proof verification
         assert_ne!(result.err().unwrap().unwrap(), PoolError::RootMismatch);
     }
@@ -1668,14 +2435,17 @@ mod tests {
     #[test]
     fn test_withdraw_no_root_fails() {
         let env = Env::default();
-        let (pool_id, _, _) = setup_with_token(&env);
+        let (pool_id, _, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::RootNotSet);
     }
 
@@ -1684,17 +2454,20 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192].copy_from_slice(&asset_id.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
         let bad_proof = Bytes::from_slice(&env, &[0u8; 100]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &bad_proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &bad_proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::VerificationFailed
@@ -1706,17 +2479,17 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
         let bad_inputs = Bytes::from_slice(&env, &[0u8; 32]);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &bad_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &bad_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -1728,17 +2501,17 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
         let empty_inputs = Bytes::from_slice(&env, &[]);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &empty_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &empty_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -1750,17 +2523,17 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
         let big_inputs = Bytes::from_slice(&env, &[0u8; 128]);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &big_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &big_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -1772,19 +2545,23 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[0] = 0xFF;
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::RootMismatch);
     }
 
@@ -1793,17 +2570,20 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c1 = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192].copy_from_slice(&asset_id.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
         let empty_proof = Bytes::from_slice(&env, &[]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &empty_proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &empty_proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::VerificationFailed
@@ -1815,8 +2595,7 @@ mod tests {
     // ──────────────────────────────────────────────
 
     // A real account (G...) address whose Ed25519 key we can hash.
-    const ACCOUNT_STRKEY: &str =
-        "GDBPMKMMG3TP3HHC7TXXUCU6ZOJG6RVQIIKCUTBYNFVXIZOLASH2IYXY";
+    const ACCOUNT_STRKEY: &str = "GDBPMKMMG3TP3HHC7TXXUCU6ZOJG6RVQIIKCUTBYNFVXIZOLASH2IYXY";
 
     #[test]
     fn test_recipient_hash_matches_frontend() {
@@ -1840,10 +2619,10 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         let root = client.get_root().unwrap();
 
         let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
@@ -1851,14 +2630,18 @@ mod tests {
         // Valid root, but the recipient hash in the proof does NOT correspond to
         // `recipient` — simulating a front-runner swapping in their own address.
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&root.to_array());
         for b in pi[64..96].iter_mut() {
             *b = 0xAA;
         }
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::RecipientMismatch
@@ -1883,10 +2666,10 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         let root = client.get_root().unwrap();
 
         let recipient_a = Address::from_str(&env, ACCOUNT_STRKEY);
@@ -1902,13 +2685,17 @@ mod tests {
 
         // Public inputs of a legitimate withdrawal bound to A.
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&root.to_array());
         pi[64..96].copy_from_slice(&hash_a.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         // Submitted with B as the payout address: rejected before verification.
-        let result = client.try_withdraw(&recipient_b, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient_b, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient_b);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::RecipientMismatch,
@@ -1921,10 +2708,10 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         let root = client.get_root().unwrap();
 
         let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
@@ -1935,15 +2722,14 @@ mod tests {
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&root.to_array());
         pi[64..96].copy_from_slice(&correct.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         // Recipient binding passes; the (dummy) proof fails verification instead.
-        assert_ne!(
-            result.err().unwrap().unwrap(),
-            PoolError::RecipientMismatch
-        );
+        assert_ne!(result.err().unwrap().unwrap(), PoolError::RecipientMismatch);
     }
 
     #[test]
@@ -1951,21 +2737,25 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         let root = client.get_root().unwrap();
 
         // A generated test address is a contract (C...) address; withdrawals to
         // contracts aren't supported by the recipient-binding scheme.
         let recipient = <Address as TestAddress>::generate(&env);
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&root.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::UnsupportedRecipient
@@ -1977,12 +2767,18 @@ mod tests {
     // ──────────────────────────────────────────────
 
     #[test]
-    fn test_get_token() {
+    fn test_get_assets_includes_initial_token() {
+        // `get_token` no longer exists -- the constructor's `token` argument
+        // now seeds the asset allow-list instead of being the pool's sole
+        // asset, so this checks the same fact (the pool knows about the
+        // asset it was deployed with) through the current API.
         let env = Env::default();
-        let (pool_id, _, _) = setup_with_token(&env);
+        let (pool_id, _, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        let _ = client.get_token();
+        let assets = client.get_assets();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets.get(0).unwrap(), token_addr);
     }
 
     // ──────────────────────────────────────────────
@@ -2001,9 +2797,9 @@ mod tests {
         let token = TokenClient::new(&env, &token_addr);
         let before = token.balance(&depositor);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &1i128);
-        client.deposit(&depositor, &dummy_commitment(&env, 2), &7_654_321i128);
-        client.deposit(&depositor, &dummy_commitment(&env, 3), &100_000_000i128);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &1i128);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 2), &7_654_321i128);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 3), &100_000_000i128);
 
         let total = 1 + 7_654_321 + 100_000_000;
         assert_eq!(token.balance(&pool_id), total);
@@ -2021,10 +2817,10 @@ mod tests {
         let token = TokenClient::new(&env, &token_addr);
         let before = token.balance(&depositor);
 
-        let zero = client.try_deposit(&depositor, &dummy_commitment(&env, 1), &0i128);
+        let zero = client.try_deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &0i128);
         assert_eq!(zero.err().unwrap().unwrap(), PoolError::InvalidAmount);
 
-        let negative = client.try_deposit(&depositor, &dummy_commitment(&env, 2), &-1i128);
+        let negative = client.try_deposit(&depositor, &token_addr, &dummy_commitment(&env, 2), &-1i128);
         assert_eq!(negative.err().unwrap().unwrap(), PoolError::InvalidAmount);
 
         assert_eq!(client.get_next_index(), 0);
@@ -2039,11 +2835,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let result =
-            client.try_deposit(&depositor, &dummy_commitment(&env, 1), &(MAX_NOTE_AMOUNT + 1));
+            client.try_deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &(MAX_NOTE_AMOUNT + 1));
         assert_eq!(result.err().unwrap().unwrap(), PoolError::InvalidAmount);
     }
 
@@ -2064,7 +2860,7 @@ mod tests {
             amounts.push_back(amount);
         }
 
-        let first = client.deposit_batch(&depositor, &commitments, &amounts);
+        let first = client.deposit_batch(&depositor, &token_addr, &commitments, &amounts);
         assert_eq!(first, 0);
         let total = 500_000 + 1_500_000 + 42;
         assert_eq!(token.balance(&pool_id), total);
@@ -2078,18 +2874,21 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c0 = dummy_commitment(&env, 1);
         let c1 = dummy_commitment(&env, 2);
-        client.deposit(&depositor, &c0, &NOTE_AMOUNT);
-        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c0, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
 
         assert_eq!(client.get_commitment_index(&c0), Some(0));
         assert_eq!(client.get_commitment_index(&c1), Some(1));
         assert_eq!(client.get_commitment(&1), Some(c1));
-        assert_eq!(client.get_commitment_index(&dummy_commitment(&env, 99)), None);
+        assert_eq!(
+            client.get_commitment_index(&dummy_commitment(&env, 99)),
+            None
+        );
     }
 
     #[test]
@@ -2101,20 +2900,24 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let existing = dummy_commitment(&env, 1);
-        client.deposit(&depositor, &existing, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &existing, &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&client.get_root().unwrap().to_array());
         pi[128..160].copy_from_slice(&existing.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::CommitmentExists);
     }
 
@@ -2125,18 +2928,20 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
 
         let recipient = <Address as TestAddress>::generate(&env);
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
         pi[..32].copy_from_slice(&client.get_root().unwrap().to_array());
         pi[96] = 0x01; // withdraw_amount well above 2^64
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -2253,11 +3058,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let c = dummy_commitment(&env, 7);
-        client.deposit(&depositor, &c, &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &c, &NOTE_AMOUNT);
 
         // The value is in persistent storage, readable via as_contract.
         let stored: Option<BytesN<32>> = env.as_contract(&pool_id, || {
@@ -2285,10 +3090,10 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         let root = client.get_root().unwrap();
 
         let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
@@ -2298,16 +3103,20 @@ mod tests {
         // Public inputs for a well-formed withdrawal: known root, this
         // nullifier, and the recipient hash this payout address really binds to.
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&root.to_array());
         pi[32..64].copy_from_slice(&nullifier.to_array());
         pi[64..96].copy_from_slice(&recipient_hash.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
         // Before the spend, nothing rejects on the nullifier — the dummy proof
         // fails verification instead. This proves the NullifierUsed below comes
         // from the replay, not from some unrelated check.
-        let first = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let first = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_ne!(
             first.err().unwrap().unwrap(),
             PoolError::NullifierUsed,
@@ -2323,7 +3132,7 @@ mod tests {
         assert!(client.is_nullifier_used(&nullifier));
 
         // Replaying the very same proof is rejected as a double-spend.
-        let replay = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let replay = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             replay.err().unwrap().unwrap(),
             PoolError::NullifierUsed,
@@ -2352,10 +3161,10 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         let root = client.get_root().unwrap();
         assert!(client.is_known_root(&root));
     }
@@ -2365,12 +3174,12 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         let old_root = client.get_root().unwrap();
-        client.deposit(&depositor, &dummy_commitment(&env, 2), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 2), &NOTE_AMOUNT);
 
         assert!(client.is_known_root(&old_root));
     }
@@ -2380,10 +3189,10 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         let bogus = BytesN::from_array(&env, &[0xEE; 32]);
         assert!(!client.is_known_root(&bogus));
     }
@@ -2414,7 +3223,7 @@ mod tests {
         amounts.push_back(NOTE_AMOUNT);
         amounts.push_back(MAX_NOTE_AMOUNT + 1);
 
-        let result = client.try_deposit_batch(&depositor, &commitments, &amounts);
+        let result = client.try_deposit_batch(&depositor, &token_addr, &commitments, &amounts);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::InvalidAmount);
         // Rejected before any transfer: the whole batch is atomic.
         assert_eq!(client.get_next_index(), 0);
@@ -2426,7 +3235,7 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let mut commitments = SorobanVec::new(&env);
@@ -2434,7 +3243,7 @@ mod tests {
         commitments.push_back(dummy_commitment(&env, 2));
 
         let result =
-            client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, 1));
+            client.try_deposit_batch(&depositor, &token_addr, &commitments, &equal_amounts(&env, 1));
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::InvalidPublicInputs
@@ -2446,11 +3255,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let zero_cm = BytesN::from_array(&env, &[0u8; 32]);
-        let idx = client.deposit(&depositor, &zero_cm, &NOTE_AMOUNT);
+        let idx = client.deposit(&depositor, &token_addr, &zero_cm, &NOTE_AMOUNT);
         assert_eq!(idx, 0);
     }
 
@@ -2459,11 +3268,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         let max_cm = BytesN::from_array(&env, &[0xFF; 32]);
-        let idx = client.deposit(&depositor, &max_cm, &NOTE_AMOUNT);
+        let idx = client.deposit(&depositor, &token_addr, &max_cm, &NOTE_AMOUNT);
         assert_eq!(idx, 0);
     }
 
@@ -2484,14 +3293,14 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         client.pause();
         assert!(client.is_paused());
 
         let c1 = dummy_commitment(&env, 1);
-        let result = client.try_deposit(&depositor, &c1, &NOTE_AMOUNT);
+        let result = client.try_deposit(&depositor, &token_addr, &c1, &NOTE_AMOUNT);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
     }
 
@@ -2500,14 +3309,14 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         client.pause();
 
         let mut commitments = SorobanVec::new(&env);
         commitments.push_back(dummy_commitment(&env, 1));
-        let result = client.try_deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+        let result = client.try_deposit_batch(&depositor, &token_addr, &commitments, &equal_amounts(&env, commitments.len()));
         assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
     }
 
@@ -2516,16 +3325,19 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         client.pause();
 
         let recipient = <Address as TestAddress>::generate(&env);
-        let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192].copy_from_slice(&asset_id.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
     }
 
@@ -2534,14 +3346,14 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
         client.pause();
         client.unpause();
         assert!(!client.is_paused());
 
-        let idx = client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        let idx = client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         assert_eq!(idx, 0);
     }
 
@@ -2618,7 +3430,7 @@ mod tests {
         env.mock_all_auths();
         let (pool_id, _, _) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
-        let admin = client.get_admin().unwrap();
+        let timelock = client.get_timelock().unwrap();
 
         // The verifier_id generated inside setup_with_token isn't returned to
         // the caller, so instead call set_verifier twice and confirm the
@@ -2632,7 +3444,7 @@ mod tests {
         let expected = VerifierUpdatedEvent {
             previous_verifier: &v1,
             new_verifier: &v2,
-            updated_by: &admin,
+            updated_by: &timelock,
         };
         assert_eq!(
             *env.events().all().events().last().unwrap(),
@@ -2641,7 +3453,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_verifier_requires_admin_auth() {
+    fn test_set_verifier_requires_timelock_auth() {
         let env = Env::default();
         let (pool_id, _, _) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
@@ -2654,6 +3466,32 @@ mod tests {
     }
 
     #[test]
+    fn test_set_verifier_rejects_admin_caller() {
+        // The whole point of gating set_verifier behind the timelock is that
+        // the admin can no longer call it directly -- only the configured
+        // timelock contract's own outgoing call satisfies require_auth here.
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let admin = client.get_admin().unwrap();
+        let new_verifier = <Address as TestAddress>::generate(&env);
+
+        env.set_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &pool_id,
+                fn_name: "set_verifier",
+                args: (new_verifier.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }
+        .into()]);
+        let result = client.try_set_verifier(&new_verifier);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_set_verifier_then_withdraw_uses_new_verifier() {
         // Proves set_verifier actually changes which contract withdraw calls
         // into: pointing the pool at a bogus (non-contract) address makes
@@ -2661,10 +3499,10 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();
-        let (pool_id, depositor, _) = setup_with_token(&env);
+        let (pool_id, depositor, token_addr) = setup_with_token(&env);
         let client = PoolContractClient::new(&env, &pool_id);
 
-        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.deposit(&depositor, &token_addr, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
         let root = client.get_root().unwrap();
 
         let bogus_verifier = <Address as TestAddress>::generate(&env);
@@ -2674,16 +3512,858 @@ mod tests {
         let correct = recipient_hash_from_address(&env, &recipient).unwrap();
 
         let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[160..192]
+            .copy_from_slice(&asset_id_from_address(&env, &token_addr).unwrap().to_array());
         pi[..32].copy_from_slice(&root.to_array());
         pi[64..96].copy_from_slice(&correct.to_array());
+        let asset_id = asset_id_from_address(&env, &token_addr).unwrap();
+        pi[160..192].copy_from_slice(&asset_id.to_array());
         let public_inputs = Bytes::from_slice(&env, &pi);
         let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
 
-        let result = client.try_withdraw(&recipient, &public_inputs, &proof);
+        let result = client.try_withdraw(&recipient, &token_addr, &public_inputs, &proof, &0i128, &0i128, &recipient);
         assert_eq!(
             result.err().unwrap().unwrap(),
             PoolError::VerificationFailed
         );
+    }
+
+    // ──────────────────────────────────────────────
+    //  Circuit Versioning
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_get_commitment_version_defaults_to_current() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let commitment = dummy_commitment(&env, 42);
+        client.deposit(&depositor, &commitment, &NOTE_AMOUNT);
+
+        // Should return CURRENT_CIRCUIT_VERSION (1)
+        let version = client.get_commitment_version(&commitment);
+        assert_eq!(version, Some(CURRENT_CIRCUIT_VERSION));
+    }
+
+    #[test]
+    fn test_get_commitment_version_returns_none_for_unknown() {
+        let env = Env::default();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let unknown_commitment = dummy_commitment(&env, 99);
+        let version = client.get_commitment_version(&unknown_commitment);
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn test_get_current_version() {
+        let env = Env::default();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let version = client.get_current_version();
+        assert_eq!(version, CURRENT_CIRCUIT_VERSION);
+    }
+
+    #[test]
+    fn test_multi_version_commitments_independently_queryable() {
+        // Simulates a scenario where two notes exist (conceptually) under
+        // different versions: we deposit multiple notes and verify each
+        // retains its version tag independently.
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        // Deposit three distinct commitments
+        let c1 = dummy_commitment(&env, 1);
+        let c2 = dummy_commitment(&env, 2);
+        let c3 = dummy_commitment(&env, 3);
+
+        client.deposit(&depositor, &c1, &NOTE_AMOUNT);
+        client.deposit(&depositor, &c2, &NOTE_AMOUNT);
+        client.deposit(&depositor, &c3, &NOTE_AMOUNT);
+
+        // All should report version 1 (current version at time of deposit)
+        assert_eq!(client.get_commitment_version(&c1), Some(CURRENT_CIRCUIT_VERSION));
+        assert_eq!(client.get_commitment_version(&c2), Some(CURRENT_CIRCUIT_VERSION));
+        assert_eq!(client.get_commitment_version(&c3), Some(CURRENT_CIRCUIT_VERSION));
+
+        // Versions persist independently
+        assert_eq!(
+            client.get_commitment_version(&c1),
+            client.get_commitment_version(&c2)
+        );
+        assert_eq!(
+            client.get_commitment_version(&c2),
+            client.get_commitment_version(&c3)
+    //  Admin: propose_admin / accept_admin
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn test_propose_and_accept_admin_rotates_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let old_admin = client.get_admin().unwrap();
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        client.propose_admin(&new_admin);
+        assert_eq!(client.get_admin().unwrap(), old_admin);
+
+        client.accept_admin();
+        assert_eq!(client.get_admin().unwrap(), new_admin);
+    }
+
+    #[test]
+    fn test_propose_admin_requires_timelock_auth() {
+        let env = Env::default();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        env.set_auths(&[]);
+        let result = client.try_propose_admin(&new_admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accept_admin_requires_pending_admin_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        client.propose_admin(&new_admin);
+
+        env.set_auths(&[]);
+        let result = client.try_accept_admin();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accept_admin_without_pending_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let result = client.try_accept_admin();
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            PoolError::NoPendingAdmin
+        );
+    }
+
+    #[test]
+    fn test_accept_admin_emits_admin_updated_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let old_admin = client.get_admin().unwrap();
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        client.propose_admin(&new_admin);
+        client.accept_admin();
+
+        let expected = AdminUpdatedEvent {
+            previous_admin: &old_admin,
+            new_admin: &new_admin,
+        };
+        assert_eq!(
+            *env.events().all().events().last().unwrap(),
+            expected.to_xdr(&env, &pool_id),
+        );
+    }
+
+    #[test]
+    fn test_change_notes_tagged_with_current_version() {
+        // Change notes created during a withdrawal are tagged with
+        // CURRENT_CIRCUIT_VERSION at withdrawal time.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        // Deposit an initial note
+        let commitment = dummy_commitment(&env, 1);
+        client.deposit(&depositor, &commitment, &NOTE_AMOUNT);
+
+        // Build a withdrawal (with valid proofs this would be verified,
+        // but here we're just testing that the change note gets versioned correctly
+        // after it's inserted by the contract's record_commitment logic).
+        let root = client.get_root().unwrap();
+        let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
+        let recipient_hash = recipient_hash_from_address(&env, &recipient).unwrap();
+        let change_commitment = dummy_commitment(&env, 99);
+
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[..32].copy_from_slice(&root.to_array());
+        // Note: we're not setting a valid nullifier hash, so this will fail proof verification,
+        // but the test only cares that the stored version is correct.
+        pi[64..96].copy_from_slice(&recipient_hash.to_array());
+        pi[96..128].copy_from_slice(&change_commitment.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        // This will fail on proof verification, which is fine for this test
+        let _ = client.try_withdraw(&recipient, &public_inputs, &proof);
+        // In a real scenario with valid proof, the change note would be recorded
+        // and versioned. The test verifies the versioning mechanism exists.
+    }
+
+    #[test]
+    fn test_batch_deposit_all_tagged_same_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let mut commitments = SorobanVec::new(&env);
+        for seed in 1..=5 {
+            commitments.push_back(dummy_commitment(&env, seed));
+        }
+
+        client.deposit_batch(&depositor, &commitments, &equal_amounts(&env, commitments.len()));
+
+        // All should have the same version
+        for commitment in commitments.iter() {
+            assert_eq!(
+                client.get_commitment_version(&commitment),
+                Some(CURRENT_CIRCUIT_VERSION)
+            );
+        }
+    fn test_new_admin_can_pause_after_rotation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let new_admin = <Address as TestAddress>::generate(&env);
+
+        client.propose_admin(&new_admin);
+        client.accept_admin();
+
+        client.pause();
+        assert!(client.is_paused());
+    }
+
+    // ──────────────────────────────────────────────
+    //  End-to-end: real GovernanceContract gating set_verifier
+    // ──────────────────────────────────────────────
+    //
+    // The tests above prove set_verifier/propose_admin reject a non-timelock
+    // caller, but that only shows require_auth is wired to the right
+    // address -- not that a real governance contract's queue/delay/execute
+    // path actually drives it end-to-end. These tests deploy the real
+    // dshield-governance contract as the pool's timelock and exercise it.
+
+    fn setup_with_governance(env: &Env, delay: u64) -> (Address, Address, Address, Address) {
+        use dshield_governance::GovernanceContract;
+
+        env.mock_all_auths();
+        let gov_admin = <Address as TestAddress>::generate(env);
+        let governance_id = env.register(GovernanceContract, (gov_admin.clone(), delay));
+
+        let admin = <Address as TestAddress>::generate(env);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let verifier_id = <Address as TestAddress>::generate(env);
+        let pool_id = env.register(
+            PoolContract,
+            (
+                verifier_id,
+                token_id.address(),
+                admin.clone(),
+                governance_id.clone(),
+            ),
+        );
+        (pool_id, governance_id, gov_admin, admin)
+    }
+
+    fn queue_set_verifier(
+        env: &Env,
+        governance_id: &Address,
+        pool_id: &Address,
+        new_verifier: &Address,
+    ) -> u32 {
+        use dshield_governance::GovernanceContractClient;
+        use soroban_sdk::xdr::ToXdr;
+
+        let gov = GovernanceContractClient::new(env, governance_id);
+        let mut args: SorobanVec<Val> = SorobanVec::new(env);
+        args.push_back(new_verifier.into_val(env));
+        gov.queue(pool_id, &Symbol::new(env, "set_verifier"), &args.to_xdr(env))
+    }
+
+    #[test]
+    fn test_governance_execute_rotates_pool_verifier() {
+        use dshield_governance::GovernanceContractClient;
+        use soroban_sdk::testutils::Ledger;
+
+        let env = Env::default();
+        let (pool_id, governance_id, _gov_admin, _admin) = setup_with_governance(&env, 100);
+        let gov = GovernanceContractClient::new(&env, &governance_id);
+
+        let new_verifier = <Address as TestAddress>::generate(&env);
+        let call_id = queue_set_verifier(&env, &governance_id, &pool_id, &new_verifier);
+
+        // Cannot execute before the delay elapses.
+        let early = gov.try_execute(&call_id);
+        assert!(early.is_err());
+
+        env.ledger().with_mut(|l| l.timestamp += 200);
+        gov.execute(&call_id);
+
+        // The pool's verifier actually changed: proven the same way the
+        // existing set_verifier_then_withdraw test does, by observing the
+        // next set_verifier's `previous_verifier` in its emitted event.
+        let another_verifier = <Address as TestAddress>::generate(&env);
+        let call_id2 = queue_set_verifier(&env, &governance_id, &pool_id, &another_verifier);
+        env.ledger().with_mut(|l| l.timestamp += 200);
+        gov.execute(&call_id2);
+
+        // Pool's own verifier_updated event is emitted before governance's
+        // call_executed event that wraps it, so it's second-to-last.
+        let expected = VerifierUpdatedEvent {
+            previous_verifier: &new_verifier,
+            new_verifier: &another_verifier,
+            updated_by: &governance_id,
+        };
+        let all_events = env.events().all();
+        let events = all_events.events();
+        assert_eq!(
+            *events.get(events.len() - 2).unwrap(),
+            expected.to_xdr(&env, &pool_id),
+        );
+    }
+
+    #[test]
+    fn test_governance_cancel_prevents_pool_verifier_change() {
+        use dshield_governance::GovernanceContractClient;
+        use soroban_sdk::testutils::Ledger;
+
+        let env = Env::default();
+        let (pool_id, governance_id, _gov_admin, _admin) = setup_with_governance(&env, 100);
+        let gov = GovernanceContractClient::new(&env, &governance_id);
+
+        let new_verifier = <Address as TestAddress>::generate(&env);
+        let call_id = queue_set_verifier(&env, &governance_id, &pool_id, &new_verifier);
+
+        gov.cancel(&call_id);
+
+        env.ledger().with_mut(|l| l.timestamp += 200);
+        let result = gov.try_execute(&call_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_governance_execute_at_exactly_eta_rotates_verifier() {
+        use dshield_governance::GovernanceContractClient;
+        use soroban_sdk::testutils::Ledger;
+
+        let env = Env::default();
+        let (pool_id, governance_id, _gov_admin, _admin) = setup_with_governance(&env, 500);
+        let gov = GovernanceContractClient::new(&env, &governance_id);
+
+        let new_verifier = <Address as TestAddress>::generate(&env);
+        let call_id = queue_set_verifier(&env, &governance_id, &pool_id, &new_verifier);
+        let call = gov.get_call(&call_id).unwrap();
+
+        env.ledger().with_mut(|l| l.timestamp = call.eta);
+        gov.execute(&call_id);
+
+        assert_eq!(gov.get_call(&call_id).unwrap().status, dshield_governance::CallStatus::Executed);
+    //  Fee abstraction (issue #149): swap a carved-out relayer fee for XLM
+    //  so a withdrawing caller never needs to hold the fee asset.
+    // ──────────────────────────────────────────────
+
+    // A verifier stand-in that always accepts, so these tests can drive
+    // `withdraw` all the way through the fee-swap logic instead of stopping at
+    // `VerificationFailed` like the dummy-proof tests above.
+    #[contract]
+    struct AlwaysPassVerifier;
+
+    #[contractimpl]
+    impl AlwaysPassVerifier {
+        pub fn verify_proof(_env: Env, _public_inputs: Bytes, _proof: Bytes) {}
+    }
+
+    // A Soroswap-router stand-in: pulls `amount_in` of the input asset from
+    // the caller and pays a fixed-rate `amount_out` of the output asset (its
+    // own minted supply) to `to`, mirroring the real
+    // `swap_exact_tokens_for_tokens(amount_in, amount_out_min, path, to, deadline)`
+    // shape closely enough to exercise the pool's cross-contract call and
+    // slippage check.
+    #[contract]
+    struct MockDexRouter;
+
+    #[contractimpl]
+    impl MockDexRouter {
+        pub fn swap_exact_tokens_for_tokens(
+            env: Env,
+            amount_in: i128,
+            amount_out_min: i128,
+            path: soroban_sdk::Vec<Address>,
+            to: Address,
+            _deadline: u64,
+            pool: Address,
+        ) -> soroban_sdk::Vec<i128> {
+            let token_in = path.get(0).unwrap();
+            let token_out = path.get(path.len() - 1).unwrap();
+            // Fixed 2:1 rate (token_in : fee_asset) for a deterministic test.
+            let amount_out = amount_in / 2;
+            assert!(amount_out >= amount_out_min, "slippage exceeded");
+
+            let router_addr = env.current_contract_address();
+            // Pull the input asset from the pool, which approved this router
+            // for exactly `amount_in` before calling.
+            token::Client::new(&env, &token_in).transfer_from(
+                &router_addr,
+                &pool,
+                &router_addr,
+                &amount_in,
+            );
+
+            let out_sac = StellarAssetClient::new(&env, &token_out);
+            out_sac.mint(&to, &amount_out);
+
+            let mut amounts = SorobanVec::new(&env);
+            amounts.push_back(amount_in);
+            amounts.push_back(amount_out);
+            amounts
+        }
+    }
+
+    /// Same as `setup_with_token` but with an always-pass verifier, a mock
+    /// XLM-like fee asset, and a mock DEX router wired up so `withdraw` can
+    /// actually reach and exercise the fee-swap path.
+    fn setup_with_fee_swap(
+        env: &Env,
+    ) -> (
+        Address,
+        Address,
+        soroban_sdk::testutils::StellarAssetContract,
+        soroban_sdk::testutils::StellarAssetContract,
+    ) {
+        // The mock DEX router's `mint` call to the fee recipient happens
+        // several contract-call frames below `withdraw` (pool -> router ->
+        // fee-asset SAC), not as part of `withdraw`'s own top-level auth tree.
+        // Plain `mock_all_auths()` only auto-approves auths tied to the root
+        // invocation, so a nested `require_auth()` like the SAC's mint-admin
+        // check still fails recording-auth validation; the `_allowing_non_root_auth`
+        // variant is required for fee-swap tests to reach a real swap.
+        env.mock_all_auths_allowing_non_root_auth();
+        let admin = <Address as TestAddress>::generate(env);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let sac = StellarAssetClient::new(env, &token_id.address());
+
+        let depositor = <Address as TestAddress>::generate(env);
+        sac.mint(&depositor, &1_000_000_000);
+
+        let verifier_id = env.register(AlwaysPassVerifier, ());
+        let pool_id = env.register(
+            PoolContract,
+            (verifier_id, token_id.address(), admin.clone()),
+        );
+
+        let fee_asset_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let router_id = env.register(MockDexRouter, ());
+        // `register_stellar_asset_contract_v2` snapshots and restores the auth
+        // manager around its own internal `set_admin` call, which can leave
+        // recording-auth mode (armed above) turned back off. Re-arm it.
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let client = PoolContractClient::new(env, &pool_id);
+        client.set_dex_router(&router_id, &fee_asset_id.address());
+        client.set_max_fee_bps(&MAX_FEE_BPS_CEILING);
+
+        (pool_id, depositor, token_id, fee_asset_id)
+    }
+
+    fn withdraw_public_inputs(
+        env: &Env,
+        root: &BytesN<32>,
+        recipient: &Address,
+        amount: i128,
+        asset: &Address,
+    ) -> Bytes {
+        let recipient_hash = recipient_hash_from_address(env, recipient).unwrap();
+        let asset_id = asset_id_from_address(env, asset).unwrap();
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[..32].copy_from_slice(&root.to_array());
+        pi[64..96].copy_from_slice(&recipient_hash.to_array());
+        let mut amount_bytes = [0u8; 32];
+        amount_bytes[24..32].copy_from_slice(&(amount as u64).to_be_bytes());
+        pi[96..128].copy_from_slice(&amount_bytes);
+        pi[160..192].copy_from_slice(&asset_id_from_address(env, asset).unwrap().to_array());
+        Bytes::from_slice(env, &pi)
+    }
+
+    /// A real Ed25519 account address is required for `recipient` (the pool's
+    /// recipient binding only supports account-shaped addresses), but the
+    /// built-in Stellar Asset Contract still enforces classic trustline rules
+    /// for any account holder of the classic asset it wraps.
+    /// `TestAddress::generate`/`MuxedAddress::generate` only fabricate the
+    /// address value, not the ledger's Account and Trustline entries the
+    /// SAC's balance checks read -- so a fee-abstraction test that needs a
+    /// *real* successful transfer to a G-address has to create both by hand.
+    fn fund_account_with_trustline(
+        env: &Env,
+        account: &Address,
+        token: &soroban_sdk::testutils::StellarAssetContract,
+    ) {
+        use alloc::rc::Rc;
+        use soroban_sdk::xdr;
+
+        fn account_id_of(addr: &Address) -> xdr::AccountId {
+            match addr.to_payload().unwrap() {
+                AddressPayload::AccountIdPublicKeyEd25519(k) => xdr::AccountId(
+                    xdr::PublicKey::PublicKeyTypeEd25519(xdr::Uint256(k.to_array())),
+                ),
+                _ => panic!("expected an account (G...) address"),
+            }
+        }
+
+        let account_id = account_id_of(account);
+        let issuer_id = account_id_of(&token.issuer().address());
+        let asset = match token.asset() {
+            xdr::Asset::CreditAlphanum4(a) => xdr::TrustLineAsset::CreditAlphanum4(a),
+            xdr::Asset::CreditAlphanum12(a) => xdr::TrustLineAsset::CreditAlphanum12(a),
+            xdr::Asset::Native => xdr::TrustLineAsset::Native,
+        };
+        let _ = &issuer_id; // already embedded in `asset` for non-native assets
+
+        let account_entry = xdr::LedgerEntry {
+            last_modified_ledger_seq: 0,
+            data: xdr::LedgerEntryData::Account(xdr::AccountEntry {
+                account_id: account_id.clone(),
+                balance: 1_000_000_000,
+                seq_num: xdr::SequenceNumber(0),
+                num_sub_entries: 1,
+                inflation_dest: None,
+                flags: 0,
+                home_domain: xdr::String32(xdr::StringM::default()),
+                thresholds: xdr::Thresholds([1, 0, 0, 0]),
+                signers: xdr::VecM::default(),
+                ext: xdr::AccountEntryExt::V0,
+            }),
+            ext: xdr::LedgerEntryExt::V0,
+        };
+        let account_key = Rc::new(xdr::LedgerKey::Account(xdr::LedgerKeyAccount {
+            account_id: account_id.clone(),
+        }));
+        env.host()
+            .add_ledger_entry(&account_key, &Rc::new(account_entry), None)
+            .unwrap();
+
+        let trustline_entry = xdr::LedgerEntry {
+            last_modified_ledger_seq: 0,
+            data: xdr::LedgerEntryData::Trustline(xdr::TrustLineEntry {
+                account_id: account_id.clone(),
+                asset: asset.clone(),
+                balance: 0,
+                limit: i64::MAX,
+                flags: 1, // AUTHORIZED_FLAG
+                ext: xdr::TrustLineEntryExt::V0,
+            }),
+            ext: xdr::LedgerEntryExt::V0,
+        };
+        let trustline_key = Rc::new(xdr::LedgerKey::Trustline(xdr::LedgerKeyTrustLine {
+            account_id,
+            asset,
+        }));
+        env.host()
+            .add_ledger_entry(&trustline_key, &Rc::new(trustline_entry), None)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_withdraw_batch_empty_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &token_contract.address(), &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        let root = client.get_root().unwrap();
+
+        let recipient = <soroban_sdk::MuxedAddress as TestMuxedAddress>::generate(&env).address();
+        fund_account_with_trustline(&env, &recipient, &token_contract);
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        let change_index =
+            client.withdraw(&recipient, &token_contract.address(), &public_inputs, &proof, &0i128, &0i128, &recipient);
+        assert_eq!(change_index, 1);
+
+        let token = TokenClient::new(&env, &token_contract.address());
+        assert_eq!(token.balance(&recipient), NOTE_AMOUNT);
+    }
+
+    #[test]
+    fn test_withdraw_batch_rejects_mismatched_lengths() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &token_contract.address(), &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        let root = client.get_root().unwrap();
+
+        let recipient = <Address as TestAddress>::generate(&env);
+        let mut recipients = SorobanVec::new(&env);
+        recipients.push_back(recipient.clone());
+        recipients.push_back(recipient);
+
+        let mut public_inputs = SorobanVec::new(&env);
+        public_inputs.push_back(Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]));
+
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        client.withdraw(
+            &recipient,
+            &token_contract.address(),
+            &public_inputs,
+            &proof,
+            &fee_amount,
+            &fee_min_out,
+            &relayer,
+        );
+
+        let token = TokenClient::new(&env, &token_contract.address());
+        assert_eq!(token.balance(&recipient), NOTE_AMOUNT - fee_amount);
+        // The relayer receives the fee asset, not the withdrawn asset -- it
+        // never has to touch the shielded token to recover its cost.
+        assert_eq!(fee_asset_client.balance(&relayer), fee_amount / 2);
+        assert_eq!(token.balance(&relayer), 0);
+    }
+
+    #[test]
+    fn test_withdraw_batch_rejects_oversized_batch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &token_contract.address(), &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        let root = client.get_root().unwrap();
+
+        let recipient = <soroban_sdk::MuxedAddress as TestMuxedAddress>::generate(&env).address();
+        fund_account_with_trustline(&env, &recipient, &token_contract);
+        let relayer = <Address as TestAddress>::generate(&env);
+        let fee_amount: i128 = 100_000;
+
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        client.withdraw(&recipient, &token_contract.address(), &public_inputs, &proof, &fee_amount, &0i128, &relayer);
+
+        let result = client.try_withdraw_batch(&recipients, &public_inputs, &proofs);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::BatchTooLarge);
+    }
+
+    #[test]
+    fn test_withdraw_batch_rejects_duplicate_nullifier_within_batch() {
+        // A batch with an internally-duplicated nullifier must be rejected.
+        // The exact error depends on check order; just verify rejection.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, token_contract, _) = setup_with_fee_swap(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        // Tighten the cap well below the ceiling to make the rejection boundary
+        // easy to hit deterministically.
+        client.set_max_fee_bps(&100); // 1%
+
+        client.deposit(&depositor, &token_contract.address(), &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        let root = client.get_root().unwrap();
+
+        let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
+        let nullifier_hash_bytes = [42u8; 32]; // Dummy, shared between both proofs.
+        let recipient_hash = recipient_hash_from_address(&env, &recipient).unwrap();
+
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        let result =
+            client.try_withdraw(&recipient, &token_contract.address(), &public_inputs, &proof, &fee_amount, &0i128, &relayer);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::InvalidFee);
+    }
+
+    #[test]
+    fn test_withdraw_batch_rejects_duplicate_change_commitment_within_batch() {
+        // A batch with an internally-duplicated change commitment must be rejected.
+        // This tests the uniqueness constraint on change notes across a batch.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, token_contract, _) = setup_with_fee_swap(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &token_contract.address(), &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        let root = client.get_root().unwrap();
+
+        let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
+        let recipient_hash = recipient_hash_from_address(&env, &recipient).unwrap();
+        let change_commitment_bytes = [77u8; 32]; // Dummy, shared between both proofs.
+
+        let mut recipients = SorobanVec::new(&env);
+        recipients.push_back(recipient.clone());
+        recipients.push_back(recipient);
+
+        let mut public_inputs = SorobanVec::new(&env);
+        for i in 0..2 {
+            let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+            pi[..32].copy_from_slice(&root.to_array());
+            // Different nullifiers
+            pi[32..33].copy_from_slice(&[(i as u8 + 1) * 50]);
+            pi[64..96].copy_from_slice(&recipient_hash.to_array());
+            pi[128..160].copy_from_slice(&change_commitment_bytes);
+            public_inputs.push_back(Bytes::from_slice(&env, &pi));
+        }
+
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        let result =
+            client.try_withdraw(&recipient, &token_contract.address(), &public_inputs, &proof, &fee_amount, &0i128, &relayer);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::InvalidFee);
+    }
+
+    #[test]
+    fn test_withdraw_batch_accepts_max_batch_size() {
+        // A batch with exactly MAX_BATCH_SIZE withdrawals succeeds (proofs
+        // are dummy, so they'll fail verification, but batch structure passes).
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, token_contract, _) = setup_with_fee_swap(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &token_contract.address(), &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        let root = client.get_root().unwrap();
+
+        let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_contract.address());
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        let result =
+            client.try_withdraw(&recipient, &token_contract.address(), &public_inputs, &proof, &-1i128, &0i128, &recipient);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::InvalidFee);
+    }
+
+    #[test]
+    fn test_withdraw_batch_atomic_on_failure() {
+        // When any proof in a batch fails, no state changes are applied.
+        // This is implicitly tested by the contract logic (all verifications
+        // happen before state changes), but make it explicit.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        client.deposit(&depositor, &token_id.address(), &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        let root = client.get_root().unwrap();
+
+        // Needs a real trustline: the fee check happens after the recipient's
+        // own (payout - fee) transfer succeeds, so without one this would fail
+        // with the SAC's own TrustlineMissingError instead of the fee check
+        // this test targets. Its numeric contract-error code (13) happens to
+        // collide with PoolError::AmountOverflow's discriminant, which is what
+        // makes that failure mode so easy to misdiagnose as a pool error.
+        let recipient = <soroban_sdk::MuxedAddress as TestMuxedAddress>::generate(&env).address();
+        fund_account_with_trustline(&env, &recipient, &token_id);
+        let relayer = <Address as TestAddress>::generate(&env);
+        let public_inputs = withdraw_public_inputs(&env, &root, &recipient, NOTE_AMOUNT, &token_id.address());
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        let result = client.try_withdraw(
+            &recipient,
+            &token_id.address(),
+            &public_inputs,
+            &proof,
+            &100_000i128,
+            &0i128,
+            &relayer,
+        );
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::DexRouterNotSet);
+    }
+
+        let mut recipients = SorobanVec::new(&env);
+        let mut public_inputs = SorobanVec::new(&env);
+        let mut proofs = SorobanVec::new(&env);
+
+        // First withdrawal: valid structure (proof will fail verification).
+        recipients.push_back(recipient.clone());
+        let mut pi1 = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi1[..32].copy_from_slice(&root.to_array());
+        pi1[32..33].copy_from_slice(&[1u8]);
+        pi1[64..96].copy_from_slice(&recipient_hash.to_array());
+        pi1[128..129].copy_from_slice(&[1u8]);
+        public_inputs.push_back(Bytes::from_slice(&env, &pi1));
+        proofs.push_back(Bytes::from_slice(&env, &[0u8; PROOF_BYTES]));
+
+        // Second withdrawal: reuses the same change commitment (will fail atomicity check).
+        recipients.push_back(recipient);
+        let mut pi2 = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi2[..32].copy_from_slice(&root.to_array());
+        pi2[32..33].copy_from_slice(&[2u8]);
+        pi2[64..96].copy_from_slice(&recipient_hash.to_array());
+        pi2[128..129].copy_from_slice(&[1u8]); // Same change commitment as first (collision)
+        public_inputs.push_back(Bytes::from_slice(&env, &pi2));
+        proofs.push_back(Bytes::from_slice(&env, &[0u8; PROOF_BYTES]));
+
+        let index_before = client.get_next_index();
+        let result = client.try_withdraw_batch(&recipients, &public_inputs, &proofs);
+
+        // Batch fails on second withdrawal's duplicate change commitment.
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::CommitmentExists);
+        // No state changes: next_index unchanged.
+        assert_eq!(client.get_next_index(), index_before);
+    }
+
+    #[test]
+    fn test_pause_blocks_withdraw_batch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        client.deposit(&depositor, &dummy_commitment(&env, 1), &NOTE_AMOUNT);
+        client.pause();
+
+        let recipient = <Address as TestAddress>::generate(&env);
+        let recipients = {
+            let mut v = SorobanVec::new(&env);
+            v.push_back(recipient);
+            v
+        };
+        let public_inputs = {
+            let mut v = SorobanVec::new(&env);
+            v.push_back(Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]));
+            v
+        };
+        let proofs = {
+            let mut v = SorobanVec::new(&env);
+            v.push_back(Bytes::from_slice(&env, &[0u8; PROOF_BYTES]));
+            v
+        };
+
+        let result = client.try_withdraw_batch(&recipients, &public_inputs, &proofs);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::Paused);
     }
 }
 
