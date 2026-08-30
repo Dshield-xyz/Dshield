@@ -156,6 +156,11 @@ fn key_root_history_index() -> Symbol {
 fn key_commitment_by_index_prefix() -> Symbol {
     symbol_short!("cmi")
 }
+fn key_bridge_adapter() -> Symbol {
+    symbol_short!("bridge")
+}
+fn key_bridge_verifier() -> Symbol {
+    symbol_short!("bver")
 fn key_dex_router() -> Symbol {
     symbol_short!("dexrtr")
 }
@@ -292,6 +297,38 @@ struct WithdrawInputs {
     withdraw_amount: [u8; 32],
     change_commitment: [u8; 32],
     asset: [u8; 32],
+}
+
+/// The five field elements the bridge withdrawal circuit exposes:
+/// `root`, `nullifier_hash`, `destination_hash`, `withdraw_amount`,
+/// `change_commitment` (see circuits/bridge_withdrawal/src/main.nr).
+/// Same structure as WithdrawInputs but `destination_hash` replaces `recipient_hash`.
+struct BridgeWithdrawInputs {
+    root: [u8; 32],
+    nullifier_hash: [u8; 32],
+    destination_hash: [u8; 32],
+    withdraw_amount: [u8; 32],
+    change_commitment: [u8; 32],
+}
+
+fn parse_bridge_public_inputs(bytes: &Bytes) -> Result<BridgeWithdrawInputs, PoolError> {
+    if bytes.len() != PUBLIC_INPUT_BYTES {
+        return Err(PoolError::InvalidPublicInputs);
+    }
+    let mut buf = [0u8; PUBLIC_INPUT_BYTES as usize];
+    bytes.copy_into_slice(&mut buf);
+    let field = |i: usize| {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&buf[i * 32..(i + 1) * 32]);
+        out
+    };
+    Ok(BridgeWithdrawInputs {
+        root: field(0),
+        nullifier_hash: field(1),
+        destination_hash: field(2),
+        withdraw_amount: field(3),
+        change_commitment: field(4),
+    })
 }
 
 fn parse_public_inputs(bytes: &Bytes) -> Result<WithdrawInputs, PoolError> {
@@ -1504,7 +1541,8 @@ mod tests {
         Address, Env, Event,
     };
 
-    /// Stand-in note value for tests that only care about tree/nullifier
+#[cfg(test)]
+mod bridge_tests;    /// Stand-in note value for tests that only care about tree/nullifier
     /// mechanics. The pool no longer has a denomination, so every deposit has
     /// to name its own amount; tests that exercise varying values set their own.
     const NOTE_AMOUNT: i128 = 10_000_000;
