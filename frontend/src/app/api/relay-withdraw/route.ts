@@ -29,6 +29,15 @@ const PASSPHRASE =
 // max_fee_bps cap regardless of what this route requests.
 const RELAYER_FEE_STROOPS = process.env.RELAYER_FEE_STROOPS || "0";
 
+// Relayer fee bounds: prevent proofs with unreasonably high fees (user error
+// or malicious proof generation) and ensure the relayer is compensated enough
+// to cover gas. Denominated in stroops (1 USDC = 10^7 stroops).
+// Min: ~0.01 USDC, enough to cover typical transaction fees.
+// Max: 1 USDC, high enough for any reasonable withdrawal but low enough to
+// prevent user mistakes from burning significant value.
+const MIN_RELAYER_FEE_STROOPS = BigInt(100_000); // 0.01 USDC
+const MAX_RELAYER_FEE_STROOPS = BigInt(10_000_000); // 1 USDC
+
 function isStrKeyContract(id: string): boolean {
   try {
     return StellarSdk.StrKey.isValidContract(id);
@@ -43,18 +52,42 @@ function isStrKeyContract(id: string): boolean {
 const RATE_LIMIT = 20;
 const RATE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
+/**
+ * Extracts the relayer_fee (5th field element) from the circuit's public inputs.
+ * Public inputs are: root, nullifier_hash, recipient, withdraw_amount, relayer_fee, change_commitment.
+ */
+function extractRelayerFee(publicInputsHex: string): bigint {
+  if (publicInputsHex.length !== 192) {
+    // 6 field elements * 32 bytes/element * 2 hex chars/byte
+    throw new Error("Invalid public inputs length");
+  }
+  // relayer_fee is the 5th field (index 4), starting at byte 128 (hex char 256)
+  const feeHex = publicInputsHex.slice(256, 320);
+  return BigInt("0x" + feeHex);
+}
+
 export async function POST(req: NextRequest) {
   if (!RELAYER_SECRET) {
     return NextResponse.json(
-      { error: "Relayer is not configured (RELAYER_SECRET unset).", code: "no_relayer" },
+      {
+        error: "Relayer is not configured (RELAYER_SECRET unset).",
+        code: "no_relayer",
+      },
       { status: 503 },
     );
   }
 
-  const rl = await checkRateLimit(`relay:${clientKey(req.headers)}`, RATE_LIMIT, RATE_WINDOW_MS);
+  const rl = await checkRateLimit(
+    `relay:${clientKey(req.headers)}`,
+    RATE_LIMIT,
+    RATE_WINDOW_MS,
+  );
   if (!rl.allowed) {
     return NextResponse.json(
-      { error: "Too many relay requests. Try again later.", code: "rate_limited" },
+      {
+        error: "Too many relay requests. Try again later.",
+        code: "rate_limited",
+      },
       { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } },
     );
   }
@@ -72,14 +105,20 @@ export async function POST(req: NextRequest) {
     proof = String(body.proof || "");
     asset = String(body.asset || "");
   } catch {
-    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid request body." },
+      { status: 400 },
+    );
   }
 
   if (!isStrKeyContract(poolId)) {
     return NextResponse.json({ error: "Invalid pool id." }, { status: 400 });
   }
   if (!StellarSdk.StrKey.isValidEd25519PublicKey(recipient)) {
-    return NextResponse.json({ error: "Invalid recipient address." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid recipient address." },
+      { status: 400 },
+    );
   }
   if (!isStrKeyContract(asset)) {
     return NextResponse.json({ error: "Invalid asset id." }, { status: 400 });
@@ -87,6 +126,32 @@ export async function POST(req: NextRequest) {
   if (!/^[0-9a-fA-F]+$/.test(publicInputs) || !/^[0-9a-fA-F]+$/.test(proof)) {
     return NextResponse.json(
       { error: "publicInputs and proof must be hex strings." },
+      { status: 400 },
+    );
+  }
+
+  // Validate the relayer fee is within bounds before submitting.
+  let relayerFee: bigint;
+  try {
+    relayerFee = extractRelayerFee(publicInputs);
+  } catch (err) {
+    return NextResponse.json(
+      {
+        error: `Failed to parse relayer fee: ${err instanceof Error ? err.message : String(err)}`,
+      },
+      { status: 400 },
+    );
+  }
+
+  if (
+    relayerFee < MIN_RELAYER_FEE_STROOPS ||
+    relayerFee > MAX_RELAYER_FEE_STROOPS
+  ) {
+    return NextResponse.json(
+      {
+        error: `Relayer fee out of bounds. Must be between ${MIN_RELAYER_FEE_STROOPS} and ${MAX_RELAYER_FEE_STROOPS} stroops. Got: ${relayerFee}`,
+        code: "fee_out_of_bounds",
+      },
       { status: 400 },
     );
   }

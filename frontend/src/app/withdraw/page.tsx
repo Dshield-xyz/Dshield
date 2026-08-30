@@ -71,7 +71,8 @@ const STEP_LABELS: Record<WithdrawStep, string> = {
   idle: "",
   checking_nullifier: "Checking note status…",
   building_tree: "Syncing with the pool…",
-  generating_proof: "Generating your private proof — this can take about a minute…",
+  generating_proof:
+    "Generating your private proof — this can take about a minute…",
   signing: "Waiting for your signature…",
   submitting: "Sending to the network…",
   done: "Done!",
@@ -95,7 +96,7 @@ const PROGRESS_STEPS = [
 
 /**
  * Mints the change note for a spend: a fresh note worth whatever the payout
- * left behind.
+ * and relayer fee left behind.
  *
  * Its secrets are never derived from the note being spent -- the change note
  * outlives this withdrawal, and reusing the nullifier would make it unspendable
@@ -146,7 +147,9 @@ export default function WithdrawPage() {
   const [step, setStep] = useState<WithdrawStep>("idle");
   const [proofStage, setProofStage] = useState<ProofStage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(new Set());
+  const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(
+    new Set(),
+  );
   const [recipient, setRecipient] = useState("");
   // Map of note commitment -> custom recipient for multi-recipient batches.
   // Empty/missing means use the default recipient.
@@ -156,6 +159,9 @@ export default function WithdrawPage() {
   // spends each in full — there is no sensible way to split one figure across
   // notes of different sizes.
   const [partialAmount, setPartialAmount] = useState("");
+  // Relayer fee in stroops. Default to 0.05 USDC (500k stroops), a reasonable
+  // fee that covers gas costs without being excessive.
+  const [relayerFeeStroops, setRelayerFeeStroops] = useState("500000");
   const [batchResults, setBatchResults] = useState<NoteResult[] | null>(null);
   const [, refresh] = useReducer((x: number) => x + 1, 0);
   // Effective relayer-fee quote for the selected withdrawal, shown before the
@@ -172,7 +178,11 @@ export default function WithdrawPage() {
     if (!note) return;
     void saveNoteIfNew(note);
     setSelectedCommitments(new Set([note.commitment]));
-    history.replaceState(null, "", window.location.pathname + window.location.search);
+    history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.search,
+    );
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
 
@@ -227,15 +237,31 @@ export default function WithdrawPage() {
   const partialNote = selectedNotes.length === 1 ? selectedNotes[0] : null;
   const partialStroops = partialAmount.trim()
     ? usdcToStroops(partialAmount)
-    : partialNote?.amount ?? "0";
+    : (partialNote?.amount ?? "0");
   const partialExceedsNote =
     !!partialNote && BigInt(partialStroops) > BigInt(partialNote.amount);
   const partialIsZero =
-    !!partialNote && !!partialAmount.trim() && BigInt(partialStroops) <= BigInt(0);
+    !!partialNote &&
+    !!partialAmount.trim() &&
+    BigInt(partialStroops) <= BigInt(0);
   const partialInvalid = partialExceedsNote || partialIsZero;
+
+  // Validate relayer fee is reasonable.
+  const feeValue = BigInt(relayerFeeStroops || "0");
+  const MIN_FEE = BigInt(100_000); // 0.01 USDC
+  const MAX_FEE = BigInt(10_000_000); // 1 USDC
+  const feeOutOfBounds = feeValue < MIN_FEE || feeValue > MAX_FEE;
+
   const changeAfterPartial = partialNote
-    ? (BigInt(partialNote.amount) - BigInt(partialStroops)).toString()
+    ? (
+        BigInt(partialNote.amount) -
+        BigInt(partialStroops) -
+        feeValue
+      ).toString()
     : "0";
+  const feeExceedsNote =
+    partialNote &&
+    BigInt(partialStroops) + feeValue > BigInt(partialNote.amount);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -285,19 +311,24 @@ export default function WithdrawPage() {
     note: ShieldedNote,
     recipientAddr: string,
     withdrawStroops: string,
+    relayerFeeStroops: string,
     onStep: (s: WithdrawStep) => void,
   ): Promise<string> {
     const poolId = note.poolId || POOL_CONTRACT_ID;
-    if (!poolId) throw new Error("Pool address missing — refresh and try again.");
+    if (!poolId)
+      throw new Error("Pool address missing — refresh and try again.");
 
     const noteValue = BigInt(note.amount);
     const payout = BigInt(withdrawStroops);
-    if (payout < BigInt(0) || payout > noteValue) {
+    const fee = BigInt(relayerFeeStroops);
+    const totalOut = payout + fee;
+
+    if (payout < BigInt(0) || totalOut > noteValue) {
       throw new Error(
-        `This note is worth ${formatAmount(note.amount)} — you can't withdraw more than that.`,
+        `This note is worth ${formatAmount(note.amount)} — you can't withdraw more than that (including the relayer fee).`,
       );
     }
-    const changeValue = (noteValue - payout).toString();
+    const changeValue = (noteValue - totalOut).toString();
 
     onStep("checking_nullifier");
     const nullifierHash = await computeNullifierHash(note.nullifier);
@@ -338,14 +369,18 @@ export default function WithdrawPage() {
     }
 
     if (merkle.root.toLowerCase() !== onChainRoot.toLowerCase()) {
-      throw new Error("Your local data is out of sync with the network. Use “Re-sync from network” below and try again.");
+      throw new Error(
+        "Your local data is out of sync with the network. Use “Re-sync from network” below and try again.",
+      );
     }
 
     if (getUsdcSacId() && payout > BigInt(0)) {
       if (recipientAddr === address) {
         await ensureUsdcTrustline(address!, signTransaction);
       } else if (!(await hasUsdcTrustline(recipientAddr))) {
-        throw new Error(`Recipient can't receive USDC yet — ask them to add a USDC trustline.`);
+        throw new Error(
+          `Recipient can't receive USDC yet — ask them to add a USDC trustline.`,
+        );
       }
     }
 
@@ -363,6 +398,7 @@ export default function WithdrawPage() {
         amount: note.amount,
         asset: assetField,
         withdrawAmount: withdrawStroops,
+        relayerFee: relayerFeeStroops,
         changeNullifier: changeNote.nullifier,
         changeSecret: changeNote.secret,
         changeCommitment: changeNote.commitment,
@@ -640,7 +676,10 @@ export default function WithdrawPage() {
       clearDeposits(poolId);
       toast("Reloading deposit history from the network…");
       const synced = await syncDepositsFromChain(poolId);
-      toast(`Synced ${synced} deposit${synced !== 1 ? "s" : ""} — try your withdrawal again.`, "success");
+      toast(
+        `Synced ${synced} deposit${synced !== 1 ? "s" : ""} — try your withdrawal again.`,
+        "success",
+      );
     } catch (err) {
       toast(`Couldn't re-sync — ${friendlyError(err)}`, "error");
     } finally {
@@ -657,7 +696,9 @@ export default function WithdrawPage() {
     );
   }
 
-  const processingNote = batchResults?.find((r) => r.status === "processing")?.note;
+  const processingNote = batchResults?.find(
+    (r) => r.status === "processing",
+  )?.note;
 
   return (
     <PageShell>
@@ -695,7 +736,9 @@ export default function WithdrawPage() {
                   }
                   className="text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
                 >
-                  {selectedCommitments.size === activeNotes.length ? "Deselect all" : "Select all"}
+                  {selectedCommitments.size === activeNotes.length
+                    ? "Deselect all"
+                    : "Select all"}
                 </button>
               )}
             </div>
@@ -708,7 +751,11 @@ export default function WithdrawPage() {
               </p>
               <Link
                 href="/deposit"
-                className={buttonVariants({ variant: "outline", size: "sm", className: "mt-4" })}
+                className={buttonVariants({
+                  variant: "outline",
+                  size: "sm",
+                  className: "mt-4",
+                })}
               >
                 Make a deposit
               </Link>
@@ -720,7 +767,9 @@ export default function WithdrawPage() {
             <div className="mt-3 space-y-2">
               {activeNotes.map((note) => {
                 const selected = selectedCommitments.has(note.commitment);
-                const result = batchResults?.find((r) => r.note.commitment === note.commitment);
+                const result = batchResults?.find(
+                  (r) => r.note.commitment === note.commitment,
+                );
                 return (
                   <button
                     key={note.commitment}
@@ -743,7 +792,11 @@ export default function WithdrawPage() {
                           }`}
                         >
                           {selected && (
-                            <svg viewBox="0 0 16 16" fill="white" className="h-4 w-4">
+                            <svg
+                              viewBox="0 0 16 16"
+                              fill="white"
+                              className="h-4 w-4"
+                            >
                               <path d="M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z" />
                             </svg>
                           )}
@@ -782,11 +835,15 @@ export default function WithdrawPage() {
                       )}
                     </div>
                     <div className="ml-6 mt-1 flex gap-4 text-xs text-zinc-500">
-                      <span>{new Date(note.createdAt).toLocaleDateString()}</span>
+                      <span>
+                        {new Date(note.createdAt).toLocaleDateString()}
+                      </span>
                       <span>Leaf #{note.leafIndex}</span>
                     </div>
                     {result?.error && (
-                      <p className="ml-6 mt-1 text-xs text-red-400">{result.error}</p>
+                      <p className="ml-6 mt-1 text-xs text-red-400">
+                        {result.error}
+                      </p>
                     )}
                   </button>
                 );
@@ -876,7 +933,9 @@ export default function WithdrawPage() {
             )}
 
             <Card>
-              <h3 className="mb-3 text-sm font-medium text-zinc-400">Recipient Address</h3>
+              <h3 className="mb-3 text-sm font-medium text-zinc-400">
+                Recipient Address
+              </h3>
               <Input
                 type="text"
                 mono
@@ -910,7 +969,12 @@ export default function WithdrawPage() {
               fullWidth
               size="lg"
               onClick={handleBatchWithdraw}
-              disabled={isLoading || partialInvalid}
+              disabled={
+                isLoading ||
+                partialInvalid ||
+                feeOutOfBounds ||
+                !!feeExceedsNote
+              }
             >
               {isLoading
                 ? "Processing…"
@@ -940,8 +1004,9 @@ export default function WithdrawPage() {
           <div className="space-y-2">
             {batchResults && batchResults.length > 1 && (
               <p className="text-xs text-zinc-500">
-                Note {batchResults.findIndex((r) => r.status === "processing") + 1} of{" "}
-                {batchResults.length}
+                Note{" "}
+                {batchResults.findIndex((r) => r.status === "processing") + 1}{" "}
+                of {batchResults.length}
               </p>
             )}
             <ProgressSteps

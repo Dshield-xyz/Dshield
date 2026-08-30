@@ -92,8 +92,9 @@ async function generateProof(
 }
 
 /**
- * Proves a spend of one note: `withdrawAmount` of its `amount` is paid out and
- * the remainder is re-shielded into a new note under `changeNullifier` /
+ * Proves a spend of one note: `withdrawAmount` of its `amount` is paid out,
+ * `relayerFee` is paid to the relayer submitting the transaction, and the
+ * remainder is re-shielded into a new note under `changeNullifier` /
  * `changeSecret`.
  *
  * A change note is always produced, even for a full withdrawal where the
@@ -117,6 +118,7 @@ export async function proveWithdrawal(
     amount: string;
     asset: string;
     withdrawAmount: string;
+    relayerFee: string;
     changeNullifier: string;
     changeSecret: string;
     changeCommitment: string;
@@ -146,6 +148,7 @@ export async function proveWithdrawal(
       nullifier_hash: ensureHex(inputs.nullifierHash),
       recipient: ensureHex(inputs.recipientHash),
       withdraw_amount: decimal(inputs.withdrawAmount),
+      relayer_fee: decimal(inputs.relayerFee),
       change_commitment: ensureHex(inputs.changeCommitment),
       path_bits: inputs.pathBits.map(String),
       path_siblings: inputs.pathSiblings.map(ensureHex),

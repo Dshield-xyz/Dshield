@@ -136,13 +136,50 @@ A note commits to its value as
 compliance, and disclosure circuits use the same construction, so a valid
 Merkle-membership proof pins the private `amount` witness to the original note.
 
-The shielded-pool circuit passes `amount` and `withdraw_amount` through
-`constrain_u64`, verifies `withdraw_amount <= amount`, and commits the change
-for `amount - withdraw_amount`. The round-trip assertion in `constrain_u64` is
-load-bearing: a bare Noir `as u64` truncates without constraining the source.
-Without it, a near-modulus field value could wrap to a small integer and make
-field arithmetic disagree with the comparison. The pool also rejects public
-amount inputs with nonzero bytes above the low 64 bits instead of truncating.
+The shielded-pool circuit passes `amount`, `withdraw_amount`, and `relayer_fee`
+through `constrain_u64`, verifies `withdraw_amount + relayer_fee <= amount`, and
+commits the change for `amount - withdraw_amount - relayer_fee`. The round-trip
+assertion in `constrain_u64` is load-bearing: a bare Noir `as u64` truncates
+without constraining the source. Without it, a near-modulus field value could
+wrap to a small integer and make field arithmetic disagree with the comparison.
+The pool also rejects public amount inputs with nonzero bytes above the low 64
+bits instead of truncating.
+
+### Relayer fee
+
+The `relayer_fee` is a circuit-enforced public input that splits a withdrawal's
+value three ways: `payout + fee + change = amount`. The pool contract transfers
+the fee to `env.invoker()` (the transaction submitter, i.e., the relayer) in
+the same atomic operation as the payout. This ensures:
+
+1. **Verifiable compensation**: The fee amount is part of the proof's public
+   inputs, so a relayer cannot forge or inflate it post-proof-generation. A
+   proof committing to `relayer_fee = 0.05 USDC` will fail verification if the
+   relayer tries to claim `0.1 USDC` instead.
+
+2. **Bounded extraction**: The frontend and relayer API validate that
+   `MIN_RELAYER_FEE <= relayer_fee <= MAX_RELAYER_FEE` before submission,
+   preventing user mistakes (a typo setting a 100 USDC fee) and ensuring the
+   relayer is compensated enough to cover gas.
+
+3. **Privacy preservation**: The fee is a public input visible on-chain, the
+   same way `withdraw_amount` is. This does not compromise withdrawal unlinkability
+   — an observer still cannot tell which deposit funded this withdrawal — but it
+   does reveal that a relayer was paid a specific fee. If all withdrawals used
+   exactly the same fee, that uniformity would be observable; if fees vary, the
+   variation is visible but reveals nothing about deposit linkage.
+
+**What the fee does not leak**: The fee amount itself is independent of the note's
+total value (a 0.05 USDC fee could come from a 1 USDC or a 1000 USDC note) and
+does not reveal which deposit was spent. It is analogous to `withdraw_amount` in
+this respect: both are public outputs of the spend, but neither links the spend
+back to a specific deposit.
+
+**Incentive alignment**: Without this mechanism, running a relayer in production
+is a pure cost center with no on-chain compensation, making withdrawal availability
+dependent on subsidized or altruistic relayers. The fee ensures relayers are
+compensated for gas and operational costs, aligning incentives for continued
+availability.
 
 ## Recipient binding
 
@@ -302,8 +339,11 @@ successful spend. All withdrawals must use the same authoritative pool state.
 - Proves membership against the public root using a 20-level Merkle path and
   constrains each path selector to a bit.
 - Binds nullifier, secret, and amount into the spent leaf.
-- Enforces value conservation and a correctly formed change note.
+- Enforces three-way value conservation: `withdraw_amount + relayer_fee + change = amount`,
+  with all three components range-constrained to 64 bits.
 - Leaves address binding to the pool contract.
+- The `relayer_fee` is a circuit-enforced public input; a proof committing to
+  one fee value cannot be replayed with a different fee without failing verification.
 
 ### Compliance
 
