@@ -34,6 +34,9 @@ pub enum PoolError {
     InvalidAmount = 15,
     Paused = 16,
     NotAuthorized = 17,
+    BridgeAdapterNotSet = 18,
+    BridgeVerifierNotSet = 19,
+    DestinationMismatch = 20,
 }
 
 #[contractevent(topics = ["deposit"], data_format = "map")]
@@ -100,6 +103,12 @@ fn key_root_history_index() -> Symbol {
 }
 fn key_commitment_by_index_prefix() -> Symbol {
     symbol_short!("cmi")
+}
+fn key_bridge_adapter() -> Symbol {
+    symbol_short!("bridge")
+}
+fn key_bridge_verifier() -> Symbol {
+    symbol_short!("bver")
 }
 
 const TREE_DEPTH: u32 = 20;
@@ -211,6 +220,38 @@ struct WithdrawInputs {
     recipient_hash: [u8; 32],
     withdraw_amount: [u8; 32],
     change_commitment: [u8; 32],
+}
+
+/// The five field elements the bridge withdrawal circuit exposes:
+/// `root`, `nullifier_hash`, `destination_hash`, `withdraw_amount`,
+/// `change_commitment` (see circuits/bridge_withdrawal/src/main.nr).
+/// Same structure as WithdrawInputs but `destination_hash` replaces `recipient_hash`.
+struct BridgeWithdrawInputs {
+    root: [u8; 32],
+    nullifier_hash: [u8; 32],
+    destination_hash: [u8; 32],
+    withdraw_amount: [u8; 32],
+    change_commitment: [u8; 32],
+}
+
+fn parse_bridge_public_inputs(bytes: &Bytes) -> Result<BridgeWithdrawInputs, PoolError> {
+    if bytes.len() != PUBLIC_INPUT_BYTES {
+        return Err(PoolError::InvalidPublicInputs);
+    }
+    let mut buf = [0u8; PUBLIC_INPUT_BYTES as usize];
+    bytes.copy_into_slice(&mut buf);
+    let field = |i: usize| {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&buf[i * 32..(i + 1) * 32]);
+        out
+    };
+    Ok(BridgeWithdrawInputs {
+        root: field(0),
+        nullifier_hash: field(1),
+        destination_hash: field(2),
+        withdraw_amount: field(3),
+        change_commitment: field(4),
+    })
 }
 
 fn parse_public_inputs(bytes: &Bytes) -> Result<WithdrawInputs, PoolError> {
@@ -712,6 +753,189 @@ impl PoolContract {
         Ok(change_index)
     }
 
+    /// Bridge withdrawal: spends one note and sends the payout to a destination
+    /// on another chain via the configured bridge adapter.
+    ///
+    /// Similar to regular `withdraw` but:
+    /// 1. Uses a separate verifier (different VK for the bridge withdrawal circuit)
+    /// 2. Binds to `destination_hash` instead of `recipient_hash`
+    /// 3. Routes funds through the bridge adapter instead of direct transfer
+    /// 4. Change note still inserted in *this* pool (remainder stays on source chain)
+    ///
+    /// # Security
+    ///
+    /// The proof commits to `destination_hash = Poseidon2(chain_id, addr_left, addr_right)`,
+    /// which the bridge adapter will recompute and verify. This prevents:
+    /// - Front-running (cannot redirect to different address)
+    /// - Cross-chain replay (chain_id is part of the hash)
+    ///
+    /// # Trust Boundary
+    ///
+    /// The bridge adapter is a NEW trust assumption. It can:
+    /// - Censor withdrawals (refuse to bridge)
+    /// - Delay withdrawals
+    /// - Fail to deliver on destination chain (bridge protocol risk)
+    ///
+    /// Users must trust the bridge protocol and the admin who controls the adapter.
+    ///
+    /// # Arguments
+    /// * `chain_id` - Destination chain identifier (must match proof)
+    /// * `destination` - Recipient address on destination chain (encoding is chain-specific)
+    /// * `public_inputs` - Bridge withdrawal circuit public inputs (5 field elements)
+    /// * `proof_bytes` - Bridge withdrawal proof
+    ///
+    /// # Returns
+    /// Leaf index where change note was inserted
+    pub fn withdraw_bridge(
+        env: Env,
+        chain_id: u32,
+        destination: Bytes,
+        public_inputs: Bytes,
+        proof_bytes: Bytes,
+    ) -> Result<u32, PoolError> {
+        if proof_bytes.len() as usize != PROOF_BYTES {
+            return Err(PoolError::VerificationFailed);
+        }
+        if Self::is_paused(env.clone()) {
+            return Err(PoolError::Paused);
+        }
+        bump_instance(&env);
+
+        let inputs = parse_bridge_public_inputs(&public_inputs)?;
+        let nf_from_proof = BytesN::from_array(&env, &inputs.nullifier_hash);
+        let destination_from_proof = BytesN::from_array(&env, &inputs.destination_hash);
+        let change_commitment = BytesN::from_array(&env, &inputs.change_commitment);
+        let payout = amount_from_field(&inputs.withdraw_amount)?;
+
+        let nf_key = (key_nullifier_prefix(), nf_from_proof.clone());
+        if env.storage().persistent().has(&nf_key) {
+            return Err(PoolError::NullifierUsed);
+        }
+
+        let root_from_proof = BytesN::from_array(&env, &inputs.root);
+        if !env.storage().instance().has(&key_root()) {
+            return Err(PoolError::RootNotSet);
+        }
+
+        if !root_is_known(&env, &root_from_proof) {
+            return Err(PoolError::RootMismatch);
+        }
+
+        let cm_key = (key_commitment_prefix(), change_commitment.clone());
+        if env.storage().persistent().has(&cm_key) {
+            return Err(PoolError::CommitmentExists);
+        }
+        let mut next_index: u32 = env
+            .storage()
+            .instance()
+            .get(&key_next_index())
+            .unwrap_or(0u32);
+        if next_index >= MAX_LEAVES {
+            return Err(PoolError::TreeFull);
+        }
+
+        // Load bridge adapter and verifier
+        let bridge_adapter: Address = env
+            .storage()
+            .instance()
+            .get(&key_bridge_adapter())
+            .ok_or(PoolError::BridgeAdapterNotSet)?;
+        let bridge_verifier: Address = env
+            .storage()
+            .instance()
+            .get(&key_bridge_verifier())
+            .ok_or(PoolError::BridgeVerifierNotSet)?;
+
+        // Verify the proof with the bridge-specific verifier
+        verify_proof(&env, &bridge_verifier, public_inputs, proof_bytes)?;
+
+        let token_addr = load_token(&env)?;
+
+        // Mark nullifier spent and insert change note (checks-effects-interactions)
+        env.storage().persistent().set(&nf_key, &true);
+        bump_persistent(&env, &nf_key);
+
+        let change_index = next_index;
+        let zeroes = zeroes_for_tree(&env);
+        record_commitment(&env, change_index, &change_commitment);
+        let root = insert_commitment(&env, &zeroes, change_index, &change_commitment);
+        commit_root(&env, &root);
+        next_index = next_index.saturating_add(1);
+        env.storage().instance().set(&key_next_index(), &next_index);
+
+        // Route funds through bridge adapter if payout > 0
+        if payout > 0 {
+            // Approve bridge adapter to spend tokens
+            token::Client::new(&env, &token_addr).approve(
+                &env.current_contract_address(),
+                &bridge_adapter,
+                &payout,
+                &(env.ledger().sequence() + 100), // 100 ledgers ≈ 8 minutes
+            );
+
+            // Call bridge adapter's bridge_withdraw
+            // The adapter will:
+            // 1. Validate destination encoding for the chain
+            // 2. Recompute destination_hash and verify it matches the proof
+            // 3. Transfer tokens from pool to bridge protocol
+            // 4. Initiate cross-chain transfer
+            let mut args: SorobanVec<Val> = SorobanVec::new(&env);
+            args.push_back(chain_id.into_val(&env));
+            args.push_back(destination.into_val(&env));
+            args.push_back(payout.into_val(&env));
+            args.push_back(destination_from_proof.into_val(&env));
+            
+            env.try_invoke_contract::<Bytes, InvokeError>(
+                &bridge_adapter,
+                &Symbol::new(&env, "bridge_withdraw"),
+                args,
+            )
+            .map_err(|_| PoolError::VerificationFailed)?
+            .map_err(|_| PoolError::VerificationFailed)?;
+        }
+
+        WithdrawEvent {
+            nullifier_hash: &nf_from_proof,
+        }
+        .publish(&env);
+
+        Ok(change_index)
+    }
+
+    /// Admin-only: configure the bridge adapter contract address.
+    pub fn set_bridge_adapter(env: Env, adapter: Address) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+        env.storage().instance().set(&key_bridge_adapter(), &adapter);
+        Ok(())
+    }
+
+    /// Admin-only: configure the bridge withdrawal verifier (different VK than regular withdrawals).
+    pub fn set_bridge_verifier(env: Env, verifier: Address) -> Result<(), PoolError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&key_admin())
+            .ok_or(PoolError::NotAuthorized)?;
+        admin.require_auth();
+        bump_instance(&env);
+        env.storage().instance().set(&key_bridge_verifier(), &verifier);
+        Ok(())
+    }
+
+    pub fn get_bridge_adapter(env: Env) -> Option<Address> {
+        env.storage().instance().get(&key_bridge_adapter())
+    }
+
+    pub fn get_bridge_verifier(env: Env) -> Option<Address> {
+        env.storage().instance().get(&key_bridge_verifier())
+    }
+
     pub fn is_nullifier_used(env: Env, nullifier_hash: BytesN<32>) -> bool {
         let nf_key = (key_nullifier_prefix(), nullifier_hash);
         env.storage().persistent().has(&nf_key)
@@ -834,7 +1058,8 @@ mod tests {
         Address, Env, Event,
     };
 
-    /// Stand-in note value for tests that only care about tree/nullifier
+#[cfg(test)]
+mod bridge_tests;    /// Stand-in note value for tests that only care about tree/nullifier
     /// mechanics. The pool no longer has a denomination, so every deposit has
     /// to name its own amount; tests that exercise varying values set their own.
     const NOTE_AMOUNT: i128 = 10_000_000;
