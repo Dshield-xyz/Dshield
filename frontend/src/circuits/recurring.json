@@ -1,0 +1,40 @@
+{
+  "_comment": "STUB — replace with the real output of `nargo compile` in circuits/recurring. Copy the compiled artifact (circuits/recurring/target/recurring.json) here.",
+  "noir_version": "0.0.0",
+  "hash": "0",
+  "abi": {
+    "parameters": [
+      { "name": "root",                 "type": { "kind": "field" }, "visibility": "public" },
+      { "name": "note_nullifier_hash",  "type": { "kind": "field" }, "visibility": "public" },
+      { "name": "auth_commitment",      "type": { "kind": "field" }, "visibility": "public" },
+      { "name": "recipient",            "type": { "kind": "field" }, "visibility": "public" },
+      { "name": "max_amount",           "type": { "kind": "field" }, "visibility": "public" },
+      { "name": "period_secs",          "type": { "kind": "field" }, "visibility": "public" },
+      { "name": "max_uses",             "type": { "kind": "field" }, "visibility": "public" },
+      { "name": "change_commitment",    "type": { "kind": "field" }, "visibility": "public" },
+      { "name": "nullifier",            "type": { "kind": "field" }, "visibility": "private" },
+      { "name": "secret",               "type": { "kind": "field" }, "visibility": "private" },
+      { "name": "amount",               "type": { "kind": "field" }, "visibility": "private" },
+      { "name": "auth_nullifier",       "type": { "kind": "field" }, "visibility": "private" },
+      { "name": "change_nullifier",     "type": { "kind": "field" }, "visibility": "private" },
+      { "name": "change_secret",        "type": { "kind": "field" }, "visibility": "private" },
+      {
+        "name": "path_siblings",
+        "type": { "kind": "array", "length": 20, "type": { "kind": "field" } },
+        "visibility": "private"
+      },
+      {
+        "name": "path_bits",
+        "type": { "kind": "array", "length": 20, "type": { "kind": "field" } },
+        "visibility": "private"
+      }
+    ],
+    "return_type": null,
+    "error_types": {}
+  },
+  "bytecode": "",
+  "debug_symbols": "",
+  "file_map": {},
+  "names": ["main"],
+  "brillig_names": []
+}
