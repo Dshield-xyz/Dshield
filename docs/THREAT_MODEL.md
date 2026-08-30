@@ -4,6 +4,12 @@ This document separates properties enforced by DShield's Noir circuits from
 properties enforced by Soroban contracts and from operational assumptions. It
 describes the current variable-amount note design.
 
+The formal/symbolic CI harness in
+[FORMAL_VERIFICATION.md](FORMAL_VERIFICATION.md) checks the named circuit
+relations below against compiled Nargo artifacts. Its coverage is intentionally
+limited; it is a guardrail for invariant drift, not a substitute for an
+external audit.
+
 ## Security boundaries
 
 | Component | Enforced properties | External assumptions |
@@ -14,6 +20,11 @@ describes the current variable-amount note design.
 | `disclosure` circuit | KYC and note ownership plus `amount >= threshold`, without revealing the note amount. | The threshold's legal meaning is external policy. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
 | Compliance contract | Registered-KYC and approved-pool-root checks, proof verification, administrator authorization for registry changes, and timelock-only gating of admin/disclosure-VK changes. | The administrator is trusted to register correct hashes and pools. The configured timelock is a trusted deployment -- see [Timelock governance](#timelock-governance). |
 | Governance (timelock) contract | Queues a call (target, function, args) with a fixed delay set at deployment; executes only after the delay elapses and only if not cancelled; cancellation is admin-only. | The governance admin is trusted to queue only intended changes and to use cancellation responsibly -- see [Timelock governance](#timelock-governance). |
+| Pool contract | Known-root check, nullifier uniqueness, recipient-address binding, proof verification, change insertion, token transfer, and fee-carve-out bounds (`fee_amount <= payout` and `<= max_fee_bps`). | The configured verifier, token, and DEX router are trusted deployments. A relayer can censor or delay, but cannot redirect a valid withdrawal, and cannot charge a fee above the admin-configured (and hard-capped) `max_fee_bps` -- see [Fee abstraction](#fee-abstraction). |
+| `compliance` circuit | KYC-preimage knowledge, note ownership, equality of the disclosed and committed amounts, and 64-bit range. | KYC eligibility is an administrative policy decision. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
+| `disclosure` circuit | KYC and note ownership plus `amount >= threshold`, without revealing the note amount. | The threshold's legal meaning is external policy. The `auditor_key` public input is not checked against a registry -- see [Auditor-key binding](#auditor-key-binding). |
+| `view_disclosure` circuit | Knowledge of the `secret` behind a public `view_key`, and that the note it opens (with a private `nullifier`) is worth the disclosed public `amount` and a member of `merkle_root`. Never takes or outputs `nullifier` as a public value -- see [Viewing-key separation](#viewing-key-separation). | The recipient of `view_key` is trusted by the note holder to hold it as intended; nothing on-chain constrains who may be handed a viewing key. |
+| Compliance contract | Registered-KYC and approved-pool-root checks, proof verification, and administrator authorization for registry, pool, and key changes. `verify_view_disclosure` is the one verification entrypoint that does not gate on KYC -- a viewing key is a delegation, not a regulatory attestation. | The administrator is trusted to register correct hashes, pools, and verification keys. |
 | `hasher` circuit | One two-input Poseidon2 hash. | Domain separation and structure must be supplied correctly by callers. |
 
 ## Trust and data flow
@@ -40,6 +51,59 @@ flowchart LR
 The relayer is outside the cryptographic trust boundary. It sees public
 withdrawal data and can refuse to submit it, but cannot change the payout
 address while retaining a valid proof.
+
+## Fee abstraction
+
+Issue #149: a withdrawing caller never needs to hold or acquire the fee
+asset (e.g. XLM) themselves. The relayer recovers its Soroban resource-fee
+cost by carving a fee out of the payout and swapping it for the fee asset
+on-chain, inside `withdraw` itself, rather than being paid in the withdrawn
+asset directly or absorbing the cost.
+
+**What is proof-committed vs. contract-only.** The withdrawal circuit commits
+to a single `withdraw_amount` field; it has no concept of a fee split. The fee
+carve-out is entirely a contract-level accounting decision made *after* proof
+verification: `recipient_amount = payout - fee_amount`, where `fee_amount` is
+an ordinary (non-proof-bound) parameter to `withdraw`, exactly like
+`recipient` and `fee_recipient`. This means:
+
+- A malicious relayer can set `fee_amount` to anything up to the payout, the
+  same way it could already submit `recipient` incorrectly -- the pool does
+  not know or care who is "supposed" to charge what.
+- What bounds the damage is `max_fee_bps`, an admin-configured cap (itself
+  capped by a hard-coded `MAX_FEE_BPS_CEILING`, 5%) that `withdraw` enforces
+  against the proof-committed `payout` before any transfer happens. A relayer
+  can overcharge up to that ceiling; it cannot exceed it, and it cannot ever
+  redirect the *recipient's* remainder (only the frontend's own pre-signing
+  quote protects the user from a relayer charging the full allowed ceiling
+  instead of a fair market rate -- this is a UX/reputation check, not a
+  cryptographic one).
+
+**DEX-path liveness assumption.** The fee swap calls a configured,
+Soroswap-router-compatible contract (`set_dex_router`) via
+`swap_exact_tokens_for_tokens`. This introduces a new liveness dependency that
+did not previously exist in `withdraw`:
+
+- If no router/fee-asset is configured, `fee_amount > 0` withdrawals fail
+  with `DexRouterNotSet`; `fee_amount = 0` withdrawals are unaffected (the
+  original, pre-#149 code path).
+- If a swap path exists but has no liquidity, or slippage exceeds
+  `fee_min_out`, the swap -- and therefore the entire withdrawal -- reverts.
+  `fee_min_out` is the relayer's own quote (sourced via
+  `frontend/src/lib/stellar.ts`'s `quoteFeeSwap`), so a relayer that quotes
+  honestly bears this risk itself; a relayer that quotes badly makes its own
+  withdrawals fail more often, not the user's funds unsafe.
+- The router contract is a trusted dependency in the same sense the verifier
+  and token are: a malicious or buggy router could refuse to pay out, pay out
+  less than it received, or behave inconsistently with the interface this
+  contract assumes. It cannot, however, touch the recipient's own
+  `recipient_amount` transfer, which happens independently beforehand.
+
+**Approval scope.** The pool approves the router for exactly `fee_amount`,
+expiring one ledger past the swap's deadline, rather than a standing
+allowance -- a compromised or buggy router can only ever pull the one fee
+slice it was just approved for, not an arbitrary amount at an arbitrary later
+time.
 
 ## Amount integrity and value conservation
 
@@ -135,6 +199,41 @@ themselves trust assumptions this doesn't remove: a queued call is only as
 trustworthy as whoever queued it, and the delay is a visibility window, not
 a veto -- nothing on-chain stops the delay from elapsing and the call
 executing if nobody acts on what they saw queued.
+## Viewing-key separation
+
+Every note has a spend-capable secret pair, `(nullifier, secret)`, and a
+viewing key, `view_key = H(H(VIEW_DOMAIN, secret), 0)`, derived from `secret`
+alone (`frontend/src/lib/poseidon2.ts`'s `computeViewKey`, matching the
+`view_disclosure` circuit's `hash_view_key`). This is a deliberate asymmetry:
+
+- **What a viewing key exposes.** Handed to a third party (an auditor, a
+  bookkeeper, a co-signer) out of band, `view_key` lets that party confirm a
+  future `view_disclosure` proof concerns the note it was derived from, and
+  read the `amount` that proof discloses. It is a pure function of `secret`
+  and nothing else.
+- **What it cannot do.** `view_key` does not determine, and cannot be
+  inverted to recover, `nullifier` -- the two are independent random field
+  elements with no algebraic relationship. The `view_disclosure` circuit takes
+  `nullifier` only as a private witness to reconstruct the note's leaf for the
+  Merkle-membership check; it is never a public input, never output, and never
+  constrained against `view_key`, `amount`, or anything else public. A
+  verifier who receives a `view_disclosure` proof, its public inputs
+  (`merkle_root`, `view_key`, `amount`), and `view_key` itself therefore has no
+  public artifact from which to derive `nullifier`, and so no path to a valid
+  `shielded_pool` withdrawal proof, which requires `nullifier` as a witness.
+  `contracts/compliance/src/tests::test_view_disclosure_public_inputs_are_exactly_root_viewkey_amount`
+  pins the public-input schema to exactly those three fields, and
+  `frontend/src/lib/notes.test.ts`'s `deriveViewingKey` suite and
+  `frontend/src/lib/poseidon2.test.ts`'s `computeViewKey` suite assert the
+  derivation is a pure, nullifier-independent function of `secret`.
+- **What a viewing key is not.** It is not a compliance attestation -- unlike
+  `compliance`/`disclosure`, `verify_view_disclosure` does not check KYC
+  registration, because sharing read access with a bookkeeper or co-signer is
+  not a claim about the sharer's regulatory status. It is also not an access
+  grant enforced on-chain: nothing prevents a note holder from generating a
+  `view_disclosure` proof for a `view_key` they invented and never shared with
+  anyone, the same caveat [Auditor-key binding](#auditor-key-binding) already
+  notes for `auditor_key`.
 
 ## Nullifiers and replay protection
 
@@ -169,6 +268,17 @@ successful spend. All withdrawals must use the same authoritative pool state.
 - Does not establish the policy meaning of KYC status or the threshold.
 - Same unchecked `auditor_key` as compliance.
 
+### View disclosure
+
+- Binds the prover's `secret` to the public `view_key`.
+- Proves note membership and that the disclosed `amount` equals its committed
+  value, using `nullifier` only as a private witness -- see
+  [Viewing-key separation](#viewing-key-separation).
+- Not gated on KYC: a viewing key is a delegation to view, not a regulatory
+  attestation.
+- Carries the same "no registry" caveat as `auditor_key`: nothing on-chain
+  confirms `view_key` was actually shared with its intended recipient.
+
 ### Hasher
 
 The hasher is a compatibility primitive. Security properties such as domain
@@ -189,11 +299,18 @@ separation and note structure come from how callers chain its hashes.
   not a design assumption, in issue #63.
 - No registry constrains `auditor_key` to real auditors -- see
   [Auditor-key binding](#auditor-key-binding).
+- Users protect and retain their note secrets, and now also any viewing keys
+  they derive and the recipients they share them with -- see
+  [Viewing-key separation](#viewing-key-separation).
 - Frontend and relayer software encode public inputs exactly as contracts expect.
 - Public token transfers reveal deposit and withdrawal amounts and addresses;
   privacy breaks the link between them rather than hiding either event.
 - Poseidon2 implementations in Noir, the frontend, and Soroban remain
   byte-for-byte compatible.
+- A swap path from the withdrawn asset to the configured fee asset exists and
+  has enough liquidity at the moment of withdrawal -- see
+  [Fee abstraction](#fee-abstraction). Its absence fails the withdrawal
+  cleanly rather than compromising it.
 
 See [SECURITY.md](../SECURITY.md) for browser-storage, rate-limiting, reporting,
 and deployment limitations.

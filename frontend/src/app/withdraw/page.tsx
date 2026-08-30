@@ -10,7 +10,9 @@ import {
   hasUsdcTrustline,
   getUsdcSacId,
   relayWithdrawal,
+  fetchWithdrawFeeQuote,
   POOL_CONTRACT_ID,
+  type FeeQuote,
 } from "@/lib/stellar";
 import {
   getActiveNotes,
@@ -30,10 +32,12 @@ import {
   computeNullifierHash,
   computeRecipientHash,
   buildMerkleTree,
+  assetToField,
 } from "@/lib/poseidon2";
 import {
   syncDepositsFromChain,
   fetchCommitmentsFromChain,
+  fetchMerkleProofFromService,
 } from "@/lib/indexer";
 import { proveWithdrawal, type ProofStage } from "@/lib/prover";
 import { friendlyError } from "@/lib/errors";
@@ -105,16 +109,24 @@ const PROGRESS_STEPS = [
 async function buildChangeNote(
   poolId: string,
   changeValue: string,
+  asset: string,
 ): Promise<ShieldedNote> {
   const nullifier = generateRandomField();
   const secret = generateRandomField();
-  const commitment = await computeCommitment(nullifier, secret, changeValue);
+  const assetField = await assetToField(asset);
+  const commitment = await computeCommitment(
+    nullifier,
+    secret,
+    changeValue,
+    assetField,
+  );
   return {
     nullifier,
     secret,
     commitment: commitment.replace(/^0x/, ""),
     leafIndex: PENDING_LEAF_INDEX,
     amount: changeValue,
+    asset,
     spent: false,
     createdAt: Date.now(),
     poolId,
@@ -143,6 +155,11 @@ export default function WithdrawPage() {
   const [partialAmount, setPartialAmount] = useState("");
   const [batchResults, setBatchResults] = useState<NoteResult[] | null>(null);
   const [, refresh] = useReducer((x: number) => x + 1, 0);
+  // Effective relayer-fee quote for the selected withdrawal, shown before the
+  // user signs so "you never need XLM" is visibly true (issue #149). Fetched
+  // fresh whenever the selection changes; null means "no fee configured" (the
+  // withdrawal proceeds exactly as before this feature) rather than loading.
+  const [feeQuote, setFeeQuote] = useState<FeeQuote | null>(null);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -217,6 +234,28 @@ export default function WithdrawPage() {
     ? (BigInt(partialNote.amount) - BigInt(partialStroops)).toString()
     : "0";
 
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (selectedNotes.length === 0) {
+      setFeeQuote(null);
+      return;
+    }
+    const poolId = selectedNotes[0].poolId || POOL_CONTRACT_ID;
+    if (!poolId) {
+      setFeeQuote(null);
+      return;
+    }
+    let cancelled = false;
+    fetchWithdrawFeeQuote(poolId, selectedNotes[0].asset).then((quote) => {
+      if (!cancelled) setFeeQuote(quote);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCommitments]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
   /** How much of `note` this run should pay out. */
   function payoutFor(note: ShieldedNote): string {
     if (partialNote && note.commitment === partialNote.commitment) {
@@ -282,19 +321,28 @@ export default function WithdrawPage() {
     const rootBytes = StellarSdk.scValToNative(rootVal) as Buffer;
     const onChainRoot = "0x" + Buffer.from(rootBytes).toString("hex");
 
-    const chainCommitments = await fetchCommitmentsFromChain(poolId);
-    let commitments: string[];
-    if (chainCommitments && chainCommitments.length > 0) {
-      commitments = chainCommitments;
-    } else {
-      await syncDepositsFromChain(poolId);
-      commitments = getAllCommitments(note.poolId || POOL_CONTRACT_ID);
-      if (commitments.length === 0) {
-        throw new Error("Couldn't load the pool's deposit history. Use “Re-sync from network” below and try again.");
+    // Prefer a self-hosted indexer service if one is configured — it skips
+    // both the RPC round trips and the in-browser tree rebuild. Never a
+    // trust boundary: whatever it returns is checked against onChainRoot
+    // below exactly like the locally-rebuilt path is, so a stale or
+    // misbehaving service just falls through to direct RPC scanning.
+    let merkle = await fetchMerkleProofFromService(poolId, note.leafIndex);
+
+    if (!merkle) {
+      const chainCommitments = await fetchCommitmentsFromChain(poolId);
+      let commitments: string[];
+      if (chainCommitments && chainCommitments.length > 0) {
+        commitments = chainCommitments;
+      } else {
+        await syncDepositsFromChain(poolId);
+        commitments = getAllCommitments(note.poolId || POOL_CONTRACT_ID);
+        if (commitments.length === 0) {
+          throw new Error("Couldn't load the pool's deposit history. Use “Re-sync from network” below and try again.");
+        }
       }
+      merkle = await buildMerkleTree(commitments, note.leafIndex);
     }
 
-    const merkle = await buildMerkleTree(commitments, note.leafIndex);
     if (merkle.root.toLowerCase() !== onChainRoot.toLowerCase()) {
       throw new Error("Your local data is out of sync with the network. Use “Re-sync from network” below and try again.");
     }
@@ -311,13 +359,15 @@ export default function WithdrawPage() {
     setProofStage(null);
     const recipientHash = await computeRecipientHash(recipientAddr);
 
-    const changeNote = await buildChangeNote(poolId, changeValue);
+    const changeNote = await buildChangeNote(poolId, changeValue, note.asset);
+    const assetField = await assetToField(note.asset);
 
     const { proof, publicInputs } = await proveWithdrawal(
       {
         nullifier: note.nullifier,
         secret: note.secret,
         amount: note.amount,
+        asset: assetField,
         withdrawAmount: withdrawStroops,
         changeNullifier: changeNote.nullifier,
         changeSecret: changeNote.secret,
@@ -342,20 +392,32 @@ export default function WithdrawPage() {
     }
 
     onStep("submitting");
-    const relayed = await relayWithdrawal({ poolId, recipient: recipientAddr, publicInputs, proof });
+    const relayed = await relayWithdrawal({
+      poolId,
+      recipient: recipientAddr,
+      publicInputs,
+      proof,
+      asset: note.asset,
+    });
     if (relayed) {
       await settle();
       return relayed.hash;
     }
 
     onStep("signing");
+    // No relayer configured, so this is submitted directly by the user's
+    // wallet with no fee carve-out to abstract away.
     const tx = await buildContractCall(
       poolId,
       "withdraw",
       [
         StellarSdk.nativeToScVal(recipientAddr, { type: "address" }),
+        StellarSdk.nativeToScVal(note.asset, { type: "address" }),
         StellarSdk.xdr.ScVal.scvBytes(Buffer.from(publicInputs, "hex")),
         StellarSdk.xdr.ScVal.scvBytes(Buffer.from(proof, "hex")),
+        StellarSdk.nativeToScVal(BigInt(0), { type: "i128" }),
+        StellarSdk.nativeToScVal(BigInt(0), { type: "i128" }),
+        StellarSdk.nativeToScVal(recipientAddr, { type: "address" }),
       ],
       address!,
     );
@@ -687,6 +749,25 @@ export default function WithdrawPage() {
                 hint="Leave empty to withdraw to your connected wallet. Use a different address for unlinkable withdrawals."
               />
             </Card>
+
+            {feeQuote && BigInt(feeQuote.feeAmount) > BigInt(0) && (
+              <Card>
+                <h3 className="mb-2 text-sm font-medium text-zinc-400">
+                  Network Fee
+                </h3>
+                <p className="text-sm text-zinc-300">
+                  <span className="font-medium">
+                    {formatAmount(feeQuote.feeAmount)}
+                  </span>{" "}
+                  is deducted from your withdrawal and swapped for XLM to
+                  cover the network cost.
+                </p>
+                <p className="mt-1 text-xs text-zinc-600">
+                  You never need to hold XLM yourself — the swap happens
+                  on-chain as part of this withdrawal.
+                </p>
+              </Card>
+            )}
 
             <Button
               fullWidth
