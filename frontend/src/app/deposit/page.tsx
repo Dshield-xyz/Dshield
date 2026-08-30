@@ -64,16 +64,18 @@ const MAX_NOTE_STROOPS = (BigInt(2) ** BigInt(64) - BigInt(1)).toString();
 async function buildNote(
   poolId: string,
   amountStroops: string,
+  asset: string,
 ): Promise<ShieldedNote> {
   const nullifier = generateRandomField();
   const secret = generateRandomField();
-  const commitment = await computeCommitment(nullifier, secret, amountStroops);
+  const commitment = await computeCommitment(nullifier, secret, amountStroops, asset);
   return {
     nullifier,
     secret,
     commitment: commitment.replace(/^0x/, ""),
     leafIndex: PENDING_LEAF_INDEX,
     amount: amountStroops,
+    asset,
     spent: false,
     createdAt: Date.now(),
     poolId,
@@ -200,7 +202,7 @@ export default function DepositPage() {
       // The note's value is hashed into its commitment, so the amount passed to
       // the contract and the amount inside the commitment have to be the same
       // string. Both come from `stroops` for exactly that reason.
-      const note = await buildNote(poolId, stroops);
+      const note = await buildNote(poolId, stroops, getUsdcSacId() || "1");
 
       // Build the transaction (no signing yet)
       const tx = await buildContractCall(

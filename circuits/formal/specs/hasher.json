@@ -1,0 +1,26 @@
+{
+  "circuit": "hasher",
+  "source_path": "circuits/hasher/src/main.nr",
+  "artifact_candidates": [
+    "circuits/hasher/target/hasher.json",
+    "frontend/src/circuits/hasher.json"
+  ],
+  "abi": {
+    "public": [
+      "return"
+    ],
+    "private": [
+      "a",
+      "b"
+    ]
+  },
+  "properties": [
+    {
+      "id": "two-input-poseidon-relation",
+      "description": "The compatibility hasher exposes exactly Poseidon2::hash([a, b], 2) as the public result.",
+      "checks": [
+        "hasher-poseidon2-two-input"
+      ]
+    }
+  ]
+}

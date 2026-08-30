@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added note viewing keys: a note holder can now generate a read-only proof of a note's amount for a chosen auditor or bookkeeper, without exposing spend capability (#138). New `view_disclosure` circuit, `verify_view_disclosure` compliance contract entrypoint, `/audit` page for third-party verification, and a "Viewing Key" flow on the Compliance page.
 - Added CSV/JSON export of visible activity on the History page, for compliance and regulatory reporting
 - Added local development environment documentation template to README.md
 - Added frontend/.env.local.example configuration template

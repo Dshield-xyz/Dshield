@@ -10,7 +10,9 @@ import {
   hasUsdcTrustline,
   getUsdcSacId,
   relayWithdrawal,
+  fetchWithdrawFeeQuote,
   POOL_CONTRACT_ID,
+  type FeeQuote,
 } from "@/lib/stellar";
 import {
   getActiveNotes,
@@ -105,16 +107,18 @@ const PROGRESS_STEPS = [
 async function buildChangeNote(
   poolId: string,
   changeValue: string,
+  asset: string,
 ): Promise<ShieldedNote> {
   const nullifier = generateRandomField();
   const secret = generateRandomField();
-  const commitment = await computeCommitment(nullifier, secret, changeValue);
+  const commitment = await computeCommitment(nullifier, secret, changeValue, asset);
   return {
     nullifier,
     secret,
     commitment: commitment.replace(/^0x/, ""),
     leafIndex: PENDING_LEAF_INDEX,
     amount: changeValue,
+    asset,
     spent: false,
     createdAt: Date.now(),
     poolId,
@@ -143,6 +147,11 @@ export default function WithdrawPage() {
   const [partialAmount, setPartialAmount] = useState("");
   const [batchResults, setBatchResults] = useState<NoteResult[] | null>(null);
   const [, refresh] = useReducer((x: number) => x + 1, 0);
+  // Effective relayer-fee quote for the selected withdrawal, shown before the
+  // user signs so "you never need XLM" is visibly true (issue #149). Fetched
+  // fresh whenever the selection changes; null means "no fee configured" (the
+  // withdrawal proceeds exactly as before this feature) rather than loading.
+  const [feeQuote, setFeeQuote] = useState<FeeQuote | null>(null);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -216,6 +225,28 @@ export default function WithdrawPage() {
   const changeAfterPartial = partialNote
     ? (BigInt(partialNote.amount) - BigInt(partialStroops)).toString()
     : "0";
+
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (selectedNotes.length === 0) {
+      setFeeQuote(null);
+      return;
+    }
+    const poolId = selectedNotes[0].poolId || POOL_CONTRACT_ID;
+    if (!poolId) {
+      setFeeQuote(null);
+      return;
+    }
+    let cancelled = false;
+    fetchWithdrawFeeQuote(poolId).then((quote) => {
+      if (!cancelled) setFeeQuote(quote);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCommitments]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   /** How much of `note` this run should pay out. */
   function payoutFor(note: ShieldedNote): string {
@@ -311,13 +342,14 @@ export default function WithdrawPage() {
     setProofStage(null);
     const recipientHash = await computeRecipientHash(recipientAddr);
 
-    const changeNote = await buildChangeNote(poolId, changeValue);
+    const changeNote = await buildChangeNote(poolId, changeValue, note.asset);
 
     const { proof, publicInputs } = await proveWithdrawal(
       {
         nullifier: note.nullifier,
         secret: note.secret,
         amount: note.amount,
+        asset: note.asset,
         withdrawAmount: withdrawStroops,
         changeNullifier: changeNote.nullifier,
         changeSecret: changeNote.secret,
@@ -687,6 +719,25 @@ export default function WithdrawPage() {
                 hint="Leave empty to withdraw to your connected wallet. Use a different address for unlinkable withdrawals."
               />
             </Card>
+
+            {feeQuote && BigInt(feeQuote.feeAmount) > BigInt(0) && (
+              <Card>
+                <h3 className="mb-2 text-sm font-medium text-zinc-400">
+                  Network Fee
+                </h3>
+                <p className="text-sm text-zinc-300">
+                  <span className="font-medium">
+                    {formatAmount(feeQuote.feeAmount)}
+                  </span>{" "}
+                  is deducted from your withdrawal and swapped for XLM to
+                  cover the network cost.
+                </p>
+                <p className="mt-1 text-xs text-zinc-600">
+                  You never need to hold XLM yourself — the swap happens
+                  on-chain as part of this withdrawal.
+                </p>
+              </Card>
+            )}
 
             <Button
               fullWidth
