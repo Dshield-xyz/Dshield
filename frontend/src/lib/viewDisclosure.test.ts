@@ -30,6 +30,7 @@ function makeNote(overrides: Partial<ShieldedNote> = {}): ShieldedNote {
     commitment: "abcd1234",
     leafIndex: 0,
     amount: "1000000",
+    asset: "1",
     spent: false,
     createdAt: Date.now(),
     poolId: "POOL123",

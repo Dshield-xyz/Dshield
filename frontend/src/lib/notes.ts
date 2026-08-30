@@ -367,7 +367,18 @@ function encodeNoteCompact(note: ShieldedNote): string | null {
     const decoded = StellarSdk.StrKey.decodeContract(note.asset);
     assetBytes.set(new Uint8Array(decoded));
   } catch {
-    return null;
+    // Not a StrKey C-address — treat as a decimal or hex field element.
+    let assetBig: bigint;
+    try {
+      assetBig = BigInt(note.asset);
+    } catch {
+      return null;
+    }
+    // Store big-endian in 32 bytes
+    for (let i = 31; i >= 0; i--) {
+      assetBytes[i] = Number(assetBig & BigInt(0xff));
+      assetBig >>= BigInt(8);
+    }
   }
 
   const bytes = new Uint8Array(COMPACT_LENGTH);
@@ -430,7 +441,8 @@ function decodeNoteCompact(payload: string): ShieldedNote | null {
   try {
     asset = StellarSdk.StrKey.encodeContract(Buffer.from(assetBytes));
   } catch {
-    return null;
+    // Not a valid contract address — return the raw hex so the note is still usable.
+    asset = bytesToHex(assetBytes).replace(/^0+/, "") || "0";
   }
 
   return {

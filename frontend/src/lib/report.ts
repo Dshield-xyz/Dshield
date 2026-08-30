@@ -48,6 +48,7 @@ export async function buildComplianceReport(
     note.nullifier,
     note.secret,
     note.amount,
+    note.asset,
   );
   const nullifierHash = await computeNullifierHash(note.nullifier);
   const commitmentClean = commitment.replace(/^0x/, "").toLowerCase();
