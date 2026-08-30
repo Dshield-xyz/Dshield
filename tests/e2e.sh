@@ -164,24 +164,22 @@ section "Contract state tests"
 IDX=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local -- get_next_index 2>&1 | tail -1)
 [[ "$IDX" == "0" ]] && ok "get_next_index == 0" || err "get_next_index" "expected 0, got $IDX"
 
-TOKEN_CHECK=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local -- get_token 2>&1 | tail -1)
-TOKEN_CHECK="${TOKEN_CHECK%\"}"
-TOKEN_CHECK="${TOKEN_CHECK#\"}"
-[[ "$TOKEN_CHECK" == "$TOKEN_ID" ]] && ok "get_token == pool token" || err "get_token" "expected $TOKEN_ID, got $TOKEN_CHECK"
+TOKEN_SUPPORTED=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local -- is_asset_supported --asset "$TOKEN_ID" 2>&1 | tail -1)
+[[ "$TOKEN_SUPPORTED" == "true" ]] && ok "Token is supported by pool" || err "is_asset_supported" "expected true, got $TOKEN_SUPPORTED"
 
 # ─── Test: deposit ───
 section "Deposit test"
 
 COMMITMENT=$(printf '%064d' 12345)
 DEPOSIT_RESULT=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local --send=yes \
-  -- deposit --depositor "$E2E_ADDR" --commitment "$COMMITMENT" --amount "$NOTE_AMOUNT" 2>&1 | tail -1)
+  -- deposit --depositor "$E2E_ADDR" --asset "$TOKEN_ID" --commitment "$COMMITMENT" --amount "$NOTE_AMOUNT" 2>&1 | tail -1)
 [[ "$DEPOSIT_RESULT" == "0" ]] && ok "Deposit returned index 0" || err "Deposit" "expected 0, got $DEPOSIT_RESULT"
 
 # Notes carry their own value: a second, differently-sized deposit into the same
 # pool is what fixed denominations used to make impossible.
 COMMITMENT_2=$(printf '%064d' 54321)
 DEPOSIT_2=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local --send=yes \
-  -- deposit --depositor "$E2E_ADDR" --commitment "$COMMITMENT_2" --amount 3333333 2>&1 | tail -1)
+  -- deposit --depositor "$E2E_ADDR" --asset "$TOKEN_ID" --commitment "$COMMITMENT_2" --amount 3333333 2>&1 | tail -1)
 [[ "$DEPOSIT_2" == "1" ]] && ok "Second deposit of a different amount accepted" || err "Deposit (varied amount)" "expected 1, got $DEPOSIT_2"
 
 CM_IDX=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local \
@@ -189,7 +187,7 @@ CM_IDX=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network loc
 [[ "$CM_IDX" == "1" ]] && ok "get_commitment_index locates a note" || err "get_commitment_index" "expected 1, got $CM_IDX"
 
 ZERO_DEPOSIT=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local --send=yes \
-  -- deposit --depositor "$E2E_ADDR" --commitment "$(printf '%064d' 24680)" --amount 0 2>&1 || true)
+  -- deposit --depositor "$E2E_ADDR" --asset "$TOKEN_ID" --commitment "$(printf '%064d' 24680)" --amount 0 2>&1 || true)
 echo "$ZERO_DEPOSIT" | grep -qi "error\|fail\|InvalidAmount" && ok "Zero-amount deposit rejected" || err "Zero-amount deposit" "should have failed"
 
 IDX=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local -- get_next_index 2>&1 | tail -1)
@@ -202,7 +200,7 @@ ROOT=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local
 section "Duplicate deposit test"
 
 DUP_RESULT=$(stellar contract invoke --id "$POOL_ID" --source e2e-test --network local --send=yes \
-  -- deposit --depositor "$E2E_ADDR" --commitment "$COMMITMENT" --amount "$NOTE_AMOUNT" 2>&1 || true)
+  -- deposit --depositor "$E2E_ADDR" --asset "$TOKEN_ID" --commitment "$COMMITMENT" --amount "$NOTE_AMOUNT" 2>&1 || true)
 echo "$DUP_RESULT" | grep -qi "error\|fail\|CommitmentExists" && ok "Duplicate deposit rejected" || err "Duplicate deposit" "should have failed"
 
 # ─── Test: nullifier not used ───
