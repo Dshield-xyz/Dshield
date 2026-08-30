@@ -37,6 +37,11 @@ function getWorker(): Worker | null {
  * Runs proof generation in a Web Worker so the main thread (and the UI's
  * spinner/animations) stays responsive. Falls back to running inline when
  * Workers aren't available (SSR, unit tests).
+ *
+ * The circuits and the witness field mapping both come from @dshield/core, so
+ * the browser and the `dshield` CLI feed the exact same circuit an identical
+ * witness — only the execution host (Worker here, direct call in the CLI)
+ * differs.
  */
 async function generateProof(
   circuit: Record<string, unknown>,

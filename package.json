@@ -1,0 +1,11 @@
+{
+  "name": "dshield-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Root workspace for @dshield/core (shared logic) and @dshield/cli (the dshield CLI).",
+  "scripts": {
+    "test": "pnpm --filter @dshield/core --filter @dshield/cli test",
+    "typecheck": "pnpm --filter @dshield/core --filter @dshield/cli typecheck",
+    "dshield": "pnpm --filter @dshield/cli exec dshield"
+  }
+}

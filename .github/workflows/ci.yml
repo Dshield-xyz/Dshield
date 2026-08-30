@@ -248,6 +248,14 @@ jobs:
           export PATH="$HOME/.nargo/bin:$PATH"
           cd circuits/hasher && nargo compile
           cp target/hasher.json ../../frontend/src/circuits/
+          # @dshield/core owns the canonical hasher the app + CLI hash against.
+          cp target/hasher.json ../../packages/core/src/circuits/
+
+      # @dshield/core is linked into the app from source; its runtime deps
+      # (noir_js, bb.js, stellar-sdk) must be resolvable from packages/core, so
+      # install the root workspace too. This does not touch the app's own tree.
+      - name: Install workspace deps (@dshield/core)
+        run: pnpm install
 
       - name: Install dependencies
         working-directory: frontend
@@ -284,6 +292,14 @@ jobs:
           export PATH="$HOME/.nargo/bin:$PATH"
           cd circuits/hasher && nargo compile
           cp target/hasher.json ../../frontend/src/circuits/
+          # @dshield/core owns the canonical hasher the app + CLI hash against.
+          cp target/hasher.json ../../packages/core/src/circuits/
+
+      # @dshield/core is linked into the app from source; its runtime deps
+      # (noir_js, bb.js, stellar-sdk) must be resolvable from packages/core, so
+      # install the root workspace too. This does not touch the app's own tree.
+      - name: Install workspace deps (@dshield/core)
+        run: pnpm install
 
       - name: Install dependencies
         working-directory: frontend
