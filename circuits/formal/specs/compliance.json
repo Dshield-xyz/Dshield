@@ -1,0 +1,43 @@
+{
+  "circuit": "compliance",
+  "source_path": "circuits/compliance/src/main.nr",
+  "artifact_candidates": [
+    "circuits/compliance/target/compliance.json",
+    "frontend/src/circuits/compliance.json"
+  ],
+  "abi": {
+    "public": [
+      "merkle_root",
+      "kyc_hash",
+      "disclosed_amount",
+      "auditor_key"
+    ],
+    "private": [
+      "kyc_preimage",
+      "nullifier",
+      "secret",
+      "amount",
+      "path_siblings",
+      "path_bits"
+    ],
+    "arrays": {
+      "path_siblings": 20,
+      "path_bits": 20
+    }
+  },
+  "properties": [
+    {
+      "id": "proof-relation-correctness",
+      "description": "A valid proof binds the KYC preimage, note ownership, committed amount, and disclosed amount equality.",
+      "checks": [
+        "kyc-hash-asserted",
+        "hash-leaf-includes-amount",
+        "computed-root-asserted",
+        "u64-round-trip-range",
+        "disclosed-amount-u64-witness",
+        "amount-u64-witness",
+        "amount-equals-disclosed"
+      ]
+    }
+  ]
+}
