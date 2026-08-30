@@ -2,7 +2,7 @@
 use dshield_governance_auth::require_timelock;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, symbol_short, Address, Bytes, BytesN,
-    Env, InvokeError, IntoVal, Symbol, Val, Vec as SorobanVec,
+    Env, IntoVal, InvokeError, Symbol, Val, Vec as SorobanVec,
 };
 use ultrahonk_soroban_verifier::{UltraHonkVerifier, VkLoadError, PROOF_BYTES};
 
@@ -63,7 +63,6 @@ fn root_belongs_to_pool(env: &Env, pools: &SorobanVec<Address>, root: &BytesN<32
     }
     false
 }
-
 
 /// Decodes a 32-byte public-input field element back to u128, rejecting any
 /// value that doesn't fit (top 16 bytes must be zero) rather than silently
@@ -619,9 +618,7 @@ mod tests {
         let env = Env::default();
         let (contract_id, _admin, _timelock) = setup(&env);
         assert!(env.as_contract(&contract_id, || {
-            env.storage()
-                .instance()
-                .has(&ComplianceContract::key_vk())
+            env.storage().instance().has(&ComplianceContract::key_vk())
         }));
     }
 
