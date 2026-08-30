@@ -62,8 +62,9 @@ fn compute_root(leaf: Field, path_siblings: [Field; TREE_DEPTH], path_bits: [Fie
 }
 
 /// Spends one note of arbitrary value: pays `withdraw_amount` out to
-/// `recipient` and re-shields the remainder as a brand-new note that the pool
-/// contract inserts as a fresh leaf.
+/// `recipient`, `relayer_fee` to the relayer submitting the transaction, and
+/// re-shields the remainder as a brand-new note that the pool contract inserts
+/// as a fresh leaf.
 ///
 /// A change note is produced on *every* spend, including a full withdrawal
 /// where the remainder is zero. That is deliberate: the on-chain footprint of
@@ -75,6 +76,7 @@ pub fn main(
     nullifier_hash: pub Field,
     recipient: pub Field,
     withdraw_amount: pub Field,
+    relayer_fee: pub Field,
     change_commitment: pub Field,
     nullifier: Field,
     secret: Field,
@@ -84,12 +86,18 @@ pub fn main(
     path_siblings: [Field; TREE_DEPTH],
     path_bits: [Field; TREE_DEPTH],
 ) {
-    // Value conservation. Both sides are pinned to 64 bits first so the
-    // subtraction below cannot wrap around the field modulus.
+    // Value conservation. All three outputs (payout, fee, change) are pinned
+    // to 64 bits first so the arithmetic below cannot wrap around the field
+    // modulus.
     let amount_u64 = constrain_u64(amount);
     let withdraw_u64 = constrain_u64(withdraw_amount);
-    assert(withdraw_u64 <= amount_u64);
-    let change = amount - withdraw_amount;
+    let fee_u64 = constrain_u64(relayer_fee);
+    
+    // The sum of all outputs must not exceed the note's value.
+    let total_out = withdraw_u64 + fee_u64;
+    assert(total_out <= amount_u64);
+    
+    let change = amount - withdraw_amount - relayer_fee;
 
     // The spent note exists in the tree and carries exactly `amount`.
     let leaf = hash_leaf(nullifier, secret, amount);
