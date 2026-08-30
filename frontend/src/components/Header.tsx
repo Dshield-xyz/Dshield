@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { href: "/deposit", label: "Deposit" },
   { href: "/withdraw", label: "Withdraw" },
   { href: "/compliance", label: "Compliance" },
+  { href: "/audit", label: "Audit" },
   { href: "/history", label: "History" },
 ];
 

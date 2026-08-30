@@ -45,4 +45,11 @@ describe("accessibility (axe-core regression guard)", () => {
     const results = await axe(container);
     expect(results).toHaveNoViolations();
   });
+
+  it("audit page has no axe violations", async () => {
+    const { default: AuditPage } = await import("./audit/page");
+    const { container } = render(<AuditPage />);
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
 });

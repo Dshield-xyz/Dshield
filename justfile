@@ -43,6 +43,9 @@ build-circuits:
     @echo "Building disclosure circuit..."
     cd circuits/disclosure && nargo compile
     cd circuits/disclosure && bb write_vk --scheme ultra_honk --oracle_hash keccak --bytecode_path target/disclosure.json --output_path target --output_format bytes_and_fields
+    @echo "Building view_disclosure circuit..."
+    cd circuits/view_disclosure && nargo compile
+    cd circuits/view_disclosure && bb write_vk --scheme ultra_honk --oracle_hash keccak --bytecode_path target/view_disclosure.json --output_path target --output_format bytes_and_fields
     @echo "All circuits built."
 
 # Generate a test proof from the shielded_pool circuit
@@ -77,6 +80,17 @@ verify-compliance:
 verify-disclosure:
     cd circuits/disclosure && bb verify -s ultra_honk --oracle_hash keccak -k target/vk -p target/proof -i target/public_inputs
     @echo "Disclosure proof verified."
+
+# Generate a test proof from the view_disclosure circuit
+prove-view-disclosure:
+    cd circuits/view_disclosure && nargo execute
+    cd circuits/view_disclosure && bb prove --scheme ultra_honk --oracle_hash keccak --bytecode_path target/view_disclosure.json --witness_path target/view_disclosure.gz --output_path target --output_format bytes_and_fields
+    @echo "View-disclosure proof generated."
+
+# Verify view_disclosure proof locally (off-chain)
+verify-view-disclosure:
+    cd circuits/view_disclosure && bb verify -s ultra_honk --oracle_hash keccak -k target/vk -p target/proof -i target/public_inputs
+    @echo "View-disclosure proof verified."
 
 # Build Soroban contract WASM binaries
 build-contracts:
@@ -189,6 +203,11 @@ deploy network="local": build
     stellar contract invoke --id "$COMPLIANCE_ID" --source alice --network "$NETWORK" --send=yes \
         -- set_disclosure_vk --vk_bytes-file-path circuits/disclosure/target/vk >/dev/null
     echo "Disclosure VK set."
+
+    echo "Setting view-disclosure VK on compliance contract..."
+    stellar contract invoke --id "$COMPLIANCE_ID" --source alice --network "$NETWORK" --send=yes \
+        -- set_view_vk --vk_bytes-file-path circuits/view_disclosure/target/vk >/dev/null
+    echo "View-disclosure VK set."
 
     echo "Writing frontend/.env.local..."
     # Use alice as the dev wallet so the app deposits from the account that
