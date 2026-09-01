@@ -142,7 +142,7 @@ interface NoteResult {
 }
 
 export default function WithdrawPage() {
-  const { address, signTransaction } = useWallet();
+  const { address, signTransaction, isHardwareWallet } = useWallet();
   const { toast } = useToast();
   const [step, setStep] = useState<WithdrawStep>("idle");
   const [proofStage, setProofStage] = useState<ProofStage | null>(null);
@@ -1013,11 +1013,19 @@ export default function WithdrawPage() {
               label={
                 step === "generating_proof" && proofStage
                   ? PROOF_STAGE_LABELS[proofStage]
-                  : STEP_LABELS[step]
+                  : step === "signing" && isHardwareWallet
+                    ? "Confirm on your Ledger device…"
+                    : STEP_LABELS[step]
               }
               steps={PROGRESS_STEPS}
               current={step}
             />
+            {step === "signing" && isHardwareWallet && (
+              <p className="text-center text-xs text-brand-300">
+                Check your Ledger device and approve the transaction there —
+                this can take a few seconds.
+              </p>
+            )}
           </div>
         )}
       </div>

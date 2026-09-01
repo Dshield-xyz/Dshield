@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added Ledger hardware wallet support: the StellarWalletsKit Ledger module is registered alongside the existing browser wallets, deposit/withdraw show a "confirm on your device" state while awaiting a hardware signature, and hardware-specific failures (locked device, wrong app open, on-device rejection) get friendly, specific messages (#148)
+
 - Added `contracts/governance`, a minimal timelock contract: privileged admin changes (pool `set_verifier`/admin rotation, compliance `propose_admin`/`set_disclosure_vk`) must now be queued, wait out a configured delay, and be executed — or be cancelled by the admin before executing (#142)
 - Added `frontend/src/app/admin`, a Governance page showing queued/pending timelocked changes, their execution time, and execute/cancel actions (#142)
 - Added `scripts/rotate-timelocked.sh` for queuing, waiting out the delay for, and executing a timelocked admin change via the Stellar CLI (#142)
