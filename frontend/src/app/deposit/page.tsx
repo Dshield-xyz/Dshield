@@ -108,12 +108,15 @@ function ConfirmDeposit({
   amountStroops,
   estimatedFee,
   isLoading,
+  awaitingDevice,
   onCancel,
   onConfirm,
 }: {
   amountStroops: string;
   estimatedFee: string;
   isLoading: boolean;
+  /** True while a hardware wallet (Ledger) is being asked to sign. */
+  awaitingDevice: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -135,12 +138,18 @@ function ConfirmDeposit({
             {formatAmountBare(estimatedFee)} XLM
           </span>
         </p>
+        {awaitingDevice && (
+          <p className="mb-4 rounded-lg border border-brand-500/30 bg-brand-500/10 px-3 py-2 text-sm text-brand-300">
+            Check your Ledger device — approve the transaction there. This can
+            take a few seconds.
+          </p>
+        )}
         <div className="flex gap-4 justify-end">
           <Button variant="outline" onClick={onCancel} disabled={isLoading}>
             Cancel
           </Button>
           <Button onClick={onConfirm} disabled={isLoading}>
-            Confirm
+            {awaitingDevice ? "Confirm on your device…" : "Confirm"}
           </Button>
         </div>
       </div>
@@ -149,7 +158,7 @@ function ConfirmDeposit({
 }
 
 export default function DepositPage() {
-  const { address, signTransaction } = useWallet();
+  const { address, signTransaction, isHardwareWallet } = useWallet();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
   const [sessionNotes, setSessionNotes] = useState<ShieldedNote[]>([]);
@@ -600,6 +609,7 @@ export default function DepositPage() {
           amountStroops={confirmStroops}
           estimatedFee={estimatedFee}
           isLoading={isLoading}
+          awaitingDevice={isLoading && isHardwareWallet}
           onCancel={() => {
             // Discard the staged transaction and note: nothing was signed or
             // submitted, so these must not leak into a later confirmation.

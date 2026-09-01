@@ -354,6 +354,8 @@ flowchart TD
 ### Wallet Integration
 
 - Freighter Wallet
+- Ledger (hardware) Wallet
+- xBull, Lobstr, Hana, Albedo
 
 ### Storage
 

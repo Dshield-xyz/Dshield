@@ -6,6 +6,48 @@ export function friendlyError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   const lower = raw.toLowerCase();
 
+  // --- Hardware wallet (Ledger) failures ---
+  // Checked before the generic "user declined" cases (first below) because a
+  // device rejection is a distinct UX from a browser-extension decline.
+  if (
+    lower.includes("locked device") ||
+    lower.includes("device is locked") ||
+    lower.includes("please unlock") ||
+    lower.includes("unlock your device") ||
+    lower.includes("unlock your ledger")
+  )
+    return "Your Ledger is locked — unlock it and try again.";
+
+  // hw-app-str surfaces "wrong app" as a transport status code: 0x6d00 (INS
+  // not supported) or 0x6e00 (CLA not supported) when the Stellar app isn't
+  // the one open on the device.
+  if (
+    lower.includes("wrong app") ||
+    lower.includes("6d00") ||
+    lower.includes("6e00") ||
+    lower.includes("stellar app") ||
+    lower.includes("app is not open")
+  )
+    return "Open the Stellar app on your Ledger and try again.";
+
+  if (
+    lower.includes("condition of use") ||
+    lower.includes("denied by the user") ||
+    lower.includes("rejected on your device")
+  )
+    return "Cancelled — you declined the request on your Ledger device.";
+
+  if (
+    lower.includes("webusb") ||
+    lower.includes("no device selected") ||
+    lower.includes("device not found") ||
+    lower.includes("notfounderror") ||
+    lower.includes("ledger can not be used") ||
+    lower.includes("ledger wallets can not be used") ||
+    (lower.includes("transport") && lower.includes("ledger"))
+  )
+    return "Couldn't reach your Ledger device — connect it via USB, allow the browser to access it, and try again.";
+
   if (
     lower.includes("user declined") ||
     lower.includes("user rejected") ||
