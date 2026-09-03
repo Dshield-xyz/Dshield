@@ -258,6 +258,14 @@ cd "$PROJECT_ROOT"
 # ─── Test: Frontend build ───
 section "Frontend build test"
 
+# @dshield/core is linked into the app from source (frontend/next.config.ts:
+# transpilePackages) but its own package.json points at ./dist, built by its
+# "prepare" script. That script only runs when pnpm installs it as a real
+# workspace member -- i.e. a root-level install -- not from frontend's own,
+# separate pnpm workspace. Without this, frontend's build fails with
+# "Export X doesn't exist in target module" against an empty/missing dist.
+pnpm install 2>&1
+
 cd frontend
 pnpm install --frozen-lockfile 2>&1 || pnpm install 2>&1
 pnpm run build 2>&1 && ok "Frontend builds successfully" || err "Frontend build" "failed"
