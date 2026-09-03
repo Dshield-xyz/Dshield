@@ -3,7 +3,7 @@ import {
   buildWithdrawalWitness,
   buildComplianceWitness,
   buildDisclosureWitness,
-} from "./prover";
+} from "./prover.js";
 
 const WITHDRAWAL = {
   nullifier: "1",

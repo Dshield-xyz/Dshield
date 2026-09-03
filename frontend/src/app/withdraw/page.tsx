@@ -538,7 +538,7 @@ export default function WithdrawPage() {
         }
 
         const recipientHash = await computeRecipientHash(noteRecipient);
-        const changeNote = await buildChangeNote(poolId, changeValue);
+        const changeNote = await buildChangeNote(poolId, changeValue, note.asset);
         changeNotes.push(changeNote);
 
         proofInputsArray.push({

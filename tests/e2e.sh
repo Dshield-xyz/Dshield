@@ -149,13 +149,13 @@ ok "Verifier deployed: ${VERIFIER_ID:0:12}..."
 POOL_ID=$(stellar contract deploy \
   --wasm target/wasm32v1-none/release/dshield_pool.wasm \
   --source e2e-test --network local \
-  -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --admin "$E2E_ADDR")
+  -- --verifier "$VERIFIER_ID" --token "$TOKEN_ID" --admin "$E2E_ADDR" --timelock "$E2E_ADDR")
 ok "Pool deployed: ${POOL_ID:0:12}..."
 
 COMPLIANCE_ID=$(stellar contract deploy \
   --wasm target/wasm32v1-none/release/dshield_compliance.wasm \
   --source e2e-test --network local \
-  -- --vk_bytes-file-path circuits/compliance/target/vk --admin "$E2E_ADDR" --pools "[\"$POOL_ID\"]")
+  -- --vk_bytes-file-path circuits/compliance/target/vk --admin "$E2E_ADDR" --pools "[\"$POOL_ID\"]" --timelock "$E2E_ADDR")
 ok "Compliance deployed: ${COMPLIANCE_ID:0:12}..."
 
 # ─── Test: get_next_index starts at 0 ───

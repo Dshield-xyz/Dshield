@@ -25,7 +25,9 @@ import {
   computeCommitment,
   computeNullifierHash,
   computeRecipientHash,
+  computeAuthCommitment,
   buildMerkleTree,
+  assetToField,
 } from "@/lib/poseidon2";
 import { fetchCommitmentsFromChain, syncDepositsFromChain } from "@/lib/indexer";
 import { getAllCommitments } from "@/lib/deposits";
@@ -103,20 +105,39 @@ function nextOccurrenceLabel(periodSecs: number, lastTs: number): string {
   return `Next: ${new Date(nextMs).toLocaleString()}`;
 }
 
+/**
+ * Builds the RecurringAuth record to persist. At module scope, like
+ * buildChangeNote below, so the react-hooks/purity rule doesn't see
+ * Date.now() as part of the component's render.
+ */
+function buildAuthRecord(
+  fields: Omit<RecurringAuth, "createdAt" | "revoked">,
+): RecurringAuth {
+  return { ...fields, createdAt: Date.now(), revoked: false };
+}
+
 /** Build the change note for the authorization setup. */
 async function buildChangeNote(
   poolId: string,
   changeValue: string,
+  asset: string,
 ): Promise<ShieldedNote> {
   const nullifier = generateRandomField();
   const secret = generateRandomField();
-  const commitment = await computeCommitment(nullifier, secret, changeValue);
+  const assetField = await assetToField(asset);
+  const commitment = await computeCommitment(
+    nullifier,
+    secret,
+    changeValue,
+    assetField,
+  );
   return {
     nullifier,
     secret,
     commitment: commitment.replace(/^0x/, ""),
     leafIndex: PENDING_LEAF_INDEX,
     amount: changeValue,
+    asset,
     spent: false,
     createdAt: Date.now(),
     poolId,
@@ -221,7 +242,7 @@ export default function RecurringPage() {
         commitments = getAllCommitments(selectedNote.poolId || POOL_CONTRACT_ID);
         if (commitments.length === 0) {
           throw new Error(
-            "Couldn't load the pool's deposit history. Use "Re-sync from network" and try again.",
+            "Couldn't load the pool's deposit history. Use \"Re-sync from network\" and try again.",
           );
         }
       }
@@ -243,7 +264,7 @@ export default function RecurringPage() {
       const changeValue = (
         BigInt(selectedNote.amount) - BigInt(maxAmountStroops)
       ).toString();
-      const changeNote = await buildChangeNote(poolId, changeValue);
+      const changeNote = await buildChangeNote(poolId, changeValue, selectedNote.asset);
 
       // Auth nullifier: a fresh random secret for this authorization.
       const authNullifier = generateRandomField();
@@ -251,7 +272,6 @@ export default function RecurringPage() {
       // Compute the auth commitment locally so we can save the record
       // before submitting.  The circuit computes the same hash in-circuit.
       // hash_auth = H(H(H(H(H(RECA, auth_nullifier), recipient), max_amount), period_secs), max_uses)
-      const { computeAuthCommitment } = await import("@/lib/poseidon2");
       const authCommitmentHex = await computeAuthCommitment(
         authNullifier,
         recipientHash,
@@ -285,7 +305,7 @@ export default function RecurringPage() {
 
       // Save the auth record and change note BEFORE submitting — if the tab
       // closes after submission but before this, the change note is lost.
-      const authRecord: RecurringAuth = {
+      const authRecord = buildAuthRecord({
         authCommitment,
         authNullifier,
         recipient: recipientAddr,
@@ -294,9 +314,7 @@ export default function RecurringPage() {
         maxUses: maxUsesNum,
         changeCommitment: changeNote.commitment,
         poolId,
-        createdAt: Date.now(),
-        revoked: false,
-      };
+      });
       await saveRecurringAuth(authRecord);
       await saveNote(changeNote);
 
@@ -307,6 +325,7 @@ export default function RecurringPage() {
         recipient: recipientAddr,
         publicInputs,
         proof,
+        asset: selectedNote.asset,
       }).catch(() => null);
 
       if (!relayed) {

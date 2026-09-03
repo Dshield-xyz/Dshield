@@ -188,12 +188,18 @@ export default function DepositPage() {
    * transaction, extracts the fee, and presents a confirmation UI before the
    * wallet is prompted.
    */
-  async function handleDeposit() {
-    if (!address || !poolId || !amountValid || !assetId) return;
+  async function handleDeposit(overrideAmount?: string, skipTopUp = false) {
+    // The on-ramp flow (startOnRamp below) supplies its own delivered
+    // amount and doesn't require the manually-typed field to be filled in;
+    // a manual deposit falls back to that field via `amountStroops`.
+    const stroops = overrideAmount ? usdcToStroops(overrideAmount) : amountStroops;
+    const stroopsValid =
+      BigInt(stroops) > BigInt(0) && BigInt(stroops) <= BigInt(MAX_NOTE_STROOPS);
+    if (!address || !poolId || !assetId) return;
+    if (overrideAmount ? !stroopsValid : !amountValid) return;
 
     setIsLoading(true);
     setSessionNotes([]);
-    const stroops = depositStroops;
 
     try {
       // --- Pre-sign setup (trustline, faucet) ---
@@ -426,7 +432,7 @@ export default function DepositPage() {
         <Button
           fullWidth
           size="lg"
-          onClick={handleDeposit}
+          onClick={() => handleDeposit()}
           disabled={isLoading || !poolId || !assetId || !amountValid}
         >
           {isLoading

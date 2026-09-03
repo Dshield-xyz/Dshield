@@ -6,6 +6,7 @@ const LEAF_DOMAIN = "0x4c454146";
 const NULLIFIER_DOMAIN = "0x4e554c4c";
 const KYC_DOMAIN = "0x4b5943";
 const VIEW_DOMAIN = "0x56494557";
+const RECURRING_DOMAIN = "0x52454341"; // "RECA" (RECurring Authorization)
 
 let noirInstance: InstanceType<typeof Noir> | null = null;
 
@@ -71,6 +72,32 @@ export async function computeCommitment(
   const withSecret = await poseidon2Hash(domainAndNullifier, toField(secret));
   const withAmount = await poseidon2Hash(withSecret, toAmountField(amount));
   return poseidon2Hash(withAmount, toField(asset));
+}
+
+/**
+ * Recurring-authorization commitment:
+ * H(H(H(H(H(RECA, auth_nullifier), recipient), max_amount), period_secs), max_uses).
+ *
+ * Matches circuits/recurring's `hash_auth` exactly -- see that circuit for
+ * the field-by-field rationale. `recipient` is the same recipient-hash
+ * encoding as `computeRecipientHash`; `max_amount`/`period_secs`/`max_uses`
+ * are decimal strings (or bigint), matching the circuit's u64/u32 fields.
+ */
+export async function computeAuthCommitment(
+  authNullifier: string,
+  recipient: string,
+  maxAmount: string | bigint,
+  periodSecs: string | bigint,
+  maxUses: string | bigint,
+): Promise<string> {
+  const domainAndNullifier = await poseidon2Hash(
+    RECURRING_DOMAIN,
+    toField(authNullifier),
+  );
+  const withRecipient = await poseidon2Hash(domainAndNullifier, toField(recipient));
+  const withMaxAmount = await poseidon2Hash(withRecipient, toAmountField(maxAmount));
+  const withPeriod = await poseidon2Hash(withMaxAmount, toAmountField(periodSecs));
+  return poseidon2Hash(withPeriod, toAmountField(maxUses));
 }
 
 export async function computeNullifierHash(nullifier: string): Promise<string> {

@@ -5,7 +5,7 @@ import {
   computeNullifierHash,
   buildMerkleTree,
   normalizeField,
-} from "./poseidon2";
+} from "./poseidon2.js";
 
 const ZERO_32 = "0x" + "00".repeat(32);
 const KNOWN_ZERO_HASH =

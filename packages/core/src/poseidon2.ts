@@ -1,5 +1,5 @@
 import { Noir } from "@noir-lang/noir_js";
-import hasherCircuit from "./circuits/hasher.json";
+import hasherCircuit from "./circuits/hasher.json" with { type: "json" };
 
 // Domain separation tags for Poseidon2 hashing (must match circuit definitions)
 const LEAF_DOMAIN = "0x4c454146";

@@ -8,7 +8,7 @@ import {
   generateRandomField,
   PENDING_LEAF_INDEX,
   type ShieldedNote,
-} from "./notes";
+} from "./notes.js";
 
 const POOL = "CCPH4ECWWCOE2MN52QSMXJEVKRDLZVJIEQ4BXMHSSKMPP27BHGSKXABV";
 

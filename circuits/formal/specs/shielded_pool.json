@@ -11,6 +11,7 @@
       "nullifier_hash",
       "recipient",
       "withdraw_amount",
+      "relayer_fee",
       "change_commitment",
       "asset"
     ],
@@ -31,13 +32,14 @@
   "properties": [
     {
       "id": "value-conservation",
-      "description": "A valid spend must prove amount and withdraw_amount are 64-bit values, withdraw_amount <= amount, and the new change commitment carries amount - withdraw_amount.",
+      "description": "A valid spend must prove amount, withdraw_amount and relayer_fee are 64-bit values, withdraw_amount + relayer_fee <= amount, and the new change commitment carries amount - withdraw_amount - relayer_fee.",
       "checks": [
         "u64-round-trip-range",
         "withdraw-amount-u64-witness",
         "amount-u64-witness",
-        "withdraw-lte-amount",
-        "change-is-amount-minus-withdraw",
+        "relayer-fee-u64-witness",
+        "outputs-lte-amount",
+        "change-is-amount-minus-withdraw-and-fee",
         "change-commitment-uses-change"
       ]
     },

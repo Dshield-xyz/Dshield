@@ -30,5 +30,10 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    // Orphaned by PR #167: never had a working "./poseidon" counterpart, and
+    // isn't imported anywhere. See the NOTE at the top of the file.
+    "src/lib/bridge.ts"
+  ]
 }

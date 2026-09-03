@@ -1,5 +1,5 @@
-import { computeCommitment, computeNullifierHash } from "./poseidon2";
-import type { ShieldedNote } from "./notes";
+import { computeCommitment, computeNullifierHash } from "./poseidon2.js";
+import type { ShieldedNote } from "./notes.js";
 
 export interface ComplianceReport {
   network: string;

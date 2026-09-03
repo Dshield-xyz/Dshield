@@ -97,8 +97,11 @@ const checkers = {
   "u64-round-trip-range": (s) => s.includes("fnconstrain_u64(v:Field)->u64{letnarrowed=vasu64;assert(narrowedasField==v);narrowed}"),
   "withdraw-amount-u64-witness": (s) => s.includes("letwithdraw_u64=constrain_u64(withdraw_amount);"),
   "amount-u64-witness": (s) => s.includes("letamount_u64=constrain_u64(amount);"),
-  "withdraw-lte-amount": (s) => s.includes("assert(withdraw_u64<=amount_u64);"),
-  "change-is-amount-minus-withdraw": (s) => s.includes("letchange=amount-withdraw_amount;"),
+  "relayer-fee-u64-witness": (s) => s.includes("letfee_u64=constrain_u64(relayer_fee);"),
+  "outputs-lte-amount": (s) =>
+    s.includes("lettotal_out=withdraw_u64+fee_u64;") && s.includes("assert(total_out<=amount_u64);"),
+  "change-is-amount-minus-withdraw-and-fee": (s) =>
+    s.includes("letchange=amount-withdraw_amount-relayer_fee;"),
   "change-commitment-uses-change": (s) => s.includes("letexpected_change=hash_leaf(change_nullifier,change_secret,change,asset);") && s.includes("assert(expected_change==change_commitment);"),
   "hash-leaf-includes-amount": (s) => s.includes("fnhash_leaf(nullifier:Field,secret:Field,amount:Field,asset:Field)->Field{hash2(hash2(hash2(hash2(LEAF_DOMAIN,nullifier),secret),amount),asset)}"),
   "spent-leaf-uses-amount": (s) => s.includes("letleaf=hash_leaf(nullifier,secret,amount,asset);"),
@@ -205,13 +208,18 @@ function runSelfTest(specs) {
 
   const mutations = [
     {
-      name: "withdraw comparison",
-      from: "assert(withdraw_u64 <= amount_u64);",
-      to: "assert(withdraw_u64 <= withdraw_u64);"
+      name: "outputs comparison",
+      from: "assert(total_out <= amount_u64);",
+      to: "assert(total_out <= total_out);"
+    },
+    {
+      name: "fee omitted from outputs",
+      from: "let total_out = withdraw_u64 + fee_u64;",
+      to: "let total_out = withdraw_u64;"
     },
     {
       name: "change arithmetic",
-      from: "let change = amount - withdraw_amount;",
+      from: "let change = amount - withdraw_amount - relayer_fee;",
       to: "let change = amount;"
     },
     {

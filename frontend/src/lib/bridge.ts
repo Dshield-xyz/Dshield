@@ -1,5 +1,12 @@
 /**
- * Cross-chain bridge withdrawal utilities for DShield
+ * Cross-chain bridge withdrawal utilities for DShield.
+ *
+ * NOTE: unused and not wired into any page. PR #167 added this alongside the
+ * contract's bridge scaffolding (contracts/pool/src/lib.rs) and bridge_tests.rs,
+ * but never a `withdraw_bridge` entry point or a `poseidon2` module with the
+ * 3-argument hash this file expects -- neither side of the feature has ever
+ * built. Left in place, unexported from the app, for whoever picks the
+ * feature back up; see the matching NOTE on `bridge_tests` in the contract.
  */
 
 import * as StellarSdk from "@stellar/stellar-sdk";

@@ -1,7 +1,7 @@
-import poolCircuit from "./circuits/shielded_pool.json";
-import complianceCircuit from "./circuits/compliance.json";
-import disclosureCircuit from "./circuits/disclosure.json";
-import { runProof, type ProofResult, type ProofStage } from "./prover-core";
+import poolCircuit from "./circuits/shielded_pool.json" with { type: "json" };
+import complianceCircuit from "./circuits/compliance.json" with { type: "json" };
+import disclosureCircuit from "./circuits/disclosure.json" with { type: "json" };
+import { runProof, type ProofResult, type ProofStage } from "./prover-core.js";
 
 export type { ProofResult, ProofStage };
 

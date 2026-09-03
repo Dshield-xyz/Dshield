@@ -5,11 +5,7 @@ import { fetchCommitmentsFromChain, lookupNoteTxs } from "./indexer";
 import { type ShieldedNote } from "./notes";
 import { getNetworkLabel } from "./explorer";
 import { formatAmountBare } from "./format";
-import {
-  computeReportIdentity,
-  formatReportText,
-  type ComplianceReport,
-} from "@dshield/core/report";
+import { formatReportText, type ComplianceReport } from "@dshield/core/report";
 
 // The report shape + text renderer are shared with the CLI via @dshield/core;
 // re-exported here so the app keeps importing them from `@/lib/report`.
@@ -43,6 +39,10 @@ export async function buildComplianceReport(
   );
   const nullifierHash = await computeNullifierHash(note.nullifier);
   const commitmentClean = commitment.replace(/^0x/, "").toLowerCase();
+  // The recomputed commitment must match the note's own recorded commitment,
+  // or the note was tampered with (or its amount/asset edited) after minting.
+  const integrityOk =
+    commitmentClean === note.commitment.replace(/^0x/, "").toLowerCase();
 
   // Deposit confirmation: is the commitment in the pool's authoritative list?
   const chainCommitments = await fetchCommitmentsFromChain(poolId);
