@@ -28,6 +28,17 @@ overrides:
   acorn: "8.17.0"
   minimatch: "10.0.1"
   electron-to-chromium: "1.5.396"
+  # toml (GHSA-82x6-q7mm-w9cf uncontrolled recursion, GHSA-v5mp-jgw5-2x6j
+  # prototype pollution) via @stellar/stellar-sdk -> @trezor/*, and
+  # stream-json (GHSA-528h-pc64-c93x quadratic-time filters) via
+  # @hot-wallet/sdk -> @solana/web3.js -> jayson. Neither vulnerable line
+  # (toml 3.x, stream-json 1.x) ever got a same-major patch, so -- unlike
+  # the pins above -- these necessarily cross majors to the first patched
+  # release. Both are parser-only leaves inside optional hardware/Solana
+  # wallet connectors this app doesn't drive directly, so the regression
+  # surface is narrow even without a way to exercise those wallets here.
+  toml: "^4.2.0"
+  stream-json: "^3.5.0"
 
 allowBuilds:
   '@reown/appkit': true
