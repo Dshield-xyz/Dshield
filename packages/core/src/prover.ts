@@ -15,7 +15,20 @@ export interface WithdrawalProofInputs {
   nullifier: string;
   secret: string;
   amount: string;
+  /**
+   * Field element of the SEP-41 asset the note is denominated in, as produced
+   * by `assetToField`. Bound into the leaf, so a proof for one asset can never
+   * open a note of another.
+   */
+  asset: string;
   withdrawAmount: string;
+  /**
+   * Slice of the note paid to whoever submits the transaction, in the note's
+   * base units. Pass "0" for a self-submitted withdrawal. It is a circuit input
+   * either way — the constraint is `withdrawAmount + relayerFee + change =
+   * amount`, so omitting it does not mean "no fee", it means no witness.
+   */
+  relayerFee: string;
   changeNullifier: string;
   changeSecret: string;
   changeCommitment: string;
@@ -31,6 +44,8 @@ export interface ComplianceProofInputs {
   nullifier: string;
   secret: string;
   amount: string;
+  /** Asset field of the note being disclosed; part of its leaf commitment. */
+  asset: string;
   auditorKey: string;
   merkleRoot: string;
   kycHash: string;
@@ -44,6 +59,8 @@ export interface DisclosureProofInputs {
   nullifier: string;
   secret: string;
   amount: string;
+  /** Asset field of the note being disclosed; part of its leaf commitment. */
+  asset: string;
   auditorKey: string;
   merkleRoot: string;
   kycHash: string;
@@ -64,12 +81,14 @@ export function buildWithdrawalWitness(
     nullifier: ensureHex(inputs.nullifier),
     secret: ensureHex(inputs.secret),
     amount: decimal(inputs.amount),
+    asset: ensureHex(inputs.asset),
     change_nullifier: ensureHex(inputs.changeNullifier),
     change_secret: ensureHex(inputs.changeSecret),
     root: ensureHex(inputs.root),
     nullifier_hash: ensureHex(inputs.nullifierHash),
     recipient: ensureHex(inputs.recipientHash),
     withdraw_amount: decimal(inputs.withdrawAmount),
+    relayer_fee: decimal(inputs.relayerFee),
     change_commitment: ensureHex(inputs.changeCommitment),
     path_bits: inputs.pathBits.map(String),
     path_siblings: inputs.pathSiblings.map(ensureHex),
@@ -84,6 +103,7 @@ export function buildComplianceWitness(
     nullifier: ensureHex(inputs.nullifier),
     secret: ensureHex(inputs.secret),
     amount: decimal(inputs.amount),
+    asset: ensureHex(inputs.asset),
     auditor_key: ensureHex(inputs.auditorKey),
     merkle_root: ensureHex(inputs.merkleRoot),
     kyc_hash: ensureHex(inputs.kycHash),
@@ -101,6 +121,7 @@ export function buildDisclosureWitness(
     nullifier: ensureHex(inputs.nullifier),
     secret: ensureHex(inputs.secret),
     amount: decimal(inputs.amount),
+    asset: ensureHex(inputs.asset),
     auditor_key: ensureHex(inputs.auditorKey),
     merkle_root: ensureHex(inputs.merkleRoot),
     kyc_hash: ensureHex(inputs.kycHash),

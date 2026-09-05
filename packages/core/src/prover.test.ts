@@ -9,7 +9,9 @@ const WITHDRAWAL = {
   nullifier: "1",
   secret: "2",
   amount: "1000000",
+  asset: "0xb",
   withdrawAmount: "400000",
+  relayerFee: "0",
   changeNullifier: "8",
   changeSecret: "9",
   changeCommitment: "0xa",
@@ -26,16 +28,27 @@ describe("buildWithdrawalWitness", () => {
       nullifier: "0x1",
       secret: "0x2",
       amount: "1000000",
+      asset: "0xb",
       change_nullifier: "0x8",
       change_secret: "0x9",
       root: "0x3",
       nullifier_hash: "0x4",
       recipient: "0x5",
       withdraw_amount: "400000",
+      relayer_fee: "0",
       change_commitment: "0xa",
       path_bits: ["0", "1"],
       path_siblings: ["0x6", "0x7"],
     });
+  });
+
+  it("passes the relayer fee as a decimal too", () => {
+    // The fee falls into the same decimal-vs-hex trap as the amount: the
+    // circuit constrains withdraw + fee + change == amount, so a fee Noir reads
+    // as a different number than the contract does makes the change commitment
+    // disagree and the proof fail.
+    const witness = buildWithdrawalWitness({ ...WITHDRAWAL, relayerFee: "0x64" });
+    expect(witness.relayer_fee).toBe("100");
   });
 
   it("passes amounts as plain decimals, never hex", () => {
@@ -58,6 +71,7 @@ describe("buildComplianceWitness / buildDisclosureWitness", () => {
     nullifier: "2",
     secret: "3",
     amount: "1000000",
+    asset: "0xb",
     auditorKey: "4",
     merkleRoot: "0x5",
     kycHash: "6",

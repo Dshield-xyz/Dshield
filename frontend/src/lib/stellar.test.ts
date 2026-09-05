@@ -10,6 +10,7 @@ async function loadStellar(issuer = "") {
   vi.resetModules();
   process.env.NEXT_PUBLIC_USDC_ISSUER = issuer;
   process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE = PASSPHRASE;
+  delete process.env.NEXT_PUBLIC_DEV_SECRET_KEY;
   return await import("./stellar");
 }
 
@@ -29,45 +30,75 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("getUsdcAsset / getUsdcSacId", () => {
-  it("returns null when no issuer is configured", async () => {
-    const s = await loadStellar("");
-    expect(s.getUsdcAsset()).toBeNull();
-    expect(s.getUsdcSacId()).toBeNull();
+describe("classicAssetForContract", () => {
+  it("finds the classic asset a configured SAC address wraps", async () => {
+    // A SAC's contract id is a hash of the asset, so it can't be reversed. The
+    // app keeps the code:issuer pairs it knows precisely so it can still open a
+    // trustline for one.
+    const s = await loadStellar(ISSUER);
+    const sacId = new StellarSdk.Asset("USDC", ISSUER).contractId(PASSPHRASE);
+    const asset = s.classicAssetForContract(sacId);
+    expect(asset?.getCode()).toBe("USDC");
+    expect(asset?.getIssuer()).toBe(ISSUER);
   });
 
-  it("derives the deterministic SAC id matching the SDK", async () => {
+  it("returns null for an asset this deployment doesn't know", async () => {
     const s = await loadStellar(ISSUER);
-    const expected = new StellarSdk.Asset("USDC", ISSUER).contractId(PASSPHRASE);
-    expect(s.getUsdcSacId()).toBe(expected);
-    // Sanity: a contract (C...) strkey.
-    expect(StellarSdk.StrKey.isValidContract(s.getUsdcSacId()!)).toBe(true);
+    expect(s.classicAssetForContract(TOKEN_ID)).toBeNull();
+  });
+
+  it("returns null when no classic asset is configured at all", async () => {
+    const s = await loadStellar("");
+    expect(s.classicAssetForContract(TOKEN_ID)).toBeNull();
   });
 });
 
-describe("faucetUsdc", () => {
-  it("no-ops (no request) when no asset is configured", async () => {
-    const s = await loadStellar("");
+describe("hasTrustline", () => {
+  it("treats native XLM as always holdable, with no network call", async () => {
+    // An account needs no trustline for XLM, so probing one would only add a
+    // round trip that can fail spuriously.
+    const s = await loadStellar(ISSUER);
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    await s.faucetUsdc(ISSUER, 100);
+    const nativeSac = StellarSdk.Asset.native().contractId(PASSPHRASE);
+    expect(await s.hasTrustline(nativeSac, ISSUER)).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+});
 
-  it("POSTs the address and amount to /api/faucet", async () => {
+describe("faucetAsset", () => {
+  it("POSTs the address, asset and amount to /api/faucet", async () => {
     const s = await loadStellar(ISSUER);
     const fetchMock = vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ hash: "h" }) });
     vi.stubGlobal("fetch", fetchMock);
 
-    await s.faucetUsdc(ISSUER, BigInt(100));
+    expect(await s.faucetAsset(TOKEN_ID, ISSUER, BigInt(100))).toBe(true);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/faucet");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({ address: ISSUER, amount: "100" });
+    expect(JSON.parse(init.body)).toEqual({
+      address: ISSUER,
+      asset: TOKEN_ID,
+      amount: "100",
+    });
+  });
+
+  it("reports no faucet rather than throwing when none is available", async () => {
+    // 503 (no issuer key for this asset) and 403 (mainnet) both mean "fund the
+    // wallet yourself", which the caller turns into an explanation instead of
+    // an error.
+    const s = await loadStellar(ISSUER);
+    for (const status of [503, 403]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({ ok: false, status, json: async () => ({}) }),
+      );
+      expect(await s.faucetAsset(TOKEN_ID, ISSUER, BigInt(100))).toBe(false);
+    }
   });
 
   it("throws with the server error message on a failed response", async () => {
@@ -80,7 +111,42 @@ describe("faucetUsdc", () => {
         json: async () => ({ error: "trustline missing" }),
       }),
     );
-    await expect(s.faucetUsdc(ISSUER, BigInt(100))).rejects.toThrow("trustline missing");
+    await expect(s.faucetAsset(TOKEN_ID, ISSUER, BigInt(100))).rejects.toThrow(
+      "trustline missing",
+    );
+  });
+});
+
+describe("isMainnet / getDevKeypair", () => {
+  async function loadOnNetwork(passphrase: string, devSecret: string) {
+    vi.resetModules();
+    process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE = passphrase;
+    process.env.NEXT_PUBLIC_DEV_SECRET_KEY = devSecret;
+    return await import("./stellar");
+  }
+
+  const DEV_SECRET = StellarSdk.Keypair.random().secret();
+
+  it("recognises the public network as mainnet", async () => {
+    const s = await loadOnNetwork(StellarSdk.Networks.PUBLIC, "");
+    expect(s.isMainnet()).toBe(true);
+  });
+
+  it("does not treat a test network as mainnet", async () => {
+    const s = await loadOnNetwork(PASSPHRASE, "");
+    expect(s.isMainnet()).toBe(false);
+  });
+
+  it("ignores a dev signing key on mainnet", async () => {
+    // NEXT_PUBLIC_* is inlined into the client bundle, so honouring this key
+    // against real funds would publish a spending key to every visitor.
+    const s = await loadOnNetwork(StellarSdk.Networks.PUBLIC, DEV_SECRET);
+    expect(s.getDevKeypair()).toBeNull();
+  });
+
+  it("still honours a dev signing key on a test network", async () => {
+    const s = await loadOnNetwork(PASSPHRASE, DEV_SECRET);
+    expect(s.getDevKeypair()?.secret()).toBe(DEV_SECRET);
   });
 });
 

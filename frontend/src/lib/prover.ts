@@ -194,7 +194,11 @@ export async function proveWithdrawalBatch(
     nullifier: string;
     secret: string;
     amount: string;
+    /** Asset field of the note being spent; bound into its leaf. */
+    asset: string;
     withdrawAmount: string;
+    /** Slice of the note paid to the submitter; "0" when self-submitted. */
+    relayerFee: string;
     changeNullifier: string;
     changeSecret: string;
     changeCommitment: string;
@@ -206,7 +210,10 @@ export async function proveWithdrawalBatch(
   }>,
   onProgress?: (note: number, stage: ProofStage) => void,
 ): Promise<ProofResult[]> {
-  // Generate all proofs in parallel.
+  // Generate all proofs in parallel. The witness must name every circuit
+  // parameter — `asset` and `relayer_fee` included — because Noir matches the
+  // witness to the ABI by name and aborts on a missing one. See
+  // @dshield/core's witness-abi test, which pins this shape to the circuit.
   const proofPromises = inputsArray.map((inputs, idx) =>
     generateProof(
       poolCircuit as Record<string, unknown>,
@@ -214,12 +221,14 @@ export async function proveWithdrawalBatch(
         nullifier: ensureHex(inputs.nullifier),
         secret: ensureHex(inputs.secret),
         amount: decimal(inputs.amount),
+        asset: ensureHex(inputs.asset),
         change_nullifier: ensureHex(inputs.changeNullifier),
         change_secret: ensureHex(inputs.changeSecret),
         root: ensureHex(inputs.root),
         nullifier_hash: ensureHex(inputs.nullifierHash),
         recipient: ensureHex(inputs.recipientHash),
         withdraw_amount: decimal(inputs.withdrawAmount),
+        relayer_fee: decimal(inputs.relayerFee),
         change_commitment: ensureHex(inputs.changeCommitment),
         path_bits: inputs.pathBits.map(String),
         path_siblings: inputs.pathSiblings.map(ensureHex),

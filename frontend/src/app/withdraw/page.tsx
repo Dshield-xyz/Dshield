@@ -6,9 +6,8 @@ import {
   buildContractCall,
   submitTransaction,
   queryContract,
-  ensureUsdcTrustline,
-  hasUsdcTrustline,
-  getUsdcSacId,
+  ensureTrustline,
+  hasTrustline,
   relayWithdrawal,
   fetchWithdrawFeeQuote,
   POOL_CONTRACT_ID,
@@ -43,11 +42,12 @@ import { proveWithdrawal, proveWithdrawalBatch, type ProofStage } from "@/lib/pr
 import { friendlyError } from "@/lib/errors";
 import { resolvePendingLeafIndexes, syncSpentNotes } from "@/lib/sync";
 import {
-  formatAmount,
-  formatAmountBare,
+  toBaseUnits,
+  fromBaseUnits,
+  formatUnits,
   truncateMiddle,
-  usdcToStroops,
 } from "@/lib/format";
+import { useAssets, resolveAsset, type AssetInfo } from "@/lib/assets";
 import Link from "next/link";
 import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
@@ -144,6 +144,10 @@ interface NoteResult {
 export default function WithdrawPage() {
   const { address, signTransaction } = useWallet();
   const { toast } = useToast();
+  // Symbols and precision for the pool's allow-listed assets. A note that
+  // names an asset no longer on the list still renders (resolveAsset falls
+  // back), because it stays spendable if the admin re-adds it.
+  const { assets } = useAssets();
   const [step, setStep] = useState<WithdrawStep>("idle");
   const [proofStage, setProofStage] = useState<ProofStage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -159,9 +163,6 @@ export default function WithdrawPage() {
   // spends each in full — there is no sensible way to split one figure across
   // notes of different sizes.
   const [partialAmount, setPartialAmount] = useState("");
-  // Relayer fee in stroops. Default to 0.05 USDC (500k stroops), a reasonable
-  // fee that covers gas costs without being excessive.
-  const [relayerFeeStroops, setRelayerFeeStroops] = useState("500000");
   const [batchResults, setBatchResults] = useState<NoteResult[] | null>(null);
   const [, refresh] = useReducer((x: number) => x + 1, 0);
   // Effective relayer-fee quote for the selected withdrawal, shown before the
@@ -228,15 +229,45 @@ export default function WithdrawPage() {
     selectedCommitments.has(n.commitment),
   );
 
-  const selectedTotal = selectedNotes.reduce(
-    (sum, n) => sum + BigInt(n.amount),
-    BigInt(0),
-  );
+  // Notes can be denominated in any asset the pool allow-lists, and a note
+  // carries its own asset address, so display and amount parsing are driven by
+  // the note rather than by one token this page assumes.
+  const assetOf = (note: ShieldedNote): AssetInfo =>
+    resolveAsset(assets, note.asset);
+  /** Render `units` in `note`'s own asset and precision. */
+  const showNote = (note: ShieldedNote, units: string | bigint): string => {
+    const a = assetOf(note);
+    return formatUnits(units, a.symbol, a.decimals);
+  };
+
+  // Selected notes may span several assets — they share one tree and one
+  // nullifier set — so a single summed figure would be nonsense. Totals are
+  // kept per asset, in the order the assets first appear in the selection.
+  const selectedTotals: { asset: AssetInfo; total: bigint }[] = [];
+  for (const note of selectedNotes) {
+    const asset = assetOf(note);
+    const entry = selectedTotals.find(
+      (t) => t.asset.contractId === asset.contractId,
+    );
+    if (entry) entry.total += BigInt(note.amount);
+    else selectedTotals.push({ asset, total: BigInt(note.amount) });
+  }
+  const showSelectedTotals = () =>
+    selectedTotals
+      .map((t) => formatUnits(t.total, t.asset.symbol, t.asset.decimals))
+      .join(" + ");
+
   // Partial withdrawal applies to a single selected note; with several
   // selected, each is spent in full.
   const partialNote = selectedNotes.length === 1 ? selectedNotes[0] : null;
+  // Parsed at the note's own precision: the figure is a circuit input bound to
+  // the note's committed value, so reading it at the wrong scale would build a
+  // proof the contract rejects.
   const partialStroops = partialAmount.trim()
-    ? usdcToStroops(partialAmount)
+    ? toBaseUnits(
+        partialAmount,
+        partialNote ? assetOf(partialNote).decimals : undefined,
+      )
     : (partialNote?.amount ?? "0");
   const partialExceedsNote =
     !!partialNote && BigInt(partialStroops) > BigInt(partialNote.amount);
@@ -246,22 +277,37 @@ export default function WithdrawPage() {
     BigInt(partialStroops) <= BigInt(0);
   const partialInvalid = partialExceedsNote || partialIsZero;
 
-  // Validate relayer fee is reasonable.
-  const feeValue = BigInt(relayerFeeStroops || "0");
-  const MIN_FEE = BigInt(100_000); // 0.01 USDC
-  const MAX_FEE = BigInt(10_000_000); // 1 USDC
-  const feeOutOfBounds = feeValue < MIN_FEE || feeValue > MAX_FEE;
+  /**
+   * The relayer fee carved out of a note by the circuit.
+   *
+   * Zero here, because this page submits withdrawals from the user's own
+   * wallet: there is no relayer to pay, and the network cost is the XLM the
+   * signer already spends on the transaction. Charging a circuit fee anyway
+   * would take value out of the note and hand it to a `fee_recipient` who did
+   * nothing.
+   *
+   * It stays a function rather than a literal because the value is load-bearing
+   * in two places that must agree exactly — the witness (`relayerFee`) and the
+   * change note's value (`amount - payout - fee`). The circuit constrains
+   * `payout + fee + change == amount`, so the two drifting apart doesn't
+   * mis-price anything, it makes the note unspendable.
+   */
+  const feeForNote = (_note: ShieldedNote): bigint => BigInt(0);
 
+  // What re-shields after a partial spend. Computed with the same fee the
+  // proof will carry, so the figure shown to the user is the value of the note
+  // they actually end up holding.
   const changeAfterPartial = partialNote
     ? (
         BigInt(partialNote.amount) -
         BigInt(partialStroops) -
-        feeValue
+        feeForNote(partialNote)
       ).toString()
     : "0";
   const feeExceedsNote =
-    partialNote &&
-    BigInt(partialStroops) + feeValue > BigInt(partialNote.amount);
+    !!partialNote &&
+    BigInt(partialStroops) + feeForNote(partialNote) >
+      BigInt(partialNote.amount);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -303,161 +349,6 @@ export default function WithdrawPage() {
     a.click();
     URL.revokeObjectURL(url);
   }
-
-  // NOTE: withdrawNote is kept for reference but not used in batched withdrawal flow
-  // The batch withdrawal logic is now consolidated in handleBatchWithdraw()
-  /*
-  async function withdrawNote(
-    note: ShieldedNote,
-    recipientAddr: string,
-    withdrawStroops: string,
-    relayerFeeStroops: string,
-    onStep: (s: WithdrawStep) => void,
-  ): Promise<string> {
-    const poolId = note.poolId || POOL_CONTRACT_ID;
-    if (!poolId)
-      throw new Error("Pool address missing — refresh and try again.");
-
-    const noteValue = BigInt(note.amount);
-    const payout = BigInt(withdrawStroops);
-    const fee = BigInt(relayerFeeStroops);
-    const totalOut = payout + fee;
-
-    if (payout < BigInt(0) || totalOut > noteValue) {
-      throw new Error(
-        `This note is worth ${formatAmount(note.amount)} — you can't withdraw more than that (including the relayer fee).`,
-      );
-    }
-    const changeValue = (noteValue - totalOut).toString();
-
-    onStep("checking_nullifier");
-    const nullifierHash = await computeNullifierHash(note.nullifier);
-    const nullifierHashClean = nullifierHash.replace(/^0x/, "");
-    const isUsed = await queryContract(poolId, "is_nullifier_used", [
-      StellarSdk.xdr.ScVal.scvBytes(Buffer.from(nullifierHashClean, "hex")),
-    ]);
-    if (isUsed && StellarSdk.scValToNative(isUsed) === true) {
-      throw new Error("This note has already been withdrawn.");
-    }
-
-    onStep("building_tree");
-    const rootVal = await queryContract(poolId, "get_root");
-    if (!rootVal) throw new Error("No deposits in this pool yet.");
-    const rootBytes = StellarSdk.scValToNative(rootVal) as Buffer;
-    const onChainRoot = "0x" + Buffer.from(rootBytes).toString("hex");
-
-    // Prefer a self-hosted indexer service if one is configured — it skips
-    // both the RPC round trips and the in-browser tree rebuild. Never a
-    // trust boundary: whatever it returns is checked against onChainRoot
-    // below exactly like the locally-rebuilt path is, so a stale or
-    // misbehaving service just falls through to direct RPC scanning.
-    let merkle = await fetchMerkleProofFromService(poolId, note.leafIndex);
-
-    if (!merkle) {
-      const chainCommitments = await fetchCommitmentsFromChain(poolId);
-      let commitments: string[];
-      if (chainCommitments && chainCommitments.length > 0) {
-        commitments = chainCommitments;
-      } else {
-        await syncDepositsFromChain(poolId);
-        commitments = getAllCommitments(note.poolId || POOL_CONTRACT_ID);
-        if (commitments.length === 0) {
-          throw new Error("Couldn't load the pool's deposit history. Use “Re-sync from network” below and try again.");
-        }
-      }
-      merkle = await buildMerkleTree(commitments, note.leafIndex);
-    }
-
-    if (merkle.root.toLowerCase() !== onChainRoot.toLowerCase()) {
-      throw new Error(
-        "Your local data is out of sync with the network. Use “Re-sync from network” below and try again.",
-      );
-    }
-
-    if (getUsdcSacId() && payout > BigInt(0)) {
-      if (recipientAddr === address) {
-        await ensureUsdcTrustline(address!, signTransaction);
-      } else if (!(await hasUsdcTrustline(recipientAddr))) {
-        throw new Error(
-          `Recipient can't receive USDC yet — ask them to add a USDC trustline.`,
-        );
-      }
-    }
-
-    onStep("generating_proof");
-    setProofStage(null);
-    const recipientHash = await computeRecipientHash(recipientAddr);
-
-    const changeNote = await buildChangeNote(poolId, changeValue, note.asset);
-    const assetField = await assetToField(note.asset);
-
-    const { proof, publicInputs } = await proveWithdrawal(
-      {
-        nullifier: note.nullifier,
-        secret: note.secret,
-        amount: note.amount,
-        asset: assetField,
-        withdrawAmount: withdrawStroops,
-        relayerFee: relayerFeeStroops,
-        changeNullifier: changeNote.nullifier,
-        changeSecret: changeNote.secret,
-        changeCommitment: changeNote.commitment,
-        root: onChainRoot,
-        nullifierHash,
-        recipientHash,
-        pathSiblings: merkle.pathSiblings,
-        pathBits: merkle.pathBits,
-      },
-      setProofStage,
-    );
-    setProofStage(null);
-
-    // Saved before submission: past this point the remainder exists on-chain as
-    // soon as the transaction lands, and these are the only keys to it.
-    saveNote(changeNote);
-
-    async function settle(): Promise<void> {
-      markNoteSpent(note.commitment);
-      await resolvePendingLeafIndexes();
-    }
-
-    onStep("submitting");
-    const relayed = await relayWithdrawal({
-      poolId,
-      recipient: recipientAddr,
-      publicInputs,
-      proof,
-      asset: note.asset,
-    });
-    if (relayed) {
-      await settle();
-      return relayed.hash;
-    }
-
-    onStep("signing");
-    // No relayer configured, so this is submitted directly by the user's
-    // wallet with no fee carve-out to abstract away.
-    const tx = await buildContractCall(
-      poolId,
-      "withdraw",
-      [
-        StellarSdk.nativeToScVal(recipientAddr, { type: "address" }),
-        StellarSdk.nativeToScVal(note.asset, { type: "address" }),
-        StellarSdk.xdr.ScVal.scvBytes(Buffer.from(publicInputs, "hex")),
-        StellarSdk.xdr.ScVal.scvBytes(Buffer.from(proof, "hex")),
-        StellarSdk.nativeToScVal(BigInt(0), { type: "i128" }),
-        StellarSdk.nativeToScVal(BigInt(0), { type: "i128" }),
-        StellarSdk.nativeToScVal(recipientAddr, { type: "address" }),
-      ],
-      address!,
-    );
-    const signedXdr = await signTransaction(tx.toXDR());
-    onStep("submitting");
-    const txHash = await submitTransaction(signedXdr);
-    await settle();
-    return txHash;
-  }
-  */
 
   async function handleBatchWithdraw() {
     if (!address || selectedNotes.length === 0 || partialInvalid) return;
@@ -517,18 +408,33 @@ export default function WithdrawPage() {
         const noteValue = BigInt(note.amount);
         const payout = BigInt(payoutFor(note));
         if (payout < BigInt(0) || payout > noteValue) {
-          throw new Error(`Note worth ${formatAmount(note.amount)} can't withdraw ${formatAmount(payout.toString())}.`);
+          throw new Error(`Note worth ${showNote(note, note.amount)} can't withdraw ${showNote(note, payout)}.`);
         }
-        const changeValue = (noteValue - payout).toString();
+        // The circuit constrains payout + fee + change == amount, so the change
+        // note's value must be computed with the same fee the witness carries.
+        // Subtracting a fee here that the proof doesn't know about (or the
+        // reverse) makes `expected_change == change_commitment` fail and the
+        // whole spend unprovable.
+        const fee = feeForNote(note);
+        if (payout + fee > noteValue) {
+          throw new Error(
+            `Note worth ${showNote(note, note.amount)} can't cover a ${showNote(note, payout)} withdrawal plus a ${showNote(note, fee)} fee.`,
+          );
+        }
+        const changeValue = (noteValue - payout - fee).toString();
 
         // Determine recipient for this note.
         const noteRecipient = defaultRecipient;
 
-        if (getUsdcSacId() && payout > BigInt(0)) {
+        // The payout lands in the note's own asset, so the trustline that has
+        // to exist is that asset's — not one fixed token's. Native XLM needs
+        // none, which ensureTrustline/hasTrustline handle.
+        if (note.asset && payout > BigInt(0)) {
+          const symbol = assetOf(note).symbol;
           if (noteRecipient === address) {
-            await ensureUsdcTrustline(address!, signTransaction);
-          } else if (!(await hasUsdcTrustline(noteRecipient))) {
-            throw new Error(`Recipient ${truncateMiddle(noteRecipient, 6, 4)} can't receive USDC — ask them to add a trustline.`);
+            await ensureTrustline(note.asset, address!, signTransaction);
+          } else if (!(await hasTrustline(note.asset, noteRecipient))) {
+            throw new Error(`Recipient ${truncateMiddle(noteRecipient, 6, 4)} can't receive ${symbol} — ask them to add a trustline.`);
           }
         }
 
@@ -545,7 +451,13 @@ export default function WithdrawPage() {
           nullifier: note.nullifier,
           secret: note.secret,
           amount: note.amount,
+          // The asset the leaf commits to. The pool recomputes this same field
+          // from the payout token's address and rejects the withdrawal unless
+          // they match, which is what stops a proof for one asset from draining
+          // another.
+          asset: await assetToField(note.asset),
           withdrawAmount: payoutFor(note),
+          relayerFee: fee.toString(),
           changeNullifier: changeNote.nullifier,
           changeSecret: changeNote.secret,
           changeCommitment: changeNote.commitment,
@@ -576,14 +488,23 @@ export default function WithdrawPage() {
 
       let txHash: string;
       if (selectedNotes.length === 1) {
-        // Single withdrawal: use withdraw() contract method.
+        // Single withdrawal: withdraw(recipient, asset, public_inputs, proof,
+        // fee_amount, fee_min_out, fee_recipient). The asset is named
+        // explicitly so the contract can check it against the one the proof
+        // commits to; the three fee arguments are the relayer carve-out, which
+        // is zero on this wallet-signed path (see feeForNote), so no fee is
+        // swapped and fee_recipient is never paid.
         const tx = await buildContractCall(
           poolId,
           "withdraw",
           [
             StellarSdk.nativeToScVal(recipients[0], { type: "address" }),
+            StellarSdk.nativeToScVal(selectedNotes[0].asset, { type: "address" }),
             StellarSdk.xdr.ScVal.scvBytes(Buffer.from(proofs[0].publicInputs, "hex")),
             StellarSdk.xdr.ScVal.scvBytes(Buffer.from(proofs[0].proof, "hex")),
+            StellarSdk.nativeToScVal(BigInt(0), { type: "i128" }),
+            StellarSdk.nativeToScVal(BigInt(0), { type: "i128" }),
+            StellarSdk.nativeToScVal(address!, { type: "address" }),
           ],
           address!,
         );
@@ -591,9 +512,14 @@ export default function WithdrawPage() {
         setStep("submitting");
         txHash = await submitTransaction(signedXdr);
       } else {
-        // Batch withdrawal: use withdraw_batch() contract method.
+        // Batch withdrawal: withdraw_batch(recipients, assets, public_inputs,
+        // proofs). One asset per withdrawal, so a batch may mix assets — they
+        // share the pool's tree and nullifier set.
         const recipientScVals = recipients.map((r) =>
           StellarSdk.nativeToScVal(r, { type: "address" }),
+        );
+        const assetScVals = selectedNotes.map((note) =>
+          StellarSdk.nativeToScVal(note.asset, { type: "address" }),
         );
         const publicInputsVec = proofs.map((p) =>
           StellarSdk.xdr.ScVal.scvBytes(Buffer.from(p.publicInputs, "hex")),
@@ -607,6 +533,7 @@ export default function WithdrawPage() {
           "withdraw_batch",
           [
             StellarSdk.xdr.ScVal.scvVec(recipientScVals),
+            StellarSdk.xdr.ScVal.scvVec(assetScVals),
             StellarSdk.xdr.ScVal.scvVec(publicInputsVec),
             StellarSdk.xdr.ScVal.scvVec(proofVec),
           ],
@@ -638,7 +565,7 @@ export default function WithdrawPage() {
       const done = selectedNotes.length;
       if (wasPartial && selectedNotes.length === 1) {
         toast(
-          `Withdrew ${formatAmount(partialStroops)} — ${formatAmount(changeAfterPartial)} re-shielded into a new note.`,
+          `Withdrew ${showNote(selectedNotes[0], partialStroops)} — ${showNote(selectedNotes[0], changeAfterPartial)} re-shielded into a new note.`,
           "success",
         );
       } else {
@@ -803,7 +730,7 @@ export default function WithdrawPage() {
                         </div>
                         <div>
                           <span className="text-sm font-medium text-zinc-200">
-                            {formatAmount(note.amount)}
+                            {showNote(note, note.amount)}
                           </span>
                           <span className="ml-2 font-mono text-xs text-zinc-500">
                             {truncateMiddle(note.commitment, 10, 10)}
@@ -879,11 +806,16 @@ export default function WithdrawPage() {
                     type="button"
                     disabled={isLoading}
                     onClick={() =>
-                      setPartialAmount(formatAmountBare(partialNote.amount))
+                      setPartialAmount(
+                        fromBaseUnits(
+                          partialNote.amount,
+                          assetOf(partialNote).decimals,
+                        ),
+                      )
                     }
                     className="focus-ring rounded text-xs text-zinc-500 transition-colors hover:text-zinc-300 disabled:pointer-events-none"
                   >
-                    Max ({formatAmount(partialNote.amount)})
+                    Max ({showNote(partialNote, partialNote.amount)})
                   </button>
                 </div>
                 <Input
@@ -892,11 +824,14 @@ export default function WithdrawPage() {
                   mono
                   value={partialAmount}
                   onChange={(e) => setPartialAmount(e.target.value)}
-                  placeholder={formatAmountBare(partialNote.amount)}
+                  placeholder={fromBaseUnits(
+                    partialNote.amount,
+                    assetOf(partialNote).decimals,
+                  )}
                   disabled={isLoading}
                   hint={(() => {
                     if (partialExceedsNote) {
-                      return `This note only holds ${formatAmount(partialNote.amount)}.`;
+                      return `This note only holds ${showNote(partialNote, partialNote.amount)}.`;
                     }
                     if (partialIsZero) {
                       return "Enter an amount greater than zero.";
@@ -905,7 +840,7 @@ export default function WithdrawPage() {
                       return (
                         <>
                           <span className="text-zinc-400">
-                            {formatAmount(changeAfterPartial)}
+                            {showNote(partialNote, changeAfterPartial)}
                           </span>{" "}
                           stays shielded as a new note, saved to this device.
                           You can withdraw from it later, as many times as you
@@ -922,7 +857,7 @@ export default function WithdrawPage() {
                 <p className="text-sm text-zinc-400">
                   Withdrawing{" "}
                   <span className="font-medium text-zinc-200">
-                    {formatAmount(selectedTotal.toString())}
+                    {showSelectedTotals()}
                   </span>{" "}
                   across {selectedNotes.length} notes, each in full.
                 </p>
@@ -953,7 +888,7 @@ export default function WithdrawPage() {
                 </h3>
                 <p className="text-sm text-zinc-300">
                   <span className="font-medium">
-                    {formatAmount(feeQuote.feeAmount)}
+                    {showNote(selectedNotes[0], feeQuote.feeAmount)}
                   </span>{" "}
                   is deducted from your withdrawal and swapped for XLM to
                   cover the network cost.
@@ -969,20 +904,15 @@ export default function WithdrawPage() {
               fullWidth
               size="lg"
               onClick={handleBatchWithdraw}
-              disabled={
-                isLoading ||
-                partialInvalid ||
-                feeOutOfBounds ||
-                !!feeExceedsNote
-              }
+              disabled={isLoading || partialInvalid || feeExceedsNote}
             >
               {isLoading
                 ? "Processing…"
                 : selectedNotes.length > 1
                   ? `Generate Proofs & Withdraw ${selectedNotes.length} Notes`
                   : partialNote
-                    ? `Generate Proof & Withdraw ${formatAmount(partialStroops)}`
-                    : `Generate Proof & Withdraw ${formatAmount(selectedTotal.toString())}`}
+                    ? `Generate Proof & Withdraw ${showNote(partialNote, partialStroops)}`
+                    : `Generate Proof & Withdraw ${showSelectedTotals()}`}
             </Button>
 
             <p className="text-center text-xs text-zinc-600">

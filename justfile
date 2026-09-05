@@ -46,7 +46,47 @@ build-circuits:
     @echo "Building view_disclosure circuit..."
     cd circuits/view_disclosure && nargo compile
     cd circuits/view_disclosure && bb write_vk --scheme ultra_honk --oracle_hash keccak --bytecode_path target/view_disclosure.json --output_path target --output_format bytes_and_fields
+    @just sync-circuits
     @echo "All circuits built."
+
+# Copy freshly compiled circuits to the clients that prove against them.
+#
+# The app and the CLI ship their own copy of the circuit bytecode (they can't
+# read circuits/*/target at runtime), so a compile that isn't copied leaves them
+# proving against an older circuit than the one the deployed verifier's VK was
+# built from. That failure is silent until a withdrawal is attempted, and it is
+# exactly what happened between the multi-asset/relayer-fee work and this
+# recipe existing: the clients were still on a 12-input circuit while the
+# contract expected 14. `just verify-circuit-sync` fails CI if they drift again.
+sync-circuits:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for c in shielded_pool compliance disclosure view_disclosure hasher; do
+        src="circuits/$c/target/$c.json"
+        [ -f "$src" ] || continue
+        cp "$src" "frontend/src/circuits/$c.json"
+        [ -f "packages/core/src/circuits/$c.json" ] && cp "$src" "packages/core/src/circuits/$c.json"
+        echo "  synced $c"
+    done
+
+# Fail if a client's circuit copy differs from the compiled artifact.
+verify-circuit-sync:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    status=0
+    for c in shielded_pool compliance disclosure view_disclosure hasher; do
+        src="circuits/$c/target/$c.json"
+        [ -f "$src" ] || continue
+        for dest in "frontend/src/circuits/$c.json" "packages/core/src/circuits/$c.json"; do
+            [ -f "$dest" ] || continue
+            if ! cmp -s "$src" "$dest"; then
+                echo "STALE: $dest differs from $src — run 'just sync-circuits'"
+                status=1
+            fi
+        done
+    done
+    [ $status -eq 0 ] && echo "All client circuit copies match the compiled artifacts."
+    exit $status
 
 # Generate a test proof from the shielded_pool circuit
 prove-pool:

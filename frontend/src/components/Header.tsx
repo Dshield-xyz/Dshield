@@ -8,9 +8,10 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 import { useWallet } from "./WalletProvider";
 import { Button } from "./ui/Button";
 import { MenuIcon, CloseIcon } from "./icons";
-import { truncateMiddle } from "@/lib/format";
+import { truncateMiddle, fromBaseUnits } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { getRpcServer, queryContract, getUsdcSacId } from "@/lib/stellar";
+import { getRpcServer, assetBalance } from "@/lib/stellar";
+import { loadPoolAssets } from "@/lib/assets";
 
 const NAV_ITEMS = [
   { href: "/deposit", label: "Deposit" },
@@ -22,12 +23,21 @@ const NAV_ITEMS = [
   { href: "/admin", label: "Governance" },
 ];
 
-interface Balances {
-  xlm: string;
-  usdc: string;
+interface Balance {
+  symbol: string;
+  amount: string;
 }
 
-async function fetchBalances(address: string): Promise<Balances> {
+/**
+ * Wallet balances for every asset the pool can shield, plus XLM.
+ *
+ * XLM is read from the account's own ledger entry rather than through its
+ * Stellar Asset Contract, so it shows even on a deployment whose pool doesn't
+ * allow-list XLM — the user still needs it to pay transaction fees. Everything
+ * else is read through its SEP-41 `balance` view, at that asset's own
+ * precision.
+ */
+async function fetchBalances(address: string): Promise<Balance[]> {
   const server = getRpcServer();
 
   const accountKey = StellarSdk.xdr.LedgerKey.account(
@@ -36,30 +46,34 @@ async function fetchBalances(address: string): Promise<Balances> {
     }),
   );
 
-  const [ledger, usdcVal] = await Promise.all([
+  const [ledger, assets] = await Promise.all([
     server.getLedgerEntries(accountKey).catch(() => null),
-    (async () => {
-      const sacId = getUsdcSacId();
-      if (!sacId) return null;
-      return queryContract(sacId, "balance", [
-        StellarSdk.nativeToScVal(address, { type: "address" }),
-      ]);
-    })(),
+    loadPoolAssets().catch(() => []),
   ]);
 
-  let xlm = "0.0000";
+  const balances: Balance[] = [];
+
+  let xlm = "0";
   if (ledger && ledger.entries.length > 0) {
-    const stroops = ledger.entries[0].val.account().balance();
-    xlm = (Number(stroops) / 1e7).toFixed(4);
+    xlm = fromBaseUnits(ledger.entries[0].val.account().balance().toString());
   }
+  balances.push({ symbol: "XLM", amount: xlm });
 
-  let usdc = "0.00";
-  if (usdcVal) {
-    const raw = BigInt(StellarSdk.scValToNative(usdcVal) as string | number);
-    usdc = (Number(raw) / 1e7).toFixed(2);
-  }
+  // A balance call that fails (no trustline, unreachable RPC) reads as 0 rather
+  // than taking the whole dropdown down with it.
+  const others = await Promise.all(
+    assets
+      .filter((a) => !a.native)
+      .map(async (a) => ({
+        symbol: a.symbol,
+        amount: fromBaseUnits(
+          await assetBalance(a.contractId, address).catch(() => BigInt(0)),
+          a.decimals,
+        ),
+      })),
+  );
 
-  return { xlm, usdc };
+  return [...balances, ...others];
 }
 
 export function Header() {
@@ -67,7 +81,7 @@ export function Header() {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [balanceOpen, setBalanceOpen] = useState(false);
-  const [balances, setBalances] = useState<Balances | null>(null);
+  const [balances, setBalances] = useState<Balance[] | null>(null);
   const [loadingBalances, setLoadingBalances] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -188,18 +202,19 @@ export function Header() {
                         <p className="text-xs text-zinc-500">Loading…</p>
                       ) : balances ? (
                         <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-zinc-400">XLM</span>
-                            <span className="font-mono text-xs text-white">
-                              {balances.xlm}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-zinc-400">USDC</span>
-                            <span className="font-mono text-xs text-white">
-                              {balances.usdc}
-                            </span>
-                          </div>
+                          {balances.map((b) => (
+                            <div
+                              key={b.symbol}
+                              className="flex items-center justify-between gap-3"
+                            >
+                              <span className="text-xs text-zinc-400">
+                                {b.symbol}
+                              </span>
+                              <span className="font-mono text-xs text-white">
+                                {b.amount}
+                              </span>
+                            </div>
+                          ))}
                         </div>
                       ) : (
                         <p className="text-xs text-zinc-500">Unavailable</p>

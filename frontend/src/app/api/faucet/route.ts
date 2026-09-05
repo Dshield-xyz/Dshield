@@ -23,6 +23,16 @@ const RATE_LIMIT = 5;
 const RATE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 
 export async function POST(req: NextRequest) {
+  // Play money only. A faucet on mainnet would either mint a real asset or
+  // hand out real funds, so the route is closed there regardless of how the
+  // issuer secret is configured — a misconfigured deploy fails safe.
+  if (PASSPHRASE === StellarSdk.Networks.PUBLIC) {
+    return NextResponse.json(
+      { error: "The faucet is disabled on mainnet." },
+      { status: 403 },
+    );
+  }
+
   if (!ISSUER_SECRET) {
     return NextResponse.json(
       { error: "Faucet is not configured (USDC_ISSUER_SECRET unset)." },
@@ -40,10 +50,15 @@ export async function POST(req: NextRequest) {
 
   let address: string;
   let amount: bigint;
+  // Which asset to mint. The pool can shield several, but this faucet only
+  // holds one issuer key, so a request for anything else is refused rather
+  // than silently topping the wallet up in the wrong token.
+  let requestedAsset: string;
   try {
     const body = await req.json();
     address = String(body.address || "");
     amount = BigInt(body.amount ?? "0");
+    requestedAsset = String(body.asset || "");
   } catch {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
@@ -69,6 +84,13 @@ export async function POST(req: NextRequest) {
     const sacId = new StellarSdk.Asset(USDC_CODE, issuer.publicKey()).contractId(
       PASSPHRASE,
     );
+
+    if (requestedAsset && requestedAsset !== sacId) {
+      return NextResponse.json(
+        { error: "No faucet is available for that asset." },
+        { status: 503 },
+      );
+    }
 
     const source = await server.getAccount(issuer.publicKey());
     const contract = new StellarSdk.Contract(sacId);

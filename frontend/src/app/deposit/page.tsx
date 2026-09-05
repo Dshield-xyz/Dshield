@@ -5,12 +5,12 @@ import { useWallet } from "@/components/WalletProvider";
 import {
   buildContractCall,
   submitTransaction,
-  queryContract,
   getPoolId,
-  ensureUsdcTrustline,
-  faucetUsdc,
-  getUsdcSacId,
+  ensureTrustline,
+  faucetAsset,
+  assetBalance,
 } from "@/lib/stellar";
+import { useAssets, resolveAsset, type AssetInfo } from "@/lib/assets";
 import {
   saveNote,
   serializeNote,
@@ -23,18 +23,14 @@ import {
 import { saveDeposit } from "@/lib/deposits";
 import { fetchLeafIndex } from "@/lib/sync";
 import { computeCommitment, assetToField } from "@/lib/poseidon2";
-import {
-  TOKEN_SYMBOL,
-  formatAmount,
-  formatAmountBare,
-  usdcToStroops,
-} from "@/lib/format";
+import { toBaseUnits, fromBaseUnits, formatUnits } from "@/lib/format";
 import { friendlyError } from "@/lib/errors";
 import { createInteractiveDeposit, getSep24Transaction, SEP24_COMPLETE_STATUSES, SEP24_FAILURE_STATUSES } from "@/lib/sep24";
 import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { SelectButton } from "@/components/ui/SelectButton";
 import {
   CopyIcon,
   TelegramIcon,
@@ -106,12 +102,14 @@ function recordDeposit(note: ShieldedNote, leafIndex: number): void {
  */
 function ConfirmDeposit({
   amountStroops,
+  asset,
   estimatedFee,
   isLoading,
   onCancel,
   onConfirm,
 }: {
   amountStroops: string;
+  asset: AssetInfo;
   estimatedFee: string;
   isLoading: boolean;
   onCancel: () => void;
@@ -126,13 +124,15 @@ function ConfirmDeposit({
         <p className="text-sm text-zinc-400 mb-2">
           Shielding:{" "}
           <span className="font-medium text-zinc-200">
-            {formatAmount(amountStroops)}
+            {formatUnits(amountStroops, asset.symbol, asset.decimals)}
           </span>
         </p>
         <p className="text-sm text-zinc-400 mb-4">
           Estimated fee:{" "}
           <span className="font-medium text-zinc-200">
-            {formatAmountBare(estimatedFee)} XLM
+            {/* Network fees are always paid in XLM at 7 decimals, whatever the
+                asset being shielded is. */}
+            {fromBaseUnits(estimatedFee)} XLM
           </span>
         </p>
         <div className="flex gap-4 justify-end">
@@ -157,11 +157,19 @@ export default function DepositPage() {
   const [shareOpenKey, setShareOpenKey] = useState<string>("");
   const [amount, setAmount] = useState<string>("");
   const poolId = getPoolId();
-  // The pool can hold notes for several allow-listed SEP-41 assets, but this
-  // page doesn't yet offer an asset picker (see MULTI_ASSET_STATUS.md) — it
-  // deposits into whichever asset this deployment's demo USDC SAC resolves
-  // to, same as before multi-asset support existed.
-  const assetId = getUsdcSacId();
+
+  // Which assets this pool accepts is decided on-chain by its allow-list, so
+  // the picker below is populated from the contract rather than from a
+  // hardcoded token. Nothing is assumed when the list can't be read: shielding
+  // into an asset the pool doesn't hold would mint a note it will never pay
+  // out, so the deposit button stays disabled and says why.
+  const { assets, loading: assetsLoading, error: assetsError, reload: reloadAssets } =
+    useAssets();
+  const [selectedAssetId, setSelectedAssetId] = useState<string>("");
+  // Fall back to the pool's first allow-listed asset (registration order, so
+  // the token the pool was deployed with) until the user picks another.
+  const assetId = selectedAssetId || assets[0]?.contractId || "";
+  const asset = resolveAsset(assets, assetId);
   // New UI state for confirmation step
   const [showConfirm, setShowConfirm] = useState(false);
   const [estimatedFee, setEstimatedFee] = useState<string>("");
@@ -175,12 +183,19 @@ export default function DepositPage() {
   const [confirmStroops, setConfirmStroops] = useState<string>("0");
   const [onRampStatus, setOnRampStatus] = useState<string>("");
   const onRampDomain = process.env.NEXT_PUBLIC_SEP24_HOME_DOMAIN || "";
-  const onRampAsset = process.env.NEXT_PUBLIC_SEP24_ASSET_CODE || TOKEN_SYMBOL;
+  const onRampAsset = process.env.NEXT_PUBLIC_SEP24_ASSET_CODE || asset.symbol;
 
-  const amountStroops = usdcToStroops(amount);
+  // Parsed at the selected asset's own precision: the result is both hashed
+  // into the note's commitment and transferred on-chain, so reading "1.5" as
+  // 7 decimals for a 6-decimal token would make the note unspendable.
+  const amountStroops = toBaseUnits(amount, asset.decimals);
   const amountTooLarge = BigInt(amountStroops) > BigInt(MAX_NOTE_STROOPS);
   const amountValid =
     amount.trim() !== "" && BigInt(amountStroops) > BigInt(0) && !amountTooLarge;
+
+  /** This deposit's amount, rendered in the asset the user picked. */
+  const showAmount = (units: string | bigint) =>
+    formatUnits(units, asset.symbol, asset.decimals);
 
   /**
    * Build the transaction up to the point of signing, then store it for
@@ -192,7 +207,9 @@ export default function DepositPage() {
     // The on-ramp flow (startOnRamp below) supplies its own delivered
     // amount and doesn't require the manually-typed field to be filled in;
     // a manual deposit falls back to that field via `amountStroops`.
-    const stroops = overrideAmount ? usdcToStroops(overrideAmount) : amountStroops;
+    const stroops = overrideAmount
+      ? toBaseUnits(overrideAmount, asset.decimals)
+      : amountStroops;
     const stroopsValid =
       BigInt(stroops) > BigInt(0) && BigInt(stroops) <= BigInt(MAX_NOTE_STROOPS);
     if (!address || !poolId || !assetId) return;
@@ -202,24 +219,31 @@ export default function DepositPage() {
     setSessionNotes([]);
 
     try {
-      // --- Pre-sign setup (trustline, faucet) ---
-      const sac = getUsdcSacId();
-      if (sac) {
-        toast("Checking your USDC setup…");
-        await ensureUsdcTrustline(address, signTransaction);
-        const balVal = await queryContract(sac, "balance", [
-          StellarSdk.nativeToScVal(address, { type: "address" }),
-        ]);
-        const balance = balVal
-          ? BigInt(StellarSdk.scValToNative(balVal) as string | number)
-          : BigInt(0);
-        if (balance < BigInt(stroops) && skipTopUp) {
+      // --- Pre-sign setup (trustline, funding) ---
+      // Native XLM needs no trustline; ensureTrustline knows that and no-ops.
+      toast(`Checking your ${asset.symbol} setup…`);
+      await ensureTrustline(assetId, address, signTransaction);
+
+      const balance = await assetBalance(assetId, address);
+      if (balance < BigInt(stroops)) {
+        if (skipTopUp) {
           throw new Error("Insufficient funds after the on-ramp completed.");
         }
-        if (balance < BigInt(stroops)) {
-          toast("Topping up your wallet with test USDC…");
-          await faucetUsdc(address, BigInt(stroops) * BigInt(2) - balance);
+        // Test networks can top the wallet up; mainnet (and any asset whose
+        // issuer key the server doesn't hold) cannot, so say what's short
+        // rather than failing later inside the wallet.
+        const funded = await faucetAsset(
+          assetId,
+          address,
+          BigInt(stroops) * BigInt(2) - balance,
+        );
+        if (!funded) {
+          throw new Error(
+            `Not enough ${asset.symbol} in this wallet — you have ` +
+              `${showAmount(balance)} and are shielding ${showAmount(stroops)}.`,
+          );
         }
+        toast(`Topped your wallet up with test ${asset.symbol}…`);
       }
 
       // --- Prepare the note ---
@@ -313,7 +337,7 @@ export default function DepositPage() {
       setSessionNotes([{ ...note, leafIndex: leafIndex ?? PENDING_LEAF_INDEX }]);
 
       toast(
-        `${formatAmount(note.amount)} is now shielded — save your note below!`,
+        `${showAmount(note.amount)} is now shielded — save your note below!`,
         "success",
       );
     } catch (err) {
@@ -353,7 +377,7 @@ export default function DepositPage() {
     return (
       <ConnectGate
         title="Deposit"
-        prompt="Connect your wallet to shield USDC and receive a private note."
+        prompt="Connect your wallet to shield your funds and receive a private note."
       />
     );
   }
@@ -362,7 +386,7 @@ export default function DepositPage() {
     <PageShell>
       <PageHeader
         title="Deposit"
-        description="Move any amount of USDC into the shielded pool. You'll receive a private note — the only key to withdrawing those funds later. Nothing on-chain links the deposit to a later withdrawal."
+        description="Move any amount of any supported asset into the shielded pool. You'll receive a private note — the only key to withdrawing those funds later. Nothing on-chain links the deposit to a later withdrawal."
       />
 
       <Card className="mt-8">
@@ -383,7 +407,7 @@ export default function DepositPage() {
               there&apos;s nothing to round to
             </li>
             <li>
-              2. Your {TOKEN_SYMBOL} moves into the shielded pool in one signed
+              2. Your {asset.symbol} moves into the shielded pool in one signed
               transaction
             </li>
             <li>
@@ -397,11 +421,47 @@ export default function DepositPage() {
           </ol>
         </div>
 
+        {/* Asset picker. Every asset shares one tree and one nullifier set, so
+            choosing between them costs nothing in privacy — the anonymity set
+            is the whole pool, not the slice holding this token. */}
+        <fieldset className="mb-5">
+          <legend className="mb-2 text-sm font-medium text-zinc-400">
+            Asset
+          </legend>
+          {assetsLoading ? (
+            <p className="text-sm text-zinc-500">Reading supported assets…</p>
+          ) : assetsError ? (
+            <p className="text-sm text-red-400" role="alert">
+              {assetsError}{" "}
+              <button
+                type="button"
+                onClick={reloadAssets}
+                className="font-medium text-brand-400 underline hover:text-brand-300"
+              >
+                Retry
+              </button>
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {assets.map((a) => (
+                <SelectButton
+                  key={a.contractId}
+                  tone="accent"
+                  selected={a.contractId === assetId}
+                  onClick={() => setSelectedAssetId(a.contractId)}
+                >
+                  {a.symbol}
+                </SelectButton>
+              ))}
+            </div>
+          )}
+        </fieldset>
+
         <div className="mb-4">
           <Input
             type="text"
             inputMode="decimal"
-            label={`Amount (${TOKEN_SYMBOL})`}
+            label={`Amount (${asset.symbol})`}
             mono
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
@@ -411,7 +471,7 @@ export default function DepositPage() {
                 return "Any amount. You can withdraw it in as many pieces as you like.";
               }
               if (amountTooLarge) {
-                return `Too large — a single note holds at most ${formatAmount(MAX_NOTE_STROOPS)}.`;
+                return `Too large — a single note holds at most ${showAmount(MAX_NOTE_STROOPS)}.`;
               }
               if (BigInt(amountStroops) <= BigInt(0)) {
                 return "Enter an amount greater than zero.";
@@ -420,7 +480,7 @@ export default function DepositPage() {
                 <>
                   Shields{" "}
                   <span className="text-zinc-400">
-                    {formatAmount(amountStroops)}
+                    {showAmount(amountStroops)}
                   </span>{" "}
                   into one note.
                 </>
@@ -442,7 +502,7 @@ export default function DepositPage() {
               : !assetId
                 ? "Asset not configured"
                 : amountValid
-                  ? `Shield ${formatAmount(amountStroops)}`
+                  ? `Shield ${showAmount(amountStroops)}`
                   : `Enter an amount`}
         </Button>
 
@@ -485,7 +545,7 @@ export default function DepositPage() {
                       {sessionNotes.length > 1
                         ? ` ${i + 1}/${sessionNotes.length}`
                         : ""}{" "}
-                      · {formatAmount(note.amount)}
+                      · {showAmount(note.amount)}
                     </p>
                     <div className="flex items-center gap-3 shrink-0">
                       <button
@@ -604,6 +664,7 @@ export default function DepositPage() {
       {showConfirm && (
         <ConfirmDeposit
           amountStroops={confirmStroops}
+          asset={asset}
           estimatedFee={estimatedFee}
           isLoading={isLoading}
           onCancel={() => {
