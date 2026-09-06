@@ -8,7 +8,6 @@ import {
   queryContract,
   ensureTrustline,
   hasTrustline,
-  relayWithdrawal,
   fetchWithdrawFeeQuote,
   POOL_CONTRACT_ID,
   type FeeQuote,
@@ -36,9 +35,8 @@ import {
 import {
   syncDepositsFromChain,
   fetchCommitmentsFromChain,
-  fetchMerkleProofFromService,
 } from "@/lib/indexer";
-import { proveWithdrawal, proveWithdrawalBatch, type ProofStage } from "@/lib/prover";
+import { proveWithdrawalBatch, type ProofStage } from "@/lib/prover";
 import { friendlyError } from "@/lib/errors";
 import { resolvePendingLeafIndexes, syncSpentNotes } from "@/lib/sync";
 import {
@@ -292,7 +290,7 @@ export default function WithdrawPage() {
    * `payout + fee + change == amount`, so the two drifting apart doesn't
    * mis-price anything, it makes the note unspendable.
    */
-  const feeForNote = (_note: ShieldedNote): bigint => BigInt(0);
+  const feeForNote = (): bigint => BigInt(0);
 
   // What re-shields after a partial spend. Computed with the same fee the
   // proof will carry, so the figure shown to the user is the value of the note
@@ -301,12 +299,12 @@ export default function WithdrawPage() {
     ? (
         BigInt(partialNote.amount) -
         BigInt(partialStroops) -
-        feeForNote(partialNote)
+        feeForNote()
       ).toString()
     : "0";
   const feeExceedsNote =
     !!partialNote &&
-    BigInt(partialStroops) + feeForNote(partialNote) >
+    BigInt(partialStroops) + feeForNote() >
       BigInt(partialNote.amount);
 
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -415,7 +413,7 @@ export default function WithdrawPage() {
         // Subtracting a fee here that the proof doesn't know about (or the
         // reverse) makes `expected_change == change_commitment` fail and the
         // whole spend unprovable.
-        const fee = feeForNote(note);
+        const fee = feeForNote();
         if (payout + fee > noteValue) {
           throw new Error(
             `Note worth ${showNote(note, note.amount)} can't cover a ${showNote(note, payout)} withdrawal plus a ${showNote(note, fee)} fee.`,

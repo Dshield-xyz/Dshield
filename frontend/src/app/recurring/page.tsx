@@ -33,12 +33,7 @@ import { fetchCommitmentsFromChain, syncDepositsFromChain } from "@/lib/indexer"
 import { getAllCommitments } from "@/lib/deposits";
 import { proveRecurringAuthorization, type ProofStage } from "@/lib/prover";
 import { resolvePendingLeafIndexes } from "@/lib/sync";
-import {
-  toBaseUnits,
-  fromBaseUnits,
-  formatUnits,
-  truncateMiddle,
-} from "@/lib/format";
+import { formatUnits, truncateMiddle } from "@/lib/format";
 import { useNoteFormatter, resolveAsset } from "@/lib/assets";
 import { friendlyError } from "@/lib/errors";
 import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";

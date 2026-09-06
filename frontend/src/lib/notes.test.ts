@@ -177,8 +177,6 @@ describe("generateNoteLink (compact link encoding)", () => {
   const HEX32_C = "deadbeef".repeat(8);
   const VALID_POOL = "CBQ3EPNIMGLS53U4HHLT4V3HAGJJCLONVXAN2QEREGQZMFQOLK7VF6C7";
 
-  const VALID_ASSET = "CBQ3EPNIMGLS53U4HHLT4V3HAGJJCLONVXAN2QEREGQZMFQOLK7VF6C7";
-
   function fullNote(overrides: Partial<ShieldedNote> = {}): ShieldedNote {
     return {
       nullifier: HEX32_A,

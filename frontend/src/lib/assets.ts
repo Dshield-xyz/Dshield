@@ -78,6 +78,10 @@ export function useAssets(): UseAssetsResult {
   const [error, setError] = useState("");
   const [nonce, setNonce] = useState(0);
 
+  /* eslint-disable react-hooks/set-state-in-effect -- the loading flag has to
+   * flip synchronously when the effect runs, before the async read resolves,
+   * or the first paint claims the pool supports no assets. Same reasoning as
+   * the balance dropdown in components/Header.tsx. */
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -108,6 +112,7 @@ export function useAssets(): UseAssetsResult {
       cancelled = true;
     };
   }, [nonce]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   return {
     assets,

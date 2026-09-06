@@ -8,6 +8,7 @@ circuits/*/target/
 .verifier_id
 .pool_id
 .compliance_id
+.governance_id
 .token_id
 .soroban/
 

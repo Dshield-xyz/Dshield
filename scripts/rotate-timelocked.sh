@@ -46,15 +46,32 @@ TX_XDR=$(stellar contract invoke --id "$TARGET" --source alice --network "$NETWO
 ARGS_JSON=$(stellar xdr decode --type TransactionEnvelope --input single-base64 --output json <<<"$TX_XDR" \
     | python3 -c '
 import json, sys
+
+# The envelope is a union, and which arm the CLI emits has changed between
+# stellar-xdr releases: it used to decode as {"v1": {"tx": ...}} and now comes
+# back as {"tx": {"tx": ...}}. Accept either rather than pinning a CLI version,
+# since guessing wrong fails the whole deploy at the very last step.
 env = json.load(sys.stdin)
-op = env["v1"]["tx"]["operations"][0]["body"]["invoke_host_function"]
+arm = env.get("tx") or env.get("v1")
+if arm is None:
+    sys.exit(f"unrecognised TransactionEnvelope arms: {list(env)}")
+tx = arm.get("tx", arm)
+op = tx["operations"][0]["body"]["invoke_host_function"]
 args = op["host_function"]["invoke_contract"]["args"]
-json.dump(args, sys.stdout)
+
+# Wrapped as an ScVal::Vec, not a bare ScVec. The governance contract reads
+# these back with SorobanVec::<Val>::from_xdr, and the SDK serializes a
+# Vec<Val> as the *value* ScVal::Vec(...) -- handing it a bare ScVec traps in
+# deserialize_from_bytes at execute time, long after queueing appears to work.
+json.dump({"vec": args}, sys.stdout)
 ')
 
-# Re-encode just the args array as an ScVec, which is what governance.queue's
-# `args: Bytes` parameter expects (see contracts/governance/src/lib.rs).
-ARGS_XDR=$(stellar xdr encode --type ScVec --output single-base64 <<<"$ARGS_JSON")
+# Re-encode the args as the ScVal::Vec that governance.queue's `args: Bytes`
+# parameter expects (see contracts/governance/src/lib.rs).
+# The CLI takes a Bytes argument as hex, not the base64 `xdr encode` emits, so
+# convert -- passing the base64 through is rejected as "not parseable to Bytes".
+ARGS_XDR=$(stellar xdr encode --type ScVal --output single-base64 <<<"$ARGS_JSON" \
+    | base64 -d | xxd -p -c 1000000)
 
 say "Queuing $FUNCTION on $TARGET via governance $GOVERNANCE"
 QUEUE_OUTPUT=$(stellar contract invoke --id "$GOVERNANCE" --source alice --network "$NETWORK" --send=yes \

@@ -23,6 +23,7 @@ say() { echo -e "${YELLOW}$1${NC}"; }
 ok() { echo -e "  ${GREEN}$1${NC}"; }
 
 POOL=$(cat .pool_id)
+TOKEN=$(cat .token_id)
 ALICE=$(stellar keys address alice)
 RELAYER=$(stellar keys address relayer)
 
@@ -41,6 +42,7 @@ C_NULL=1111;  C_SECRET=2222    # the (empty) note the second spend leaves behind
 
 say "DShield demo on '$NETWORK'"
 echo "  pool:    $POOL"
+echo "  asset:   $TOKEN"
 echo "  user:    $ALICE"
 echo "  relayer: $RELAYER"
 
@@ -54,15 +56,21 @@ fi
 # agree bit for bit with the Noir circuit and the pool contract, so there is
 # exactly one definition of it (frontend/scripts/note.mjs) and everything reads
 # from that.
-CM_A=$(note commitment $A_NULL $A_SECRET $DEPOSIT_AMOUNT)
-CM_B=$(note commitment $B_NULL $B_SECRET $CHANGE_AMOUNT)
-CM_C=$(note commitment $C_NULL $C_SECRET 0)
+# The asset is part of the leaf, so every commitment is derived against the
+# field the pool will recompute from the payout token's address. A note built
+# with an unreduced asset id hashes to a leaf the contract never recognises,
+# and the withdrawal fails with AssetMismatch.
+ASSET_FIELD=$(note asset-field "$TOKEN")
+CM_A=$(note commitment $A_NULL $A_SECRET $DEPOSIT_AMOUNT "$ASSET_FIELD")
+CM_B=$(note commitment $B_NULL $B_SECRET $CHANGE_AMOUNT "$ASSET_FIELD")
+CM_C=$(note commitment $C_NULL $C_SECRET 0 "$ASSET_FIELD")
 NF_A=$(note nullifier-hash $A_NULL)
 NF_B=$(note nullifier-hash $B_NULL)
 
 say "1/6  Depositing 10 USDC into the shielded pool"
 invoke alice --send=yes -- deposit \
-  --depositor "$ALICE" --commitment "${CM_A#0x}" --amount "$DEPOSIT_AMOUNT" >/dev/null
+  --depositor "$ALICE" --asset "$TOKEN" \
+  --commitment "${CM_A#0x}" --amount "$DEPOSIT_AMOUNT" >/dev/null
 ok "deposited; note worth 10 USDC at leaf 0"
 
 say "2/6  Computing recipient hash (binds the proof to the recipient)"
@@ -90,7 +98,9 @@ root = "${root}"
 nullifier_hash = "$(note nullifier-hash "$nullifier")"
 recipient = "${RHASH}"
 withdraw_amount = "${payout}"
+relayer_fee = "0"
 change_commitment = "${change_cm}"
+asset = "${ASSET_FIELD}"
 nullifier = "${nullifier}"
 secret = "${secret}"
 amount = "${amount}"
@@ -115,10 +125,16 @@ TOML
 }
 
 relay_withdraw() {
+  # The fee arguments are zero: the relayer here eats the gas rather than
+  # carving a slice out of the payout, which is also what the app does on its
+  # wallet-signed path. A non-zero fee would have to be committed to by the
+  # proof as well (relayer_fee above), since the circuit constrains
+  # payout + fee + change == amount.
   stellar contract invoke --id "$POOL" --source relayer --network "$NETWORK" --send=yes \
-    -- withdraw --recipient "$ALICE" \
+    -- withdraw --recipient "$ALICE" --asset "$TOKEN" \
     --public_inputs-file-path circuits/shielded_pool/target/public_inputs \
-    --proof_bytes-file-path circuits/shielded_pool/target/proof >/dev/null
+    --proof_bytes-file-path circuits/shielded_pool/target/proof \
+    --fee_amount 0 --fee_min_out 0 --fee_recipient "$RELAYER" >/dev/null
 }
 
 say "3/6  Proving a PARTIAL spend: 4 USDC out, 6 USDC re-shielded"
