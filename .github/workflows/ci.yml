@@ -138,6 +138,27 @@ jobs:
           bb verify -s ultra_honk --oracle_hash keccak \
             -k target/vk -p target/proof -i target/public_inputs
 
+      # The app and the CLI ship their own copy of the circuit bytecode. If a
+      # copy drifts from what was just compiled here, they prove against a
+      # different circuit than the deployed verifier's VK was built from and
+      # every withdrawal fails — with nothing else in this pipeline noticing,
+      # because every other test exercises the same stale copy.
+      - name: Verify client circuit copies match the compiled artifacts
+        run: |
+          status=0
+          for c in shielded_pool compliance disclosure view_disclosure hasher; do
+            src="circuits/$c/target/$c.json"
+            [ -f "$src" ] || continue
+            for dest in "frontend/src/circuits/$c.json" "packages/core/src/circuits/$c.json"; do
+              [ -f "$dest" ] || continue
+              if ! cmp -s "$src" "$dest"; then
+                echo "STALE: $dest differs from $src — run 'just sync-circuits'"
+                status=1
+              fi
+            done
+          done
+          exit $status
+
       - name: Upload circuit artifacts
         uses: actions/upload-artifact@v4
         with:

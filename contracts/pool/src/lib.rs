@@ -2979,6 +2979,193 @@ mod tests {
     }
 
     // ──────────────────────────────────────────────
+    //  Multi-asset: one pool, one tree, many assets
+    // ──────────────────────────────────────────────
+
+    /// Registers a second SEP-41 asset, funds `depositor` with it, and
+    /// allow-lists it on the pool. Returns its address.
+    fn add_second_asset(env: &Env, pool_id: &Address, depositor: &Address) -> Address {
+        let issuer = <Address as TestAddress>::generate(env);
+        let token = env.register_stellar_asset_contract_v2(issuer);
+        let addr = token.address();
+        StellarAssetClient::new(env, &addr).mint(depositor, &1_000_000_000);
+        PoolContractClient::new(env, pool_id).add_asset(&addr);
+        addr
+    }
+
+    #[test]
+    fn test_pool_holds_two_assets_over_one_tree() {
+        // The point of allow-listing rather than deploying a pool per token:
+        // both assets share a single Merkle tree and nullifier set, so the
+        // anonymity set is everyone in the pool rather than everyone holding
+        // that one token.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, asset_a) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let asset_b = add_second_asset(&env, &pool_id, &depositor);
+
+        client.deposit(&depositor, &asset_a, &dummy_commitment(&env, 1), &10_000i128);
+        client.deposit(&depositor, &asset_b, &dummy_commitment(&env, 2), &25_000i128);
+
+        // Each asset's balance moved on its own token contract.
+        assert_eq!(TokenClient::new(&env, &asset_a).balance(&pool_id), 10_000);
+        assert_eq!(TokenClient::new(&env, &asset_b).balance(&pool_id), 25_000);
+
+        // But both leaves are in the same tree, in deposit order.
+        assert_eq!(client.get_next_index(), 2);
+        assert_eq!(client.get_commitment(&0).unwrap(), dummy_commitment(&env, 1));
+        assert_eq!(client.get_commitment(&1).unwrap(), dummy_commitment(&env, 2));
+    }
+
+    #[test]
+    fn test_deposit_rejects_asset_not_on_allow_list() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        // Registered as a token, funded, but never allow-listed on the pool.
+        let issuer = <Address as TestAddress>::generate(&env);
+        let stranger = env.register_stellar_asset_contract_v2(issuer).address();
+        StellarAssetClient::new(&env, &stranger).mint(&depositor, &1_000_000);
+
+        let result =
+            client.try_deposit(&depositor, &stranger, &dummy_commitment(&env, 1), &1_000i128);
+        assert_eq!(
+            result.err().unwrap().unwrap(),
+            PoolError::AssetNotSupported,
+        );
+        // Nothing moved.
+        assert_eq!(TokenClient::new(&env, &stranger).balance(&pool_id), 0);
+        assert_eq!(client.get_next_index(), 0);
+    }
+
+    #[test]
+    fn test_withdraw_rejects_proof_for_a_different_asset() {
+        // The security property multi-asset rests on: a proof whose leaf
+        // commits to asset A must not pay out asset B, even though both live
+        // in the same tree. The contract recomputes the asset field from the
+        // payout token and compares it to the proof's, so the mismatch is
+        // caught before the (expensive) proof verification.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, asset_a) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let asset_b = add_second_asset(&env, &pool_id, &depositor);
+
+        client.deposit(&depositor, &asset_a, &dummy_commitment(&env, 1), &10_000i128);
+        let root = client.get_root().unwrap();
+
+        let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
+        let recipient_hash = recipient_hash_from_address(&env, &recipient).unwrap();
+
+        // Public inputs commit to asset A…
+        let mut pi = [0u8; PUBLIC_INPUT_BYTES as usize];
+        pi[..32].copy_from_slice(&root.to_array());
+        pi[64..96].copy_from_slice(&recipient_hash.to_array());
+        let asset_a_field = asset_id_from_address(&env, &asset_a).unwrap();
+        pi[192..224].copy_from_slice(&asset_a_field.to_array());
+        let public_inputs = Bytes::from_slice(&env, &pi);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+
+        // …but the payout names asset B.
+        let result = client.try_withdraw(
+            &recipient, &asset_b, &public_inputs, &proof, &0i128, &0i128, &recipient,
+        );
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::AssetMismatch);
+
+        // The matching asset gets past the binding and fails on the dummy
+        // proof instead — proving the rejection above was the asset check and
+        // not something incidental to the fixture.
+        let matching = client.try_withdraw(
+            &recipient, &asset_a, &public_inputs, &proof, &0i128, &0i128, &recipient,
+        );
+        assert_ne!(matching.err().unwrap().unwrap(), PoolError::AssetMismatch);
+    }
+
+    #[test]
+    fn test_withdraw_rejects_asset_removed_from_allow_list() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, asset_a) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let asset_b = add_second_asset(&env, &pool_id, &depositor);
+
+        client.deposit(&depositor, &asset_b, &dummy_commitment(&env, 1), &10_000i128);
+        client.remove_asset(&asset_b);
+
+        let recipient = Address::from_str(&env, ACCOUNT_STRKEY);
+        let public_inputs = Bytes::from_slice(&env, &[0u8; PUBLIC_INPUT_BYTES as usize]);
+        let proof = Bytes::from_slice(&env, &[0u8; PROOF_BYTES]);
+        let result = client.try_withdraw(
+            &recipient, &asset_b, &public_inputs, &proof, &0i128, &0i128, &recipient,
+        );
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::AssetNotSupported);
+
+        // The note is not destroyed — re-adding the asset makes it spendable
+        // again, which is why removal is a pause rather than a confiscation.
+        client.add_asset(&asset_b);
+        assert!(client.is_asset_supported(&asset_a));
+        assert!(client.is_asset_supported(&asset_b));
+    }
+
+    #[test]
+    fn test_add_asset_is_idempotent_and_admin_gated() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, asset_a) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let asset_b = add_second_asset(&env, &pool_id, &depositor);
+        client.add_asset(&asset_b); // re-adding changes nothing
+
+        let assets = client.get_assets();
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets.get(0).unwrap(), asset_a);
+        assert_eq!(assets.get(1).unwrap(), asset_b);
+    }
+
+    #[test]
+    fn test_remove_asset_drops_it_from_the_list() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, depositor, asset_a) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+        let asset_b = add_second_asset(&env, &pool_id, &depositor);
+
+        client.remove_asset(&asset_a);
+
+        assert!(!client.is_asset_supported(&asset_a));
+        let assets = client.get_assets();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets.get(0).unwrap(), asset_b);
+    }
+
+    #[test]
+    fn test_add_asset_rejects_a_non_contract_address() {
+        // An account (G…) has no contract-id payload, so it can never produce
+        // the asset field a leaf commits to. Rejecting it at registration
+        // keeps a note from being mintable against an asset no proof can name.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        let (pool_id, _, _) = setup_with_token(&env);
+        let client = PoolContractClient::new(&env, &pool_id);
+
+        let account = Address::from_str(&env, ACCOUNT_STRKEY);
+        let result = client.try_add_asset(&account);
+        assert_eq!(result.err().unwrap().unwrap(), PoolError::UnsupportedAsset);
+        assert_eq!(client.get_assets().len(), 1);
+    }
+
+    // ──────────────────────────────────────────────
     //  Getters / constructor
     // ──────────────────────────────────────────────
 

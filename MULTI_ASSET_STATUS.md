@@ -1,188 +1,113 @@
-# Multi-Asset Support Implementation Status
+# Multi-Asset Support
 
-## Overview
+A single DShield pool instance holds shielded notes for many SEP-41 assets at
+once — native XLM included — over one shared Merkle tree and nullifier set.
 
-This document tracks the implementation of multi-asset support, allowing a single DShield pool instance to hold shielded notes for multiple SEP-41 assets simultaneously.
+**Status: complete.** The acceptance criteria below are met and covered by
+tests. This file is kept as the design record; for deployment, see
+[MAINNET.md](MAINNET.md).
 
-## ✅ Completed Items
+## How it works
 
-### Backend (Contracts & Circuits)
+The asset is bound into the note's leaf commitment alongside the amount:
 
-#### `contracts/pool/src/lib.rs`
+```
+commitment = H(H(H(H(LEAF_DOMAIN, nullifier), secret), amount), asset)
+```
 
-- ✅ Asset allow-list storage with `key_asset_prefix()` and `key_asset_list()`
-- ✅ `add_asset()` - Admin function to allow-list new assets
-- ✅ `remove_asset()` - Admin function to remove assets from allow-list
-- ✅ `is_asset_supported()` - Check if asset is on allow-list
-- ✅ `get_assets()` - Retrieve all allow-listed assets
-- ✅ `asset_id_from_address()` - Convert SEP-41 token address to field element
-- ✅ `deposit()` - Takes explicit `asset` parameter and validates against allow-list
-- ✅ `deposit_batch()` - Takes explicit `asset` parameter for batch deposits
-- ✅ `withdraw()` - Takes explicit `asset` parameter and validates proof's asset matches
-- ✅ Asset binding enforcement in withdrawal proof verification
-- ✅ New error types: `AssetNotSupported`, `AssetMismatch`, `UnsupportedAsset`
-- ✅ Events: `AssetAddedEvent`, `AssetRemovedEvent`
+`asset` is the token's 32-byte SEP-41 contract id **reduced modulo the BN254
+scalar field**. That reduction is load-bearing, not cosmetic: the field's order
+is only just above 2^254 while a contract id is a full 256 bits, so about four
+in five real Stellar addresses are larger than the modulus and reduce to a
+different value. A client that skips it commits the note to an asset the
+contract never derives, and the pool rejects every withdrawal of it with
+`AssetMismatch` — funds shielded and unspendable. Three implementations must
+agree byte for byte:
 
-#### `circuits/shielded_pool/src/main.nr`
+| Layer     | Implementation                                                    |
+| --------- | ------------------------------------------------------------------ |
+| Contract  | `asset_id_from_address` (`contracts/pool/src/lib.rs`)               |
+| Clients   | `assetFieldFromContractId` / `assetToField` (`@dshield/core`)       |
+| Circuit   | the `asset` public input, hashed into `hash_leaf`                   |
 
-- ✅ `asset` added as 6th public input to the circuit
-- ✅ `hash_leaf()` updated to include `asset` in the commitment chain: `H(H(H(H(LEAF_DOMAIN, nullifier), secret), amount), asset)`
-- ✅ Asset binding ensures proof for asset A cannot withdraw asset B
+They are pinned against each other by `test_asset_field_matches_clients` (Rust)
+and the `assetToField` cases in `packages/core/src/poseidon2.test.ts`, using one
+address that reduces and one that passes through — so an implementation that
+dropped the reduction cannot pass by luck.
 
-#### `circuits/compliance/src/main.nr`
+## Why one pool rather than one per asset
 
-- ✅ `asset` added as private witness
-- ✅ `hash_leaf()` updated to match shielded_pool circuit
-- ✅ Merkle membership proves the note is worth exactly `amount` of `asset`
+Splitting per token would fragment the anonymity set three ways, exactly the
+problem that dropping fixed denominations solved. Instead every asset shares one
+tree and one nullifier set, and isolation between assets is cryptographic: a
+proof built for asset A cannot open a note committing to asset B, because the
+leaf it would have to reproduce is a different hash. The contract closes the
+loop on-chain by re-deriving the asset field from the token it is about to pay
+out and rejecting any mismatch, so the guarantee does not rest on the client
+naming the right asset.
 
-#### `circuits/disclosure/src/main.nr`
+## Allow-list model
 
-- ✅ `asset` added as private witness
-- ✅ `hash_leaf()` updated to match shielded_pool circuit
-- ✅ Threshold comparison applies to the real asset the note holds
+The pool keeps an admin-managed allow-list (`add_asset` / `remove_asset` /
+`is_asset_supported` / `get_assets`). Deposits and withdrawals of anything else
+are rejected with `AssetNotSupported`.
 
-### Frontend
+Removing an asset is a **pause, not a confiscation**: existing notes survive and
+become spendable again if the asset is re-added. `add_asset` rejects an account
+(`G…`) address, since one has no contract-id payload and so could never produce
+an asset field a proof can name.
 
-#### `frontend/src/lib/poseidon2.ts`
+## Acceptance criteria
 
-- ✅ `computeCommitment()` updated to take 4th parameter `asset` and hash it: `H(H(H(H(LEAF_DOMAIN, nullifier), secret), amount), asset)`
-- ✅ `assetToField()` - New function to convert SEP-41 contract address to field element (matches contract's `asset_id_from_address`)
+- [x] One pool instance holds notes for at least two distinct SEP-41 assets
+      simultaneously — `test_pool_holds_two_assets_over_one_tree`
+- [x] The tree and nullifier set are shared across assets — same test asserts
+      both leaves land in one tree in deposit order
+- [x] A proof for asset A cannot withdraw asset B —
+      `test_withdraw_rejects_proof_for_a_different_asset`, which also checks the
+      matching asset gets *past* the binding, so the rejection is the asset
+      check and not an artefact of the fixture
+- [x] Deposits of a non-allow-listed asset are rejected —
+      `test_deposit_rejects_asset_not_on_allow_list`
+- [x] `add_asset` / `remove_asset` / `get_assets` behave —
+      `test_add_asset_is_idempotent_and_admin_gated`,
+      `test_remove_asset_drops_it_from_the_list`,
+      `test_add_asset_rejects_a_non_contract_address`
+- [x] A de-listed asset's notes are not destroyed —
+      `test_withdraw_rejects_asset_removed_from_allow_list`
+- [x] The frontend lets users pick which asset to shield — asset picker on the
+      deposit page, populated from the pool's on-chain allow-list
+- [x] The CLI can target an asset — `dshield deposit --asset XLM`, matched
+      against the allow-list rather than trusted
 
-#### `frontend/src/lib/notes.ts`
+## Client behaviour
 
-- ✅ `ShieldedNote` interface updated with `asset: string` field
-- ✅ `serializeNote()` updated to include asset (v1 format now 9 fields instead of 8)
-- ✅ `parseNoteV1()` updated to parse 9-field format with asset
-- ✅ Compact encoding updated: `COMPACT_LENGTH` increased by 32 bytes for asset field
-- ✅ `encodeNoteCompact()` updated to encode asset field
-- ✅ `decodeNoteCompact()` updated to decode asset field
+- **Asset metadata is read from the chain**, not hardcoded: `get_assets` on the
+  pool, then `symbol()` / `decimals()` on each token. The SAC reports native
+  XLM's symbol as the string `"native"`, which is mapped to `XLM` for display.
+- **Nothing falls back to "probably USDC."** If the allow-list can't be read the
+  deposit button stays disabled and says why — shielding into an asset the pool
+  doesn't hold would mint a note it will never pay out.
+- **Amounts are parsed and rendered at each asset's own precision.** A
+  6-decimal token formatted at 7 shows every balance ten times too small, and an
+  amount parsed at the wrong scale produces an unspendable note. `toBaseUnits` /
+  `fromBaseUnits` / `formatUnits` take `decimals` explicitly; the USDC-shaped
+  helpers remain only as deprecated wrappers.
+- **Trustlines are per asset and skip XLM**, which needs none. When an asset
+  needs a trustline the app can't open — a SAC's id is a hash, so only a
+  configured classic asset can be turned back into a `changeTrust` — it says so
+  rather than failing later inside the wallet.
+- **Notes carry their asset** in both serialization formats (the dash-joined
+  backup string and the compact link encoding), so a note is self-describing.
 
-#### `frontend/src/lib/prover.ts`
+## Note format
 
-- ✅ `proveWithdrawal()` updated to take `asset` input and pass it to circuit
-- ✅ `proveCompliance()` updated to take `asset` input
-- ✅ `proveDisclosure()` updated to take `asset` input
+Note version stays `v1`, now with 9 dash-joined fields:
 
-## ✅ Also completed (previously listed under Remaining Work)
+```
+dshield-v1-<poolId>-<leafIndex>-<amount>-<asset>-<commitment>-<nullifier>-<secret>
+```
 
-The initial version of this migration left the contract and its test suite in
-a state that did not compile (two missing braces and an enum discriminant
-collision in `contracts/pool/src/lib.rs`, ~100 test call sites and the
-`Prover.toml` circuit fixtures never updated for the new `asset` parameter),
-and the frontend pages/tests below were still calling the old, pre-asset
-signatures. That has since been fixed so the whole repo builds and tests
-green again:
-
-- `frontend/src/app/deposit/page.tsx`: `buildNote()` takes and hashes `asset`;
-  the `deposit` contract call passes it; the button disables with an
-  "Asset not configured" state if none is available.
-- `frontend/src/app/withdraw/page.tsx`: `buildChangeNote()`, `computeCommitment()`,
-  `proveWithdrawal()`, and the `withdraw` contract call (both the relayed and
-  direct wallet-signed paths) all thread the spent note's `asset` through.
-- `frontend/src/lib/stellar.ts` / the `relay-withdraw*` API routes: resolve the
-  withdrawn asset from the client-supplied `asset` field instead of the
-  now-removed `get_token` view (replaced by the allow-list's `get_assets`).
-- `contracts/pool/src/lib.rs`'s test suite (~100 call sites) and
-  `circuits/{shielded_pool,compliance,disclosure}/Prover.toml` (recomputed
-  `root`/`change_commitment` fixtures with a real `asset` value) now build and
-  pass against the current signatures.
-- `frontend/src/lib/poseidon2.test.ts`, `prover.test.ts`, `notes.test.ts`,
-  `viewDisclosure.test.ts`, `stellar.test.ts` updated for the `asset`
-  parameter/field everywhere it's now required.
-
-None of the above adds an asset **selector** — every one of these call sites
-still resolves to this deployment's single configured USDC SAC
-(`getUsdcSacId()`). What's genuinely still missing is the UI to choose among
-several allow-listed assets; see below.
-
-## 🚧 Remaining Work
-
-### Frontend Integration
-
-#### `frontend/src/app/deposit/page.tsx`
-
-- ⏳ **TODO**: Add asset selector dropdown/input (currently always deposits into `getUsdcSacId()`)
-- ⏳ **TODO**: Update UI to show which asset is being deposited
-- ⏳ **TODO**: Handle asset validation errors from contract (e.g. `AssetNotSupported`) with a friendly message
-
-#### `frontend/src/app/withdraw/page.tsx`
-
-- ⏳ **TODO**: Display asset information for each note in the note list
-- ⏳ **TODO**: Update UI to show which asset is being withdrawn
-
-#### `frontend/src/lib/stellar.ts`
-
-- ⏳ **TODO**: Add `getAssetSacId(asset: Address)` or similar to resolve arbitrary asset addresses, not just the demo USDC SAC
-- ⏳ **TODO**: Update trustline and faucet logic to handle multiple assets (if needed)
-- ⏳ **TODO**: Consider adding `getPoolAssets()` to query allow-listed assets from contract, to populate an asset selector
-
-### Testing
-
-#### Contract Tests
-
-- ⏳ **TODO**: Test depositing two distinct assets into the same pool
-- ⏳ **TODO**: Test withdrawing asset A with a proof (should succeed)
-- ⏳ **TODO**: Test withdrawing asset B with a proof for asset A (should fail with `AssetMismatch`)
-- ⏳ **TODO**: Test `add_asset()` / `remove_asset()` admin functions
-- ⏳ **TODO**: Test rejection of unsupported asset deposits/withdrawals
-- ⏳ **TODO**: Test `get_assets()` returns correct allow-list
-
-#### Frontend Tests
-
-- ✅ Note serialization/deserialization with asset field (`notes.test.ts`)
-- ✅ Compact encoding/decoding with asset field (`notes.test.ts`)
-- ✅ `computeCommitment()` with asset parameter, including asset-binding (`poseidon2.test.ts`)
-- ⏳ **TODO**: Test `assetToField()` conversion directly
-
-### Documentation
-
-- ⏳ **TODO**: Update `README.md` to explain multi-asset support
-- ⏳ **TODO**: Update `DESIGN.md` to remove single-denomination/single-asset descriptions
-- ⏳ **TODO**: Add examples of how to use multiple assets in the same pool
-
-## Key Design Decisions
-
-1. **Asset Binding in Leaf**: The asset is bound into the leaf commitment alongside the amount: `H(H(H(H(LEAF_DOMAIN, nullifier), secret), amount), asset)`. This ensures a proof for one asset cannot open a note of another.
-
-2. **Field Element Conversion**: Assets are identified by their SEP-41 contract address (C...), which is converted to a BN254 field element by reducing the 32-byte contract ID modulo the scalar field. This matches across frontend, circuit, and contract.
-
-3. **Allow-List Model**: The pool maintains an admin-managed allow-list of supported assets. This prevents arbitrary assets from being deposited and provides a control mechanism.
-
-4. **Shared Tree & Nullifier Set**: All assets share the same Merkle tree and nullifier set, maximizing the anonymity set rather than fragmenting it per-asset.
-
-5. **Backward Compatibility**: The note format version remains v1 but now has 9 fields instead of 8. Old 8-field notes won't parse with the new code (intentionally, as they lack the required asset field).
-
-## Acceptance Criteria
-
-- [ ] A single deployed pool instance can hold shielded notes for at least two distinct SEP-41 assets simultaneously
-- [ ] The tree and nullifier set are shared across all assets
-- [ ] A proof generated for asset A cannot be used to withdraw asset B (enforced by circuit constraints)
-- [ ] The contract rejects withdrawals where the proof's asset doesn't match the requested payout asset
-- [ ] Frontend allows users to select which asset to deposit/withdraw
-- [ ] All tests pass with multi-asset scenarios
-
-## Next Steps
-
-1. **Implement Frontend UI Changes**
-   - Add asset selector to deposit page
-   - Update note display to show asset information
-   - Wire up asset parameter through the deposit/withdraw flows
-
-2. **Update stellar.ts for Multi-Asset Support**
-   - Handle per-asset token client resolution
-   - Update trustline/faucet logic if needed
-
-3. **Write Tests**
-   - Contract-level tests for multi-asset scenarios
-   - Frontend tests for note handling with assets
-
-4. **Update Documentation**
-   - README with multi-asset examples
-   - DESIGN.md to reflect new architecture
-
-## Notes
-
-- The circuits already include the asset field as expected by the updated implementation
-- The pool contract is fully ready for multi-asset operations
-- Most frontend infrastructure is in place; main work is UI integration
-- The asset allow-list model provides flexibility while maintaining security
+Notes from any earlier pool — fixed-denomination or single-asset — are not
+portable, and neither is the 8-field format. This is intentional: an old note's
+leaf commits to a different hash than the current circuit computes.

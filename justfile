@@ -305,6 +305,171 @@ deploy network="local": build
     sed -i 's/^    //' frontend/.env.local
     echo "Frontend env updated. Restart the dev server to pick up new contract IDs."
 
+# Deploy to Stellar mainnet.
+#
+# Deliberately a separate recipe rather than `deploy mainnet`: almost
+# everything `deploy` does is wrong with real money at stake. It generates and
+# funds keys from a friendbot that doesn't exist on pubnet, issues a test USDC
+# it controls the issuer of, mints a million of them, and writes every one of
+# those secrets into frontend/.env.local. None of that happens here.
+#
+# What this recipe will NOT do, on purpose: create keys, fund accounts, issue
+# or mint an asset, or write a secret to disk. Everything it needs is supplied
+# by the operator, and nothing it produces can spend anything.
+#
+# Required environment:
+#   DEPLOYER            name of an already-funded `stellar keys` identity
+#   POOL_ADMIN          G… or C… that will hold admin on pool + compliance.
+#                       Use a multisig or the governance contract, not a
+#                       single hot key.
+#   POOL_ASSETS         comma-separated SEP-41 contract ids (C…) to allow-list.
+#                       The first becomes the pool's initial asset. Use
+#                       `just asset-id native` / `just asset-id USDC:G…` to
+#                       derive them.
+#   CONFIRM=deploy-mainnet   explicit acknowledgement; the recipe refuses
+#                            without it, so a stray shell-history entry can't
+#                            spend real XLM.
+# Optional:
+#   TIMELOCK_DELAY      seconds before a queued governance change executes
+#                       (default 86400 — one day)
+deploy-mainnet: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    NETWORK=mainnet
+    RPC_URL="${RPC_URL:-https://mainnet.sorobanrpc.com}"
+    PASSPHRASE="Public Global Stellar Network ; September 2015"
+
+    if [ "${CONFIRM:-}" != "deploy-mainnet" ]; then
+        echo "Refusing to deploy to mainnet without CONFIRM=deploy-mainnet." >&2
+        echo "This spends real XLM and publishes contracts that will hold real funds." >&2
+        exit 1
+    fi
+    : "${DEPLOYER:?set DEPLOYER to a funded stellar keys identity}"
+    : "${POOL_ADMIN:?set POOL_ADMIN to the address that should hold admin}"
+    : "${POOL_ASSETS:?set POOL_ASSETS to comma-separated SEP-41 contract ids}"
+    TIMELOCK_DELAY="${TIMELOCK_DELAY:-86400}"
+
+    stellar network add mainnet --rpc-url "$RPC_URL" \
+        --network-passphrase "$PASSPHRASE" 2>/dev/null || true
+
+    PRIMARY_ASSET="${POOL_ASSETS%%,*}"
+    DEPLOYER_ADDR=$(stellar keys address "$DEPLOYER")
+    echo "Deployer:  $DEPLOYER_ADDR"
+    echo "Admin:     $POOL_ADMIN"
+    echo "Assets:    $POOL_ASSETS"
+    echo "Timelock:  ${TIMELOCK_DELAY}s"
+    echo
+
+    echo "Deploying verifier…"
+    VERIFIER_ID=$(stellar contract deploy \
+        --wasm target/wasm32v1-none/release/dshield_verifier.wasm \
+        --source "$DEPLOYER" --network "$NETWORK" \
+        -- --vk_bytes-file-path circuits/shielded_pool/target/vk)
+    echo "  $VERIFIER_ID"
+
+    echo "Deploying governance (timelock)…"
+    GOVERNANCE_ID=$(stellar contract deploy \
+        --wasm target/wasm32v1-none/release/dshield_governance.wasm \
+        --source "$DEPLOYER" --network "$NETWORK" \
+        -- --admin "$POOL_ADMIN" --delay_seconds "$TIMELOCK_DELAY")
+    echo "  $GOVERNANCE_ID"
+
+    echo "Deploying pool…"
+    POOL_ID=$(stellar contract deploy \
+        --wasm target/wasm32v1-none/release/dshield_pool.wasm \
+        --source "$DEPLOYER" --network "$NETWORK" \
+        -- --verifier "$VERIFIER_ID" --token "$PRIMARY_ASSET" \
+           --admin "$POOL_ADMIN" --timelock "$GOVERNANCE_ID")
+    echo "  $POOL_ID"
+
+    # Allow-list the remaining assets. The first is already registered by the
+    # constructor, so it is skipped rather than re-added (add_asset is
+    # idempotent, but a no-op transaction still costs a fee).
+    IFS=',' read -ra ASSET_LIST <<< "$POOL_ASSETS"
+    for asset in "${ASSET_LIST[@]:1}"; do
+        echo "Allow-listing $asset…"
+        stellar contract invoke --id "$POOL_ID" --source "$DEPLOYER" \
+            --network "$NETWORK" --send=yes -- add_asset --asset "$asset" >/dev/null
+    done
+
+    echo "Deploying compliance…"
+    COMPLIANCE_ID=$(stellar contract deploy \
+        --wasm target/wasm32v1-none/release/dshield_compliance.wasm \
+        --source "$DEPLOYER" --network "$NETWORK" \
+        -- --vk_bytes-file-path circuits/compliance/target/vk \
+           --admin "$POOL_ADMIN" --pools "[\"$POOL_ID\"]" --timelock "$GOVERNANCE_ID")
+    echo "  $COMPLIANCE_ID"
+
+    # Written to its own file, never frontend/.env.local: that file is what the
+    # dev server reads, and a mainnet pool id landing there would point a
+    # development build at real funds. It carries no secrets — the relayer and
+    # KYC-admin keys are the operator's to supply in their deployment
+    # environment, not this recipe's to generate.
+    cat > .env.mainnet <<EOF
+    NEXT_PUBLIC_RPC_URL=$RPC_URL
+    NEXT_PUBLIC_NETWORK_PASSPHRASE=$PASSPHRASE
+    NEXT_PUBLIC_POOL_CONTRACT_ID=$POOL_ID
+    NEXT_PUBLIC_COMPLIANCE_CONTRACT_ID=$COMPLIANCE_ID
+    NEXT_PUBLIC_GOVERNANCE_CONTRACT_ID=$GOVERNANCE_ID
+    EOF
+    sed -i 's/^    //' .env.mainnet
+
+    echo
+    echo "Deployed. Wrote .env.mainnet (no secrets)."
+    echo
+    echo "Before this serves real users:"
+    echo "  1. just verify-deployment mainnet $VERIFIER_ID $COMPLIANCE_ID"
+    echo "     — confirms the on-chain VKs match these circuits."
+    echo "  2. Confirm admin is a multisig/timelock, not one key:  $POOL_ADMIN"
+    echo "  3. Supply RELAYER_SECRET and KYC_ADMIN_API_KEY in the deployment"
+    echo "     environment. Leave NEXT_PUBLIC_DEV_SECRET_KEY unset — it is"
+    echo "     inlined into the client bundle and ignored on mainnet anyway."
+    echo "  4. The faucet route refuses to run on mainnet; there is no on-ramp"
+    echo "     for test funds by design."
+    echo "  5. Get a third-party audit. Nothing here substitutes for one."
+
+# Derive a SEP-41 contract id for a classic asset, for POOL_ASSETS.
+# e.g. `just asset-id native mainnet`, `just asset-id USDC:GA5Z… mainnet`
+asset-id asset network="mainnet":
+    @stellar contract id asset --asset "{{asset}}" --network "{{network}}"
+
+# Check that the VKs a deployment actually verifies against are the ones these
+# circuits build to.
+#
+# This is the link nothing else checks: the contracts, the circuits and the
+# clients can each be self-consistent while the deployed verifier still holds
+# the verification key of an older circuit, and the only symptom is that every
+# withdrawal fails. Run it after any deploy, and after any circuit change.
+verify-deployment network verifier_id compliance_id="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    status=0
+
+    check() {
+        local label="$1" contract="$2" method="$3" local_vk="$4"
+        local onchain
+        onchain=$(stellar contract invoke --id "$contract" --network "{{network}}" \
+            --source-account "${DEPLOYER:-alice}" -- "$method" 2>/dev/null \
+            | tr -d '"' | tr -d '\n')
+        local expected
+        expected=$(xxd -p -c 100000 "$local_vk")
+        if [ "$onchain" = "$expected" ]; then
+            echo "OK    $label VK matches $local_vk"
+        else
+            echo "STALE $label VK differs from $local_vk" >&2
+            status=1
+        fi
+    }
+
+    check "pool verifier" "{{verifier_id}}" get_vk circuits/shielded_pool/target/vk
+    if [ -n "{{compliance_id}}" ]; then
+        check "compliance" "{{compliance_id}}" get_vk circuits/compliance/target/vk
+    fi
+
+    just verify-circuit-sync
+    exit $status
+
 # Run the full end-to-end pipeline on localnet
 e2e: start fund deploy
     @echo "End-to-end pipeline complete."
@@ -339,7 +504,11 @@ test-indexer-service: build-indexer-service
     cd services/indexer && npm test
 
 # Run all unit tests
-test: test-contracts test-frontend test-indexer-service
+#
+# verify-circuit-sync runs first and is cheap: a client shipping a different
+# circuit than the one the deployed VK was built from makes every withdrawal
+# fail, and no unit test can see it — they all exercise the same stale copy.
+test: verify-circuit-sync test-contracts test-frontend test-indexer-service
 
 # Run the formal/symbolic circuit specification harness
 verify-circuits:

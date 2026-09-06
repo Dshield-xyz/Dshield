@@ -6,8 +6,8 @@ import {
   PENDING_LEAF_INDEX,
   type ShieldedNote,
 } from "@dshield/core/notes";
-import { fetchAssetInfo, type AssetInfo } from "@dshield/core/assets";
-import { toBaseUnits, formatUnits } from "@dshield/core/format";
+import { fetchAssetInfo, isNativeAsset, type AssetInfo } from "@dshield/core/assets";
+import { toBaseUnits, formatUnits, DEFAULT_DECIMALS } from "@dshield/core/format";
 import type { Context } from "../context";
 import { loadWallet, loadIssuerKeypair } from "../wallet";
 import {
@@ -38,17 +38,41 @@ export interface DepositOptions {
  * Resolves which asset to shield.
  *
  * The pool's allow-list is the authority, so `--asset` is matched against it
- * rather than trusted: shielding into an asset the pool doesn't hold would
- * mint a note it will never pay out. Falling back to the configured classic
- * asset keeps `--dry-run` usable with no network.
+ * rather than trusted: shielding into an asset the pool doesn't hold would mint
+ * a note the pool will never pay out.
+ *
+ * `offline` skips every network call, for `--dry-run`, which is documented as
+ * building a note without touching the network. In that mode the asset must be
+ * named as a contract id (or come from the configured classic asset), since
+ * resolving a symbol means reading the allow-list, and its precision falls back
+ * to the 7-decimal SAC convention — so a dry run against a token of another
+ * precision prints a differently-scaled figure than a real deposit would.
  */
 export async function resolveDepositAsset(
   ctx: Context,
   requested: string | undefined,
   poolId: string | undefined,
+  offline = false,
 ): Promise<AssetInfo> {
   const { config } = ctx;
   const chain = { rpcUrl: config.rpcUrl, networkPassphrase: config.networkPassphrase };
+
+  if (offline) {
+    const id = requested ?? getConfiguredAssetId(config);
+    if (!id || !StellarSdk.StrKey.isValidContract(id)) {
+      throw new Error(
+        "--dry-run can't look up an asset by symbol (that needs the network). " +
+          "Pass --asset <C…>, or configure a classic asset.",
+      );
+    }
+    return {
+      contractId: id,
+      symbol: `${id.slice(0, 4)}…${id.slice(-4)}`,
+      decimals: DEFAULT_DECIMALS,
+      native: isNativeAsset(id, config.networkPassphrase),
+    };
+  }
+
   const allowed = poolId ? await fetchPoolAssets(config, poolId) : [];
 
   if (!requested) {
@@ -90,7 +114,12 @@ export async function depositCommand(
 ): Promise<void> {
   const { config, store, out } = ctx;
 
-  const asset = await resolveDepositAsset(ctx, opts.asset, config.poolId);
+  const asset = await resolveDepositAsset(
+    ctx,
+    opts.asset,
+    config.poolId,
+    opts.dryRun,
+  );
   const show = (units: string | bigint) =>
     formatUnits(units, asset.symbol, asset.decimals);
 

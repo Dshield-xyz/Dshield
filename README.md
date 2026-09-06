@@ -4,7 +4,7 @@
 
 > **Private by Default. Compliant by Choice.**
 
-DShield is a consumer-grade shielded stablecoin wallet built on Stellar that enables private USDC payments using Zero-Knowledge Proofs (ZKPs).
+DShield is a consumer-grade shielded wallet built on Stellar that enables private payments using Zero-Knowledge Proofs (ZKPs). One pool shields any amount of any allow-listed SEP-41 asset — native XLM included — over a single shared anonymity set.
 
 ## Fiat onboarding (SEP-24)
 
@@ -160,7 +160,7 @@ What is **built and verified on-chain today** (testnet), versus the broader visi
 
 | Capability                                                | Status                                                                                                                                                                                                                   |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Shielded deposit (USDC → commitment in a Merkle tree)     | ✅ Working on testnet                                                                                                                                                                                                    |
+| Shielded deposit (any asset → commitment in a Merkle tree) | ✅ Working on testnet                                                                                                                                                                                                    |
 | Client-side ZK proof (Noir + UltraHonk, keccak transform) | ✅                                                                                                                                                                                                                       |
 | On-chain proof verification (Soroban + BN254/Poseidon2)   | ✅                                                                                                                                                                                                                       |
 | Shielded withdrawal to any recipient                      | ✅                                                                                                                                                                                                                       |
@@ -171,9 +171,12 @@ What is **built and verified on-chain today** (testnet), versus the broader visi
 | **Relayer** — withdrawer's account never appears on-chain | ✅                                                                                                                                                                                                                       |
 | Compliance: KYC registry + compliance proof verification  | ✅ Verified on testnet via CLI (`just demo-compliance`); not yet wired into the web app UI. `disclosed_amount` is proved against the note's committed value in-circuit                                                    |
 | Selective disclosure: threshold proofs (balance ≥ X)      | ✅ Circuit + contract implemented and CLI-verified; no web UI yet. `threshold` is likewise proved against the note's committed value                                                                                      |
+| Multi-asset: one pool shields many SEP-41 assets           | ✅ Asset bound into each note's leaf; a proof for one asset cannot open a note of another. Native XLM supported                                                                                                          |
 | Arbitrary-amount private _transfers_ between users        | 🚧 Future                                                                                                                                                                                                                |
 
-DShield is a **variable-amount shielded pool**. A note carries its own value, hashed into its commitment, so one pool holds every amount and there are no denominations to round to. A withdrawal spends a note by paying out part or all of it and re-shielding the remainder as a new note, which can be spent the same way — repeatedly, until the balance is gone.
+DShield is a **variable-amount, multi-asset shielded pool**. A note carries its own value *and* its own asset, both hashed into its commitment, so one pool holds every amount of every allow-listed token and there are no denominations to round to. A withdrawal spends a note by paying out part or all of it and re-shielding the remainder as a new note, which can be spent the same way — repeatedly, until the balance is gone.
+
+Binding the asset into the leaf is what makes one shared pool safe: a proof built for asset A cannot open a note denominated in asset B, and the contract re-derives the asset field from the token it is about to pay out and rejects any mismatch. Assets therefore share one Merkle tree and one nullifier set — the anonymity set is everyone in the pool, not everyone holding that one token — while staying cryptographically isolated from each other.
 
 Every spend has the same on-chain shape: one nullifier retired, one leaf appended. A change note is created even when the payout empties the note, so nothing in the transaction reveals whether the spender still holds shielded value.
 
@@ -199,12 +202,14 @@ Deployed to Stellar **testnet** (`Test SDF Network ; September 2015`). View on [
 | Compliance         | `CDRHRU5SMGRBD2H44LQBMGOA33JILM7PR3YF3GK57LXBXAYLAT5ADCIB` |
 | Test USDC (SAC)    | `CDYZE3XQZA2UYUTYEEVLOKSYDD44CQZ6LYJIKQEDIUYBXNVSNXEQVGEG` |
 
-> **These are fresh deployments for variable-amount notes.** The note
-> commitment now binds the amount (`H(H(H(LEAF_DOMAIN, nullifier), secret),
-> amount)`) and the withdrawal circuit exposes five public inputs instead of
-> three, so the verification key, the verifier, and the pool all changed. Notes
-> from the earlier fixed-denomination pools are not portable to these. Run
-> `just deploy testnet` to provision your own set.
+> **These addresses predate the multi-asset circuit and are stale.** The note
+> commitment now binds the asset as well as the amount
+> (`H(H(H(H(LEAF_DOMAIN, nullifier), secret), amount), asset)`) and the
+> withdrawal circuit exposes seven public inputs, so the verification key, the
+> verifier and the pool all changed again. Notes from any earlier pool — fixed
+> denomination or single asset — are not portable. Run `just deploy testnet` to
+> provision your own set, then `just verify-deployment testnet <verifier-id>`
+> to confirm the on-chain VK matches the circuits you built.
 
 A full **deposit → relayed withdraw** loop has been executed on testnet: the pool paid the recipient, the nullifier was consumed, and re-submitting the same proof failed with `NullifierUsed`.
 
@@ -265,7 +270,12 @@ Three properties hold the system together (each enforced on-chain and covered by
 
 Unbounded data (commitments, nullifiers) lives in **persistent storage** with TTL extension, so the size-capped instance entry doesn't grow with usage.
 
-> ⚠️ Testnet demo only — unaudited. `frontend/.env.local` holds throwaway dev/faucet/relayer secrets and is gitignored; do not reuse them or carry this to mainnet without an audit. The relayer takes no fee (eats gas) and is a single point of censorship (not theft).
+> ⚠️ Testnet demo only — unaudited. `frontend/.env.local` holds throwaway dev/faucet/relayer secrets and is gitignored; do not reuse them. The relayer takes no fee (eats gas) and is a single point of censorship (not theft).
+>
+> For mainnet, see **[MAINNET.md](MAINNET.md)** — it covers the deployment
+> procedure (`just deploy-mainnet`, which creates no keys and writes no
+> secrets), the conveniences that fail safe on pubnet, and the blocking items
+> that are still open. A third-party audit is among them.
 
 > ⚠️ **Rate limiter — single-instance only.** The API rate limiter (`frontend/src/lib/rateLimit.ts`) is in-memory and per-process: each server instance has its own counters, and they reset on every redeploy. This is fine for the current single-instance testnet setup, but provides no real protection in a multi-instance deployment (e.g. behind a load balancer). If you scale horizontally, replace it with a distributed limiter backed by a shared store such as [Upstash Redis](https://upstash.com/) or Vercel KV. See [SECURITY.md](SECURITY.md#rate-limiter--single-instance-only) for the full upgrade path.
 

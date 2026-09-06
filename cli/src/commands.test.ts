@@ -71,6 +71,40 @@ describe("deposit --dry-run", () => {
     expect(stored[0].amount).toBe("10000000");
     expect(stored[0].spent).toBe(false);
   });
+
+  it("really is offline — an unreachable RPC doesn't slow it down", async () => {
+    // --dry-run is documented as building a note without touching the network,
+    // and it has to stay that way: resolving the asset from the pool's
+    // allow-list once made this hang for the RPC timeout on every run, which
+    // showed up only as flaky tests.
+    const started = Date.now();
+    const { stdout } = await runCli([
+      "--json",
+      "--rpc",
+      "http://127.0.0.1:1/soroban/rpc",
+      "deposit",
+      "--dry-run",
+      "--amount",
+      "1",
+    ]);
+    expect(JSON.parse(stdout).dryRun).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("refuses a dry run that would need the network to resolve a symbol", async () => {
+    // Matching "XLM" to an asset means reading the pool's allow-list. Saying so
+    // beats silently shielding into whichever asset happened to be configured.
+    const { stderr } = await runCli([
+      "--json",
+      "deposit",
+      "--dry-run",
+      "--asset",
+      "XLM",
+      "--amount",
+      "1",
+    ]);
+    expect(stderr).toMatch(/symbol/);
+  });
 });
 
 describe("notes import / list / export", () => {
