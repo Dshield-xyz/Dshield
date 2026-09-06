@@ -22,7 +22,8 @@ import {
 } from "@/lib/viewDisclosure";
 import type { ProofStage } from "@/lib/prover";
 import { explorerTxUrl, explorerContractUrl } from "@/lib/explorer";
-import { truncateMiddle, formatAmount } from "@/lib/format";
+import { truncateMiddle } from "@/lib/format";
+import { useNoteFormatter } from "@/lib/assets";
 import { PageShell, PageHeader } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -44,6 +45,8 @@ interface ReportResult {
 }
 
 export default function CompliancePage() {
+  // Amounts render in whichever asset the note or bundle names.
+  const { showNote } = useNoteFormatter();
   const [mode, setMode] = useState<Mode>("generate");
   const [selectedCommitments, setSelectedCommitments] = useState<Set<string>>(
     new Set(),
@@ -314,7 +317,7 @@ export default function CompliancePage() {
                         </Badge>
                       </div>
                       <div className="mt-1 text-xs text-zinc-500">
-                        {formatAmount(note.amount)} · Leaf #{note.leafIndex}
+                        {showNote(note, note.amount)} · Leaf #{note.leafIndex}
                       </div>
                     </button>
                   );
@@ -370,7 +373,7 @@ export default function CompliancePage() {
                   Proof ready
                 </h2>
                 <Badge tone="green">
-                  Discloses {formatAmount(viewBundle.amount)}
+                  Discloses {showNote(viewBundle, viewBundle.amount)}
                 </Badge>
               </div>
               <p className="mt-2 text-xs text-zinc-500">

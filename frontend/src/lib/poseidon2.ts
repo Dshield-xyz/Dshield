@@ -1,5 +1,6 @@
 import { Noir } from "@noir-lang/noir_js";
 import hasherCircuit from "@/circuits/hasher.json";
+import { assetFieldFromContractId } from "@dshield/core/poseidon2";
 
 // Domain separation tags for Poseidon2 hashing (must match circuit definitions)
 const LEAF_DOMAIN = "0x4c454146";
@@ -233,25 +234,19 @@ function ensureHex(v: string): string {
 /**
  * Derives the field element a note commits to for `asset`, from the SEP-41
  * token's contract address. This MUST match the pool contract's
- * `asset_id_from_address` and the circuit's `asset` public input: it takes the
- * token's 32-byte contract id, reduces it modulo the BN254 scalar field, and
- * returns the 32-byte big-endian encoding. Binding the note's leaf to this
- * value is what stops a proof for one asset from paying out another.
+ * `asset_id_from_address` and the circuit's `asset` public input.
+ *
+ * The reduction modulo the BN254 scalar field is done by the shared
+ * implementation in @dshield/core, which is also what the CLI uses, so the two
+ * cannot drift. It is load-bearing rather than cosmetic: the field's order is
+ * barely above 2^254 while a contract id is a full 256 bits, so about four in
+ * five real addresses — including the testnet XLM SAC — exceed it. An
+ * unreduced field would commit the note to an asset the contract never derives,
+ * and the pool would reject every withdrawal of it with AssetMismatch.
  */
 export async function assetToField(assetAddress: string): Promise<string> {
   const StellarSdk = await import("@stellar/stellar-sdk");
-  // Extract the 32-byte contract hash from the C... address
-  const contractId = StellarSdk.StrKey.decodeContract(assetAddress);
-  // The Noir circuit and contract both expect the asset as a field element,
-  // which is the contract ID reduced mod BN254's scalar field. The frontend
-  // passes it as a 0x-prefixed 64-char hex string (32 bytes, big-endian).
-  // For most Stellar contract addresses the raw 32 bytes are already smaller
-  // than the field modulus (~254 bits), so the reduction is usually a no-op,
-  // but we perform it anyway to match what the contract does on-chain.
-  const hex = "0x" + Buffer.from(contractId).toString("hex");
-  // TODO: if the contract ID is >= BN254 scalar field, reduce it modulo the
-  // field. For now, assume it fits (which is true for all real Stellar
-  // contracts, since SHA-256 outputs are uniformly distributed and the modulus
-  // is close to 2^254).
-  return normalizeField(hex);
+  return assetFieldFromContractId(
+    StellarSdk.StrKey.decodeContract(assetAddress),
+  );
 }

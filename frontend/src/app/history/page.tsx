@@ -18,7 +18,7 @@ function downloadAllNotes() {
   a.click();
   URL.revokeObjectURL(url);
 }
-import { formatAmount } from "@/lib/format";
+import { useNoteFormatter } from "@/lib/assets";
 import {
   formatActivityCsv,
   formatActivityJson,
@@ -46,6 +46,7 @@ function buildActivity(): ActivityItem[] {
       timestamp: note.createdAt,
       commitment: note.commitment,
       amount: note.amount,
+      asset: note.asset,
       poolId: note.poolId,
     });
 
@@ -55,6 +56,7 @@ function buildActivity(): ActivityItem[] {
         timestamp: note.createdAt + 1,
         commitment: note.commitment,
         amount: note.amount,
+        asset: note.asset,
         poolId: note.poolId,
       });
     }
@@ -66,6 +68,7 @@ function buildActivity(): ActivityItem[] {
       timestamp: kyc.createdAt,
       commitment: kyc.hash,
       amount: "0",
+      asset: "",
     });
   }
 
@@ -85,6 +88,10 @@ const TYPE_META: Record<
 type FilterType = "all" | "deposit" | "withdrawal" | "compliance";
 
 export default function HistoryPage() {
+  // Amounts render — and export — in whichever asset each note holds, not one
+  // fixed token.
+  const { showNote, assetOf } = useNoteFormatter();
+  const decimalsFor = (asset: string) => assetOf({ asset }).decimals;
   const { address } = useWallet();
   const [filter, setFilter] = useState<FilterType>("all");
   const [activity] = useState(() => buildActivity());
@@ -112,8 +119,8 @@ export default function HistoryPage() {
   function downloadActivity(kind: "csv" | "json") {
     const content =
       kind === "csv"
-        ? formatActivityCsv(filtered)
-        : formatActivityJson(filtered);
+        ? formatActivityCsv(filtered, decimalsFor)
+        : formatActivityJson(filtered, decimalsFor);
     const mime = kind === "csv" ? "text/csv" : "application/json";
     const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -289,7 +296,7 @@ export default function HistoryPage() {
                       </Badge>
                       {item.type !== "compliance" && (
                         <span className="text-sm font-semibold text-white">
-                          {formatAmount(item.amount)}
+                          {showNote(item, item.amount)}
                         </span>
                       )}
                     </div>

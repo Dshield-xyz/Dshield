@@ -2772,6 +2772,53 @@ mod tests {
     // A real account (G...) address whose Ed25519 key we can hash.
     const ACCOUNT_STRKEY: &str = "GDBPMKMMG3TP3HHC7TXXUCU6ZOJG6RVQIIKCUTBYNFVXIZOLASH2IYXY";
 
+    /// The asset field the clients derive must equal what this contract
+    /// derives, or a note's leaf commits to an asset the pool never recognises
+    /// and every withdrawal of it fails with `AssetMismatch` — the funds are
+    /// shielded and unspendable.
+    ///
+    /// The reduction modulo the BN254 scalar field is the whole point of these
+    /// fixtures. The field's order is only just above 2^254 while a contract id
+    /// is a full 256 bits, so roughly four in five real addresses are larger
+    /// than the modulus and reduce to something different: the first case
+    /// below (testnet's XLM SAC) is one of them, the second (mainnet's) is not.
+    /// A client that skipped the reduction would still pass the second case,
+    /// so both are pinned. Values produced by `assetFieldFromContractId` in
+    /// packages/core/src/poseidon2.ts.
+    #[test]
+    fn test_asset_field_matches_clients() {
+        let env = Env::default();
+        env.cost_estimate().budget().reset_unlimited();
+
+        // Testnet XLM SAC — raw contract id exceeds the field modulus.
+        let reduced = Address::from_str(
+            &env,
+            "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        );
+        assert_eq!(
+            asset_id_from_address(&env, &reduced).unwrap(),
+            BytesN::from_array(
+                &env,
+                &hex32("160151a73da9bc2909b6d4c5eee9ebdba98607979316d8ffff1af1f2f4d1ce5d"),
+            ),
+            "contract asset field != clients (reducing case)",
+        );
+
+        // Mainnet XLM SAC — already below the modulus, so it passes through.
+        let unreduced = Address::from_str(
+            &env,
+            "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
+        );
+        assert_eq!(
+            asset_id_from_address(&env, &unreduced).unwrap(),
+            BytesN::from_array(
+                &env,
+                &hex32("25b4fcd859aec2fa6348438c489b3c3c10c98b6d21be4fd3cb30cb68953ef977"),
+            ),
+            "contract asset field != clients (pass-through case)",
+        );
+    }
+
     #[test]
     fn test_recipient_hash_matches_frontend() {
         // The contract's recipient hash MUST equal the frontend's

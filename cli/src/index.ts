@@ -31,10 +31,10 @@ export function buildProgram(): Command {
     .option("--network-passphrase <phrase>", "Stellar network passphrase")
     .option("--pool <contractId>", "Shielded pool contract ID (C…)")
     .option("--compliance <contractId>", "Compliance contract ID (C…)")
-    .option("--usdc-code <code>", "USDC asset code")
-    .option("--usdc-issuer <issuer>", "USDC issuer address (G…)")
+    .option("--usdc-code <code>", "Classic test asset code (for trustlines and minting)")
+    .option("--usdc-issuer <issuer>", "Classic test asset issuer address (G…)")
     .option("--secret-key <seed>", "Signing key (S… seed) for this wallet")
-    .option("--issuer-secret <seed>", "USDC issuer secret, to mint test USDC when funding")
+    .option("--issuer-secret <seed>", "Test asset issuer secret, to mint test funds when short")
     .option("--sign-with <command>", "External signer: reads XDR on stdin, prints signed XDR")
     .option("--home <dir>", "Config + note store directory (default ~/.dshield)")
     .option("--env-file <path>", "Explicit frontend .env.local to read config from")
@@ -43,7 +43,11 @@ export function buildProgram(): Command {
   program
     .command("deposit")
     .description("Shield USDC into the pool and receive a private note")
-    .requiredOption("--amount <usdc>", "Amount to deposit, in USDC (e.g. 10.5)")
+    .requiredOption("--amount <amount>", "Amount to deposit, in the asset's own units (e.g. 10.5)")
+    .option(
+      "--asset <symbolOrId>",
+      "Asset to shield — a symbol the pool allow-lists (e.g. XLM) or a contract ID (C…). Defaults to the pool's first asset.",
+    )
     .option("--dry-run", "Build and save the note offline without touching the network")
     .action((opts, cmd) =>
       run(cmd, (ctx) => depositCommand(opts, ctx)),
@@ -55,7 +59,7 @@ export function buildProgram(): Command {
     .option("--note <string>", "Serialized note to spend")
     .option("--commitment <hex>", "Commitment of a stored note to spend")
     .option("--to <address>", "Recipient G-address (default: your wallet)")
-    .option("--amount <usdc>", "Partial amount in USDC (default: the whole note)")
+    .option("--amount <amount>", "Partial amount in the note's own asset (default: the whole note)")
     .action((opts, cmd) => run(cmd, (ctx) => withdrawCommand(opts, ctx)));
 
   const notes = program.command("notes").description("Manage locally stored notes");

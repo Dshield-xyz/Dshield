@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProgram } from "./index";
-import { computeCommitment } from "@dshield/core/poseidon2";
+import { computeCommitment, assetToField } from "@dshield/core/poseidon2";
 import { parseNote, serializeNote } from "@dshield/core/notes";
 
 let home: string;
@@ -51,9 +51,14 @@ describe("deposit --dry-run", () => {
     expect(note).not.toBeNull();
 
     // The whole point of the shared package: the CLI's commitment is exactly
-    // what core recomputes from the same secrets + amount.
+    // what core recomputes from the same secrets, amount and asset.
     const expected = (
-      await computeCommitment(note!.nullifier, note!.secret, note!.amount)
+      await computeCommitment(
+        note!.nullifier,
+        note!.secret,
+        note!.amount,
+        assetToField(note!.asset),
+      )
     ).replace(/^0x/, "");
     expect(note!.commitment).toBe(expected);
     expect(note!.commitment).toBe(result.commitment);

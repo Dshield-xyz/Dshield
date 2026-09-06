@@ -34,12 +34,12 @@ import { getAllCommitments } from "@/lib/deposits";
 import { proveRecurringAuthorization, type ProofStage } from "@/lib/prover";
 import { resolvePendingLeafIndexes } from "@/lib/sync";
 import {
-  formatAmount,
-  formatAmountBare,
-  usdcToStroops,
+  toBaseUnits,
+  fromBaseUnits,
+  formatUnits,
   truncateMiddle,
-  TOKEN_SYMBOL,
 } from "@/lib/format";
+import { useNoteFormatter, resolveAsset } from "@/lib/assets";
 import { friendlyError } from "@/lib/errors";
 import { PageShell, PageHeader, ConnectGate } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
@@ -147,6 +147,8 @@ async function buildChangeNote(
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function RecurringPage() {
+  // Amounts are read and rendered in whichever asset the chosen note holds.
+  const { assetOf, showNote, bareNote, parseForNote } = useNoteFormatter();
   const { address, signTransaction } = useWallet();
   const { toast } = useToast();
   const [, refresh] = useReducer((x: number) => x + 1, 0);
@@ -176,7 +178,12 @@ export default function RecurringPage() {
 
   // Derived
   const recipientAddr = recipient.trim() || address || "";
-  const maxAmountStroops = maxAmount.trim() ? usdcToStroops(maxAmount) : "0";
+  // Parsed at the selected note's own precision — the figure is hashed into
+  // the authorization commitment, so a wrong scale makes it unusable.
+  const maxAmountStroops =
+    maxAmount.trim() && selectedNote
+      ? parseForNote(selectedNote, maxAmount)
+      : "0";
   const maxUsesNum = parseInt(maxUses, 10);
   const periodSecs =
     periodPreset !== 0
@@ -310,6 +317,9 @@ export default function RecurringPage() {
         authNullifier,
         recipient: recipientAddr,
         maxAmount: maxAmountStroops,
+        // The authorization can only ever pay out the asset of the note it was
+        // set up from — the change note the circuit mints carries that asset.
+        asset: selectedNote.asset,
         periodSecs,
         maxUses: maxUsesNum,
         changeCommitment: changeNote.commitment,
@@ -349,7 +359,7 @@ export default function RecurringPage() {
 
       setStep("done");
       toast(
-        `Recurring authorization created — up to ${formatAmount(maxAmountStroops)} per occurrence, ${maxUsesNum} time${maxUsesNum !== 1 ? "s" : ""}.`,
+        `Recurring authorization created — up to ${showNote(selectedNote, maxAmountStroops)} per occurrence, ${maxUsesNum} time${maxUsesNum !== 1 ? "s" : ""}.`,
         "success",
       );
 
@@ -472,7 +482,7 @@ export default function RecurringPage() {
                         />
                         <div>
                           <span className="text-sm font-medium text-zinc-200">
-                            {formatAmount(note.amount)}
+                            {showNote(note, note.amount)}
                           </span>
                           <span className="ml-2 font-mono text-xs text-zinc-500">
                             {truncateMiddle(note.commitment, 8, 8)}
@@ -504,17 +514,17 @@ export default function RecurringPage() {
               <div>
                 <div className="mb-1 flex items-center justify-between">
                   <label className="text-xs font-medium text-zinc-400">
-                    Max per occurrence ({TOKEN_SYMBOL})
+                    Max per occurrence ({assetOf(selectedNote).symbol})
                   </label>
                   <button
                     type="button"
                     disabled={isLoading}
                     onClick={() =>
-                      setMaxAmount(formatAmountBare(selectedNote.amount))
+                      setMaxAmount(bareNote(selectedNote, selectedNote.amount))
                     }
                     className="focus-ring rounded text-xs text-zinc-500 hover:text-zinc-300 disabled:pointer-events-none"
                   >
-                    Max ({formatAmount(selectedNote.amount)})
+                    Max ({showNote(selectedNote, selectedNote.amount)})
                   </button>
                 </div>
                 <Input
@@ -535,7 +545,7 @@ export default function RecurringPage() {
                     if (
                       BigInt(maxAmountStroops) > BigInt(selectedNote.amount)
                     ) {
-                      return `This note only holds ${formatAmount(selectedNote.amount)}.`;
+                      return `This note only holds ${showNote(selectedNote, selectedNote.amount)}.`;
                     }
                     const change =
                       BigInt(selectedNote.amount) - BigInt(maxAmountStroops);
@@ -543,11 +553,11 @@ export default function RecurringPage() {
                       <>
                         First occurrence pays{" "}
                         <span className="text-zinc-300">
-                          {formatAmount(maxAmountStroops)}
+                          {showNote(selectedNote, maxAmountStroops)}
                         </span>
                         ; remaining{" "}
                         <span className="text-zinc-300">
-                          {formatAmount(change.toString())}
+                          {showNote(selectedNote, change)}
                         </span>{" "}
                         is re-shielded as a change note.
                       </>
@@ -616,7 +626,7 @@ export default function RecurringPage() {
                 <div className="rounded-xl border border-zinc-700/60 bg-zinc-800/30 px-4 py-3 text-xs text-zinc-400 space-y-1">
                   <p>
                     <span className="font-medium text-zinc-200">
-                      {formatAmount(maxAmountStroops)}
+                      {showNote(selectedNote, maxAmountStroops)}
                     </span>{" "}
                     per occurrence ·{" "}
                     <span className="font-medium text-zinc-200">
@@ -730,6 +740,10 @@ function RecurringAuthCard({
   onRevoke: () => void;
   isLoading: boolean;
 }) {
+  // The authorization records the asset it pays out, so its cap renders at
+  // that asset's precision even if it is no longer allow-listed.
+  const { assets } = useNoteFormatter();
+  const authAsset = resolveAsset(assets, auth.asset);
   const [onChainState, setOnChainState] = useState<{
     usesRemaining: number;
     lastTs: number;
@@ -757,7 +771,7 @@ function RecurringAuthCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-zinc-200">
-            {formatAmount(auth.maxAmount)}{" "}
+            {formatUnits(auth.maxAmount, authAsset.symbol, authAsset.decimals)}{" "}
             <span className="font-normal text-zinc-400">
               × {auth.maxUses} · {periodLabel(auth.periodSecs)}
             </span>

@@ -12,8 +12,14 @@ export interface ShieldedNote {
    * the funds) and resolved afterwards.
    */
   leafIndex: number;
-  /** Note value in token base units (stroops), as a decimal string. */
+  /** Note value in the asset's base units, as a decimal string. */
   amount: string;
+  /**
+   * SEP-41 token contract address (C...) this note is denominated in. Bound
+   * into the commitment alongside the amount, so a single pool can hold notes
+   * for many assets and a proof for one asset cannot withdraw another.
+   */
+  asset: string;
   spent: boolean;
   createdAt: number;
   poolId?: string;
@@ -32,7 +38,7 @@ const PENDING_LEAF_INDEX_TOKEN = "p";
  * secret a user must keep to withdraw — analogous to a Tornado "note". Every
  * field is dash-free (hex, integers, or a Stellar C-address), so a simple
  * dash join round-trips cleanly:
- *   dshield-v1-<poolId>-<leafIndex>-<amount>-<commitment>-<nullifier>-<secret>
+ *   dshield-v1-<poolId>-<leafIndex>-<amount>-<asset>-<commitment>-<nullifier>-<secret>
  */
 export function serializeNote(note: ShieldedNote): string {
   return [
@@ -40,9 +46,10 @@ export function serializeNote(note: ShieldedNote): string {
     NOTE_VERSION,
     note.poolId ?? "",
     // "p" rather than -1: the format is dash-joined, and a minus sign would
-    // add a ninth field and break the round trip.
+    // add a tenth field and break the round trip.
     note.leafIndex < 0 ? PENDING_LEAF_INDEX_TOKEN : note.leafIndex,
     note.amount,
+    note.asset,
     note.commitment,
     note.nullifier,
     note.secret,
@@ -57,11 +64,20 @@ export function serializeNotes(notes: ShieldedNote[]): string {
 /** Inverse of {@link serializeNote}. Returns null if the string isn't a valid v1 note. */
 function parseNoteV1(serialized: string): ShieldedNote | null {
   const parts = serialized.split("-");
-  if (parts.length !== 8) return null;
-  const [prefix, version, poolId, leafIndex, amount, commitment, nullifier, secret] =
-    parts;
+  if (parts.length !== 9) return null;
+  const [
+    prefix,
+    version,
+    poolId,
+    leafIndex,
+    amount,
+    asset,
+    commitment,
+    nullifier,
+    secret,
+  ] = parts;
   if (prefix !== NOTE_PREFIX || version !== NOTE_VERSION) return null;
-  if (!commitment || !nullifier || !secret) return null;
+  if (!commitment || !nullifier || !secret || !asset) return null;
   return {
     nullifier,
     secret,
@@ -71,6 +87,7 @@ function parseNoteV1(serialized: string): ShieldedNote | null {
         ? PENDING_LEAF_INDEX
         : Number(leafIndex),
     amount,
+    asset,
     spent: false,
     createdAt: Date.now(),
     poolId: poolId || undefined,
@@ -91,9 +108,9 @@ function parseNoteV1(serialized: string): ShieldedNote | null {
 // where `Buffer` only exists via a bundler polyfill.
 const COMPACT_PREFIX = "dS2.";
 const COMPACT_VERSION = 2;
-// version(1) + poolId(32) + leafIndex(4) + amount(8) + commitment(32) +
-// nullifier(32) + secret(32)
-const COMPACT_LENGTH = 1 + 32 + 4 + 8 + 32 + 32 + 32;
+// version(1) + poolId(32) + leafIndex(4) + amount(8) + asset(32) +
+// commitment(32) + nullifier(32) + secret(32)
+const COMPACT_LENGTH = 1 + 32 + 4 + 8 + 32 + 32 + 32 + 32;
 const ZERO_POOL_ID = new Uint8Array(32);
 // leafIndex is an unsigned field, so the top value is reserved to mean
 // "pending". Trees cap at 2^20 leaves, so it can never be a real index.
@@ -175,6 +192,23 @@ export function encodeNoteCompact(note: ShieldedNote): string | null {
     poolIdBytes = ZERO_POOL_ID;
   }
 
+  const assetBytes = new Uint8Array(32);
+  try {
+    assetBytes.set(new Uint8Array(StellarSdk.StrKey.decodeContract(note.asset)));
+  } catch {
+    // Not a StrKey C-address — treat it as a decimal or hex field element.
+    let assetBig: bigint;
+    try {
+      assetBig = BigInt(note.asset);
+    } catch {
+      return null;
+    }
+    for (let i = 31; i >= 0; i--) {
+      assetBytes[i] = Number(assetBig & BigInt(0xff));
+      assetBig >>= BigInt(8);
+    }
+  }
+
   const bytes = new Uint8Array(COMPACT_LENGTH);
   const view = new DataView(bytes.buffer);
   let offset = 0;
@@ -186,6 +220,8 @@ export function encodeNoteCompact(note: ShieldedNote): string | null {
   offset += 4;
   view.setBigUint64(offset, amountBig, false);
   offset += 8;
+  bytes.set(assetBytes, offset);
+  offset += 32;
   bytes.set(commitmentBytes, offset);
   offset += 32;
   bytes.set(nullifierBytes, offset);
@@ -210,6 +246,8 @@ function decodeNoteCompact(payload: string): ShieldedNote | null {
   offset += 4;
   const amount = view.getBigUint64(offset, false).toString();
   offset += 8;
+  const assetBytes = bytes.subarray(offset, offset + 32);
+  offset += 32;
   const commitment = bytesToHex(bytes.subarray(offset, offset + 32));
   offset += 32;
   const nullifier = bytesToHex(bytes.subarray(offset, offset + 32));
@@ -225,12 +263,21 @@ function decodeNoteCompact(payload: string): ShieldedNote | null {
     }
   }
 
+  let asset: string;
+  try {
+    asset = StellarSdk.StrKey.encodeContract(Buffer.from(assetBytes));
+  } catch {
+    // Not a valid contract address — keep the raw hex so the note still parses.
+    asset = bytesToHex(assetBytes).replace(/^0+/, "") || "0";
+  }
+
   return {
     nullifier,
     secret,
     commitment,
     leafIndex,
     amount,
+    asset,
     spent: false,
     createdAt: Date.now(),
     poolId,

@@ -4,7 +4,7 @@ import { computeCommitment, computeNullifierHash, assetToField } from "./poseido
 import { fetchCommitmentsFromChain, lookupNoteTxs } from "./indexer";
 import { type ShieldedNote } from "./notes";
 import { getNetworkLabel } from "./explorer";
-import { formatAmountBare } from "./format";
+import { fromBaseUnits } from "./format";
 import { formatReportText, type ComplianceReport } from "@dshield/core/report";
 
 // The report shape + text renderer are shared with the CLI via @dshield/core;
@@ -88,38 +88,62 @@ export interface ActivityItem {
   timestamp: number;
   commitment: string;
   amount: string;
+  /**
+   * SEP-41 asset the amount is denominated in. Empty for compliance rows,
+   * which carry no amount at all.
+   */
+  asset: string;
   poolId?: string;
 }
 
 /**
  * Column order/meaning for {@link formatActivityCsv} and
  * {@link formatActivityJson}: `type` (deposit|withdrawal|compliance), `date`
- * (ISO 8601), `amount_usdc` / `amount_stroops` (blank for compliance rows,
- * which carry no amount), `commitment` (the KYC hash for compliance rows),
- * and `pool_id` (blank for compliance rows).
+ * (ISO 8601), `amount` / `amount_base_units` and the `asset` they are
+ * denominated in (all blank for compliance rows, which carry no amount),
+ * `commitment` (the KYC hash for compliance rows), and `pool_id` (blank for
+ * compliance rows).
+ *
+ * `amount_base_units` is the authoritative figure — it is exactly what the
+ * chain stores. `amount` is the same value scaled for reading, which needs the
+ * asset's precision; without a {@link DecimalsLookup} it falls back to the
+ * 7-decimal Stellar Asset Contract convention, so a row of a token with other
+ * precision would read wrong. That is why `asset` is exported alongside.
  */
 const ACTIVITY_CSV_COLUMNS = [
   "type",
   "date",
-  "amount_usdc",
-  "amount_stroops",
+  "amount",
+  "amount_base_units",
+  "asset",
   "commitment",
   "pool_id",
 ] as const;
+
+/**
+ * Resolves an asset's decimal precision. Callers that know the pool's assets
+ * (the history page does — see useNoteFormatter) pass one so exports render at
+ * each asset's real precision.
+ */
+export type DecimalsLookup = (asset: string) => number;
 
 function csvEscape(value: string): string {
   return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
 /** Render activity rows as CSV. See {@link ACTIVITY_CSV_COLUMNS} for the column list. */
-export function formatActivityCsv(items: ActivityItem[]): string {
+export function formatActivityCsv(
+  items: ActivityItem[],
+  decimalsFor?: DecimalsLookup,
+): string {
   const rows = items.map((item) => {
     const isCompliance = item.type === "compliance";
     return [
       item.type,
       new Date(item.timestamp).toISOString(),
-      isCompliance ? "" : formatAmountBare(item.amount),
+      isCompliance ? "" : fromBaseUnits(item.amount, decimalsFor?.(item.asset)),
       isCompliance ? "" : item.amount,
+      isCompliance ? "" : item.asset,
       item.commitment,
       item.poolId ?? "",
     ]
@@ -130,14 +154,20 @@ export function formatActivityCsv(items: ActivityItem[]): string {
 }
 
 /** Render activity rows as JSON. Same fields as {@link formatActivityCsv}, one object per row. */
-export function formatActivityJson(items: ActivityItem[]): string {
+export function formatActivityJson(
+  items: ActivityItem[],
+  decimalsFor?: DecimalsLookup,
+): string {
   const data = items.map((item) => {
     const isCompliance = item.type === "compliance";
     return {
       type: item.type,
       date: new Date(item.timestamp).toISOString(),
-      amountUsdc: isCompliance ? null : formatAmountBare(item.amount),
-      amountStroops: isCompliance ? null : item.amount,
+      amount: isCompliance
+        ? null
+        : fromBaseUnits(item.amount, decimalsFor?.(item.asset)),
+      amountBaseUnits: isCompliance ? null : item.amount,
+      asset: isCompliance ? null : item.asset,
       commitment: item.commitment,
       poolId: item.poolId ?? null,
     };

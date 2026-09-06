@@ -14,5 +14,6 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "test"]
+  "// exclude": "Test files are not part of the published surface, and emitting them into dist/ made vitest pick up stale compiled copies alongside the sources.",
+  "exclude": ["node_modules", "dist", "test", "src/**/*.test.ts"]
 }

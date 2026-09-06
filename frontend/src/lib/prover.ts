@@ -322,6 +322,8 @@ export async function proveViewDisclosure(
     nullifier: string;
     secret: string;
     amount: string;
+    /** Asset field of the note — part of its leaf, so membership needs it. */
+    asset: string;
     viewKey: string;
     merkleRoot: string;
     pathSiblings: string[];
@@ -335,6 +337,7 @@ export async function proveViewDisclosure(
       nullifier: ensureHex(inputs.nullifier),
       secret: ensureHex(inputs.secret),
       amount: decimal(inputs.amount),
+      asset: ensureHex(inputs.asset),
       view_key: ensureHex(inputs.viewKey),
       merkle_root: ensureHex(inputs.merkleRoot),
       path_bits: inputs.pathBits.map(String),

@@ -1,21 +1,23 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { computeCommitment } from "@dshield/core/poseidon2";
+import { computeCommitment, assetToField } from "@dshield/core/poseidon2";
 import {
   generateRandomField,
   serializeNote,
   PENDING_LEAF_INDEX,
   type ShieldedNote,
 } from "@dshield/core/notes";
-import { usdcToStroops, formatAmount } from "@dshield/core/format";
+import { fetchAssetInfo, type AssetInfo } from "@dshield/core/assets";
+import { toBaseUnits, formatUnits } from "@dshield/core/format";
 import type { Context } from "../context";
 import { loadWallet, loadIssuerKeypair } from "../wallet";
 import {
-  ensureUsdcTrustline,
+  assetBalance,
+  ensureTrustline,
+  fetchPoolAssets,
   getCommitmentIndex,
-  getUsdcSacId,
+  getConfiguredAssetId,
   invoke,
-  mintUsdc,
-  usdcBalance,
+  mintTestAsset,
 } from "../stellar";
 
 // Largest value a single note may carry, matching the pool contract's
@@ -24,7 +26,62 @@ const MAX_NOTE_STROOPS = BigInt(2) ** BigInt(64) - BigInt(1);
 
 export interface DepositOptions {
   amount: string;
+  /**
+   * SEP-41 asset to shield (contract address, or a symbol matching one the pool
+   * allow-lists). Defaults to the pool's first allow-listed asset.
+   */
+  asset?: string;
   dryRun?: boolean;
+}
+
+/**
+ * Resolves which asset to shield.
+ *
+ * The pool's allow-list is the authority, so `--asset` is matched against it
+ * rather than trusted: shielding into an asset the pool doesn't hold would
+ * mint a note it will never pay out. Falling back to the configured classic
+ * asset keeps `--dry-run` usable with no network.
+ */
+export async function resolveDepositAsset(
+  ctx: Context,
+  requested: string | undefined,
+  poolId: string | undefined,
+): Promise<AssetInfo> {
+  const { config } = ctx;
+  const chain = { rpcUrl: config.rpcUrl, networkPassphrase: config.networkPassphrase };
+  const allowed = poolId ? await fetchPoolAssets(config, poolId) : [];
+
+  if (!requested) {
+    const fallback = allowed[0] ?? getConfiguredAssetId(config);
+    if (!fallback) {
+      throw new Error(
+        "Could not determine which asset to shield — pass --asset <C…> " +
+          "(the pool's allow-list was empty or unreadable).",
+      );
+    }
+    return fetchAssetInfo(chain, fallback);
+  }
+
+  // An address is used as given; anything else is matched by symbol against
+  // the allow-list, so `--asset XLM` works without pasting a contract id.
+  if (StellarSdk.StrKey.isValidContract(requested)) {
+    if (allowed.length > 0 && !allowed.includes(requested)) {
+      throw new Error(`This pool does not accept ${requested}.`);
+    }
+    return fetchAssetInfo(chain, requested);
+  }
+
+  const infos = await Promise.all(allowed.map((a) => fetchAssetInfo(chain, a)));
+  const match = infos.find(
+    (i) => i.symbol.toLowerCase() === requested.toLowerCase(),
+  );
+  if (!match) {
+    const known = infos.map((i) => i.symbol).join(", ") || "none";
+    throw new Error(
+      `This pool does not accept "${requested}". Allow-listed assets: ${known}.`,
+    );
+  }
+  return match;
 }
 
 export async function depositCommand(
@@ -33,13 +90,19 @@ export async function depositCommand(
 ): Promise<void> {
   const { config, store, out } = ctx;
 
-  const stroops = usdcToStroops(opts.amount);
+  const asset = await resolveDepositAsset(ctx, opts.asset, config.poolId);
+  const show = (units: string | bigint) =>
+    formatUnits(units, asset.symbol, asset.decimals);
+
+  // Parsed at the asset's own precision: this string is both hashed into the
+  // commitment and transferred on-chain, and the two must agree exactly.
+  const stroops = toBaseUnits(opts.amount, asset.decimals);
   if (BigInt(stroops) <= BigInt(0)) {
     throw new Error(`Enter an amount greater than zero (got "${opts.amount}").`);
   }
   if (BigInt(stroops) > MAX_NOTE_STROOPS) {
     throw new Error(
-      `Too large — a single note holds at most ${formatAmount(MAX_NOTE_STROOPS.toString())}.`,
+      `Too large — a single note holds at most ${show(MAX_NOTE_STROOPS)}.`,
     );
   }
 
@@ -47,16 +110,16 @@ export async function depositCommand(
   // contract and the amount inside the commitment are the same string.
   const nullifier = generateRandomField();
   const secret = generateRandomField();
-  const commitment = (await computeCommitment(nullifier, secret, stroops)).replace(
-    /^0x/,
-    "",
-  );
+  const commitment = (
+    await computeCommitment(nullifier, secret, stroops, assetToField(asset.contractId))
+  ).replace(/^0x/, "");
   const note: ShieldedNote = {
     nullifier,
     secret,
     commitment,
     leafIndex: PENDING_LEAF_INDEX,
     amount: stroops,
+    asset: asset.contractId,
     spent: false,
     createdAt: Date.now(),
     poolId: config.poolId || undefined,
@@ -65,7 +128,7 @@ export async function depositCommand(
   if (opts.dryRun) {
     store.add(note);
     out.step(
-      `Dry run — built and saved a ${formatAmount(stroops)} note offline; nothing was submitted.`,
+      `Dry run — built and saved a ${show(stroops)} note offline; nothing was submitted.`,
     );
     out.result(
       [
@@ -88,30 +151,33 @@ export async function depositCommand(
 
   const wallet = loadWallet(config);
 
-  // Funding: establish the trustline and, on test networks, mint test USDC when
-  // the balance is short (mirrors the app's faucet, but signed by the issuer key
-  // this CLI holds).
-  if (getUsdcSacId(config)) {
-    out.step("Checking USDC setup…");
-    await ensureUsdcTrustline(config, wallet);
-    const balance = await usdcBalance(config, wallet.publicKey);
-    if (balance < BigInt(stroops)) {
-      const issuer = loadIssuerKeypair(config);
-      if (!issuer) {
-        throw new Error(
-          `Account holds ${formatAmount(balance.toString())} but the deposit needs ` +
-            `${formatAmount(stroops)}. Fund it, or pass --issuer-secret to mint test USDC.`,
-        );
-      }
-      const topUp = BigInt(stroops) * BigInt(2) - balance;
-      out.step(`Minting ${formatAmount(topUp.toString())} test USDC…`);
-      await mintUsdc(config, issuer, wallet.publicKey, topUp);
+  // Funding: establish the trustline (a no-op for XLM) and, on test networks,
+  // mint the configured test asset when the balance is short — the same top-up
+  // the app gets from its server-side faucet, signed by the issuer key this CLI
+  // holds.
+  out.step(`Checking ${asset.symbol} setup…`);
+  await ensureTrustline(config, asset.contractId, wallet);
+  const balance = await assetBalance(config, asset.contractId, wallet.publicKey);
+  if (balance < BigInt(stroops)) {
+    const issuer = loadIssuerKeypair(config);
+    const mintable = asset.contractId === getConfiguredAssetId(config);
+    if (!issuer || !mintable) {
+      throw new Error(
+        `Account holds ${show(balance)} but the deposit needs ${show(stroops)}. ` +
+          (mintable
+            ? "Fund it, or pass --issuer-secret to mint test funds."
+            : `Fund the account with ${asset.symbol} first.`),
+      );
     }
+    const topUp = BigInt(stroops) * BigInt(2) - balance;
+    out.step(`Minting ${show(topUp)} test ${asset.symbol}…`);
+    await mintTestAsset(config, issuer, wallet.publicKey, topUp);
   }
 
-  out.step(`Shielding ${formatAmount(stroops)}…`);
+  out.step(`Shielding ${show(stroops)}…`);
   const txHash = await invoke(config, wallet, config.poolId, "deposit", [
     StellarSdk.nativeToScVal(wallet.publicKey, { type: "address" }),
+    StellarSdk.nativeToScVal(asset.contractId, { type: "address" }),
     StellarSdk.xdr.ScVal.scvBytes(Buffer.from(note.commitment, "hex")),
     StellarSdk.nativeToScVal(BigInt(stroops), { type: "i128" }),
   ]);
@@ -128,10 +194,10 @@ export async function depositCommand(
     note.leafIndex = leafIndex;
   }
 
-  out.step(`${formatAmount(stroops)} is now shielded.`);
+  out.step(`${show(stroops)} is now shielded.`);
   out.result(
     [
-      `Deposited ${formatAmount(stroops)} — tx ${txHash}`,
+      `Deposited ${show(stroops)} — tx ${txHash}`,
       leafIndex !== null ? `Leaf index: ${leafIndex}` : `Leaf index: pending (re-sync later)`,
       ``,
       `Note (save this — it is the only key to the funds):`,
@@ -143,6 +209,8 @@ export async function depositCommand(
       note: serializeNote(note),
       commitment: note.commitment,
       amount: stroops,
+      asset: asset.contractId,
+      symbol: asset.symbol,
     },
   );
 }

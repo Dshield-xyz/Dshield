@@ -19,6 +19,7 @@ import {
   resolveAsset as resolveAssetCore,
   type AssetInfo,
 } from "@dshield/core/assets";
+import { formatUnits, fromBaseUnits, toBaseUnits } from "@dshield/core/format";
 import { useEffect, useState } from "react";
 import { getChainConfig, getPoolId } from "./stellar";
 
@@ -126,4 +127,44 @@ export function useAssets(): UseAssetsResult {
  */
 export function resolveAsset(assets: AssetInfo[], contractId: string): AssetInfo {
   return resolveAssetCore(assets, contractId);
+}
+
+/** Anything carrying the asset address a note is denominated in. */
+interface AssetBearing {
+  asset: string;
+}
+
+export interface NoteFormatter {
+  /** The asset `note` is denominated in. */
+  assetOf: (note: AssetBearing) => AssetInfo;
+  /** Renders `units` in `note`'s own asset and precision, e.g. "1.5 XLM". */
+  showNote: (note: AssetBearing, units: string | number | bigint) => string;
+  /** Bare figure in `note`'s precision, for prefilling an input. */
+  bareNote: (note: AssetBearing, units: string | number | bigint) => string;
+  /** Parses a typed amount at `note`'s precision into base units. */
+  parseForNote: (note: AssetBearing, amount: string) => string;
+  assets: AssetInfo[];
+}
+
+/**
+ * Formats and parses amounts against whichever asset each note holds.
+ *
+ * Every page that shows note values needs the same four operations, and every
+ * one of them is wrong if it assumes a fixed precision: a 6-decimal token
+ * rendered at 7 shows every balance ten times too small, and an amount parsed
+ * at the wrong scale produces a note the pool will not pay out.
+ */
+export function useNoteFormatter(): NoteFormatter {
+  const { assets } = useAssets();
+  const assetOf = (note: AssetBearing) => resolveAsset(assets, note.asset);
+  return {
+    assets,
+    assetOf,
+    showNote: (note, units) => {
+      const a = assetOf(note);
+      return formatUnits(units, a.symbol, a.decimals);
+    },
+    bareNote: (note, units) => fromBaseUnits(units, assetOf(note).decimals),
+    parseForNote: (note, amount) => toBaseUnits(amount, assetOf(note).decimals),
+  };
 }

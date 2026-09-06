@@ -88,6 +88,7 @@ const VIEW_DISCLOSURE_INPUTS = {
   nullifier: "1",
   secret: "2",
   amount: "1000000",
+  asset: "0x5",
   viewKey: "0x3",
   merkleRoot: "0x4",
   pathSiblings: ["6", "0x7"],
@@ -109,6 +110,7 @@ describe("proveViewDisclosure", () => {
         nullifier: "0x1",
         secret: "0x2",
         amount: "1000000",
+        asset: "0x5",
         view_key: "0x3",
         merkle_root: "0x4",
         path_bits: ["0", "1"],
@@ -126,7 +128,16 @@ describe("proveViewDisclosure", () => {
 
     const call = runProofMock.mock.calls.at(-1)![1];
     expect(Object.keys(call).sort()).toEqual(
-      ["amount", "merkle_root", "nullifier", "path_bits", "path_siblings", "secret", "view_key"].sort(),
+      [
+        "amount",
+        "asset",
+        "merkle_root",
+        "nullifier",
+        "path_bits",
+        "path_siblings",
+        "secret",
+        "view_key",
+      ].sort(),
     );
   });
 

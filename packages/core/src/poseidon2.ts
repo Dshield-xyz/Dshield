@@ -1,4 +1,5 @@
 import { Noir } from "@noir-lang/noir_js";
+import * as StellarSdk from "@stellar/stellar-sdk";
 import hasherCircuit from "./circuits/hasher.json" with { type: "json" };
 
 // Domain separation tags for Poseidon2 hashing (must match circuit definitions)
@@ -38,7 +39,62 @@ export async function poseidon2Hash(a: string, b: string): Promise<string> {
 }
 
 /**
- * Note commitment: `H(H(H(LEAF_DOMAIN, nullifier), secret), amount)`.
+ * Order of the BN254 scalar field the circuits and the pool contract compute
+ * in. Anything hashed as a `Field` has to be reduced into this range first.
+ */
+export const BN254_SCALAR_MODULUS = BigInt(
+  "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+);
+
+/**
+ * Derives the field element a note commits to for `asset`, from the SEP-41
+ * token's 32-byte contract id.
+ *
+ * This MUST match the pool contract's `asset_id_from_address`, which reduces
+ * the id modulo the BN254 scalar field before comparing it to the proof's
+ * `asset` public input. The reduction is not a formality: the field's order is
+ * a little over 2^254 while a contract id is a full 256 bits, so roughly four
+ * out of five real Stellar contract addresses — the testnet XLM SAC among them
+ * — are larger than the modulus. Skipping it produces a note whose leaf commits
+ * to a different asset than the contract derives, and the pool rejects the
+ * withdrawal with AssetMismatch: the funds are shielded and unspendable.
+ *
+ * Takes the raw contract id bytes rather than the C… string so the shared
+ * package stays free of an SDK dependency at this layer; callers decode the
+ * strkey (`StrKey.decodeContract`) first.
+ */
+export function assetFieldFromContractId(
+  contractId: Uint8Array | Buffer,
+): string {
+  if (contractId.length !== 32) {
+    throw new Error(
+      `contract id must be 32 bytes, got ${contractId.length}`,
+    );
+  }
+  const hex = Buffer.from(contractId).toString("hex");
+  const reduced = BigInt("0x" + hex) % BN254_SCALAR_MODULUS;
+  return normalizeField(reduced.toString(16));
+}
+
+/**
+ * {@link assetFieldFromContractId} for an asset written as a Stellar contract
+ * address (C…).
+ *
+ * A note that came back from the compact link format may instead carry a bare
+ * field element, if its 32 bytes weren't a valid strkey; that is accepted too,
+ * reduced the same way, so re-deriving such a note's commitment still works.
+ */
+export function assetToField(asset: string): string {
+  try {
+    return assetFieldFromContractId(StellarSdk.StrKey.decodeContract(asset));
+  } catch {
+    const value = BigInt(asset.startsWith("0x") ? asset : "0x" + asset);
+    return normalizeField((value % BN254_SCALAR_MODULUS).toString(16));
+  }
+}
+
+/**
+ * Note commitment: `H(H(H(H(LEAF_DOMAIN, nullifier), secret), amount), asset)`.
  *
  * The chain of two-input hashes is not an approximation of a wider hash — it
  * is the definition, matched exactly by the Noir circuits' `hash_leaf` and by
@@ -47,18 +103,26 @@ export async function poseidon2Hash(a: string, b: string): Promise<string> {
  * denominator: the only Poseidon2 primitive all three can compute is the
  * two-input one.
  *
- * `amount` is the note's value in token base units (stroops), as a decimal
- * string. Binding it here is what lets one pool hold notes of any size and lets
- * a spend pay out part of a note.
+ * `amount` is the note's value in the asset's base units, as a decimal string.
+ * Binding it here is what lets one pool hold notes of any size and lets a spend
+ * pay out part of a note.
+ *
+ * `asset` is the field element of the SEP-41 token's contract address (see
+ * {@link assetFieldFromContractId}). Binding it is what lets a single pool hold
+ * notes for many assets: a proof for asset A cannot open a note committing to
+ * asset B, so notes of different assets stay isolated even while sharing one
+ * tree and nullifier set.
  */
 export async function computeCommitment(
   nullifier: string,
   secret: string,
   amount: string | bigint,
+  asset: string,
 ): Promise<string> {
   const domainAndNullifier = await poseidon2Hash(LEAF_DOMAIN, toField(nullifier));
   const withSecret = await poseidon2Hash(domainAndNullifier, toField(secret));
-  return poseidon2Hash(withSecret, toAmountField(amount));
+  const withAmount = await poseidon2Hash(withSecret, toAmountField(amount));
+  return poseidon2Hash(withAmount, toField(asset));
 }
 
 export async function computeNullifierHash(

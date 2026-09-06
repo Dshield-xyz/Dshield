@@ -172,52 +172,99 @@ export async function getCommitmentIndex(
   return typeof index === "number" ? index : null;
 }
 
-// ── USDC (test asset) helpers ──────────────────────────────────────────────
+// ── Asset helpers ──────────────────────────────────────────────────────────
+//
+// The pool shields every asset on its on-chain allow-list, so nothing here
+// assumes one token. The configured classic asset (the demo's test USDC) is
+// only used for the two things a contract address can't express: opening a
+// trustline, and minting test funds.
 
-export function getUsdcAsset(config: DshieldConfig): StellarSdk.Asset | null {
+/** The classic asset this deployment is configured with, if any. */
+export function getConfiguredClassicAsset(
+  config: DshieldConfig,
+): StellarSdk.Asset | null {
   if (!config.usdcIssuer) return null;
   return new StellarSdk.Asset(config.usdcCode, config.usdcIssuer);
 }
 
-export function getUsdcSacId(config: DshieldConfig): string | null {
-  const asset = getUsdcAsset(config);
+/** Contract address of the configured classic asset's SAC, if any. */
+export function getConfiguredAssetId(config: DshieldConfig): string | null {
+  const asset = getConfiguredClassicAsset(config);
   return asset ? asset.contractId(config.networkPassphrase) : null;
 }
 
-export async function usdcBalance(
+/** Contract address of this network's native XLM Stellar Asset Contract. */
+export function getNativeAssetId(config: DshieldConfig): string {
+  return StellarSdk.Asset.native().contractId(config.networkPassphrase);
+}
+
+/** Every asset the pool currently accepts, in registration order. */
+export async function fetchPoolAssets(
   config: DshieldConfig,
+  poolId: string,
+): Promise<string[]> {
+  const val = await queryContract(config, poolId, "get_assets");
+  if (!val) return [];
+  const assets = StellarSdk.scValToNative(val) as string[];
+  return Array.isArray(assets) ? assets : [];
+}
+
+/** Balance of `assetId` held by `address`, in that asset's base units. */
+export async function assetBalance(
+  config: DshieldConfig,
+  assetId: string,
   address: string,
 ): Promise<bigint> {
-  const sac = getUsdcSacId(config);
-  if (!sac) return BigInt(0);
-  const val = await queryContract(config, sac, "balance", [
+  const val = await queryContract(config, assetId, "balance", [
     StellarSdk.nativeToScVal(address, { type: "address" }),
   ]);
   if (!val) return BigInt(0);
-  return BigInt(StellarSdk.scValToNative(val) as string | number);
+  try {
+    return BigInt(StellarSdk.scValToNative(val) as string | number);
+  } catch {
+    return BigInt(0);
+  }
 }
 
-/** True if `address` already trusts the test USDC asset (probed via the SAC). */
-export async function hasUsdcTrustline(
+/**
+ * True if `address` can hold `assetId`. Native XLM needs no trustline; for
+ * anything else the token's `balance` view is probed, which simulates fine for
+ * a trusting account (even at zero) and fails when the trustline is missing.
+ */
+export async function hasTrustline(
   config: DshieldConfig,
+  assetId: string,
   address: string,
 ): Promise<boolean> {
-  const sac = getUsdcSacId(config);
-  if (!sac) return true;
-  const result = await queryContract(config, sac, "balance", [
+  if (!assetId) return true;
+  if (assetId === getNativeAssetId(config)) return true;
+  const result = await queryContract(config, assetId, "balance", [
     StellarSdk.nativeToScVal(address, { type: "address" }),
   ]);
   return result !== null;
 }
 
-/** Establish a USDC trustline for the wallet if missing. No-op without a USDC asset. */
-export async function ensureUsdcTrustline(
+/**
+ * Establish a trustline for `assetId` on the wallet if one is missing.
+ *
+ * Throws rather than continuing when the asset needs a trustline this CLI
+ * can't open — a SAC's contract id is a hash of the asset, so only the
+ * configured classic asset can be turned back into a `changeTrust` operation.
+ */
+export async function ensureTrustline(
   config: DshieldConfig,
+  assetId: string,
   wallet: Wallet,
 ): Promise<void> {
-  const asset = getUsdcAsset(config);
-  if (!asset) return;
-  if (await hasUsdcTrustline(config, wallet.publicKey)) return;
+  if (await hasTrustline(config, assetId, wallet.publicKey)) return;
+
+  const classic = getConfiguredClassicAsset(config);
+  if (!classic || classic.contractId(config.networkPassphrase) !== assetId) {
+    throw new Error(
+      `${wallet.publicKey} can't hold ${assetId} yet, and it isn't a classic ` +
+        "asset this CLI can add a trustline for. Add it from your wallet first.",
+    );
+  }
 
   const server = getServer(config);
   const account = await server.getAccount(wallet.publicKey);
@@ -225,7 +272,7 @@ export async function ensureUsdcTrustline(
     fee: StellarSdk.BASE_FEE,
     networkPassphrase: config.networkPassphrase,
   })
-    .addOperation(StellarSdk.Operation.changeTrust({ asset }))
+    .addOperation(StellarSdk.Operation.changeTrust({ asset: classic }))
     .setTimeout(60)
     .build();
 
@@ -234,18 +281,18 @@ export async function ensureUsdcTrustline(
 }
 
 /**
- * Mint `amount` stroops of test USDC to `to`, signed by the configured issuer
- * key. Only usable on test networks where the CLI holds the issuer secret; the
- * browser app routes this through a server-side faucet instead.
+ * Mint `amount` base units of the configured test asset to `to`, signed by the
+ * issuer key this CLI holds. Test networks only — the browser app routes the
+ * same thing through a server-side faucet that refuses to run on mainnet.
  */
-export async function mintUsdc(
+export async function mintTestAsset(
   config: DshieldConfig,
   issuer: StellarSdk.Keypair,
   to: string,
   amount: bigint,
 ): Promise<string> {
-  const sac = getUsdcSacId(config);
-  if (!sac) throw new Error("No USDC asset configured — cannot mint.");
+  const sac = getConfiguredAssetId(config);
+  if (!sac) throw new Error("No classic test asset configured — cannot mint.");
   const tx = await buildContractCall(
     config,
     sac,

@@ -1,4 +1,8 @@
-import { computeCommitment, computeNullifierHash } from "./poseidon2.js";
+import {
+  computeCommitment,
+  computeNullifierHash,
+  assetToField,
+} from "./poseidon2.js";
 import type { ShieldedNote } from "./notes.js";
 
 export interface ComplianceReport {
@@ -48,6 +52,7 @@ export async function computeReportIdentity(
     note.nullifier,
     note.secret,
     note.amount,
+    assetToField(note.asset),
   );
   const nullifierHash = await computeNullifierHash(note.nullifier);
   const commitmentClean = commitment.replace(/^0x/, "").toLowerCase();

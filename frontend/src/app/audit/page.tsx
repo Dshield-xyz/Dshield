@@ -8,7 +8,8 @@ import {
   type ViewDisclosureVerification,
 } from "@/lib/viewDisclosure";
 import { friendlyError } from "@/lib/errors";
-import { formatAmount, truncateMiddle } from "@/lib/format";
+import { truncateMiddle } from "@/lib/format";
+import { useNoteFormatter } from "@/lib/assets";
 import { explorerContractUrl } from "@/lib/explorer";
 import { PageShell, PageHeader } from "@/components/ui/Page";
 import { Card } from "@/components/ui/Card";
@@ -23,6 +24,8 @@ import { Button } from "@/components/ui/Button";
  * math, and the pool's on-chain state).
  */
 export default function AuditPage() {
+  // Amounts render in whichever asset the note or bundle names.
+  const { showNote } = useNoteFormatter();
   const [raw, setRaw] = useState("");
   const [bundle, setBundle] = useState<ViewDisclosureBundle | null>(null);
   const [result, setResult] = useState<ViewDisclosureVerification | null>(null);
@@ -122,7 +125,7 @@ export default function AuditPage() {
             </div>
 
             <dl className="mt-4 space-y-3 text-sm">
-              <Row label="Disclosed amount" value={formatAmount(bundle.amount)} />
+              <Row label="Disclosed amount" value={showNote(bundle, bundle.amount)} />
               <Row
                 label="Viewing key"
                 value={

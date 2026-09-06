@@ -528,6 +528,12 @@ export interface RecurringAuth {
   recipient: string;
   /** Max tokens per occurrence (base units, decimal string). */
   maxAmount: string;
+  /**
+   * SEP-41 asset the authorization is denominated in — the asset of the note
+   * it was set up from. Amounts here mean nothing without it once a pool holds
+   * several assets at different precisions.
+   */
+  asset: string;
   /** Minimum seconds between occurrences. */
   periodSecs: number;
   /** Total occurrences authorized. */

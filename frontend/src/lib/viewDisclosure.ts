@@ -2,7 +2,7 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 import { POOL_CONTRACT_ID, queryContract } from "./stellar";
 import { deriveViewingKey, type ShieldedNote } from "./notes";
 import { fetchCommitmentsFromChain } from "./indexer";
-import { buildMerkleTree } from "./poseidon2";
+import { buildMerkleTree, assetToField } from "./poseidon2";
 import { proveViewDisclosure, verifyViewDisclosure, type ProofStage } from "./prover";
 
 /**
@@ -17,6 +17,8 @@ export interface ViewDisclosureBundle {
   merkleRoot: string;
   viewKey: string;
   amount: string;
+  /** SEP-41 asset the disclosed amount is denominated in. */
+  asset: string;
   proof: string;
   publicInputs: string;
   generatedAt: number;
@@ -53,6 +55,7 @@ export async function buildViewDisclosureProof(
       nullifier: note.nullifier,
       secret: note.secret,
       amount: note.amount,
+      asset: await assetToField(note.asset),
       viewKey,
       merkleRoot: merkle.root,
       pathSiblings: merkle.pathSiblings,
@@ -67,6 +70,7 @@ export async function buildViewDisclosureProof(
     merkleRoot: merkle.root,
     viewKey,
     amount: note.amount,
+    asset: note.asset,
     proof,
     publicInputs,
     generatedAt: Date.now(),
@@ -84,6 +88,7 @@ export function parseViewDisclosureBundle(json: string): ViewDisclosureBundle | 
       typeof parsed.merkleRoot === "string" &&
       typeof parsed.viewKey === "string" &&
       typeof parsed.amount === "string" &&
+      typeof parsed.asset === "string" &&
       typeof parsed.proof === "string" &&
       typeof parsed.publicInputs === "string"
     ) {

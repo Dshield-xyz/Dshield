@@ -19,6 +19,7 @@ function sampleNote(overrides: Partial<ShieldedNote> = {}): ShieldedNote {
     commitment: "11".repeat(32),
     leafIndex: 3,
     amount: "1000000",
+    asset: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
     spent: false,
     createdAt: 1_700_000_000_000,
     poolId: POOL,
