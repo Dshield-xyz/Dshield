@@ -248,6 +248,8 @@ just demo             # privacy loop: deposit -> partial spend -> spend the rema
 just demo-compliance  # compliant disclosure: register KYC -> ZK proof -> verify
 ```
 
+`just demo-multi-asset` then shields **native XLM** in the same pool, spends part of it, and re-submits that proof asking for a USDC payout — which the contract refuses, showing the asset binding holds on-chain rather than by convention.
+
 `just demo` runs the whole privacy loop on-chain and prints each step. It shields 10 USDC, then spends the note **twice**: first taking 4 USDC and re-shielding 6, then spending that change note for the remaining 6. Each spend generates a real ZK proof bound to the recipient and goes out **through the relayer**, so your account never appears on-chain. It finishes by checking both nullifiers were consumed and that the pool holds three leaves — the deposit plus one change note per spend, including the final spend that emptied the balance.
 
 `just demo-compliance` runs the compliant-disclosure loop: an admin registers a KYC hash, a real compliance proof (KYC ownership + note ownership + selective amount disclosure, bound to an auditor key) is generated, and the contract verifies it on-chain — plus a negative check proving an unregistered KYC hash is rejected. Both demos take the network as an argument (e.g. `just demo-compliance testnet`).

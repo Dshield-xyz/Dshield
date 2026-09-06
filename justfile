@@ -485,6 +485,13 @@ demo network="local":
 demo-compliance network="local":
     bash scripts/demo-compliance.sh {{network}}
 
+# Demo multi-asset on-chain: allow-list native XLM on a pool deployed with
+# USDC, shield XLM, spend part of it, and check that the same proof is refused
+# when it asks for a USDC payout. Unlike `just demo` this doesn't need a fresh
+# pool, so it can run straight after it.
+demo-multi-asset network="local":
+    bash scripts/demo-multi-asset.sh {{network}}
+
 # Run contract unit tests
 test-contracts:
     cargo test --workspace
